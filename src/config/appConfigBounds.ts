@@ -162,6 +162,7 @@ export const APP_CONFIG_FIELD_BOUNDS: { [S in ConfigSection]: Partial<Record<key
     minEdgeLengthWarn: { min: 0, max: 5 },
     aspectRatioWarn: { min: 2, max: 100 },
     engineHeapHighPct: { min: 10, max: 100, integer: true },
+    sesUndeclaredCheckMaxChars: { min: 0, max: 10_000_000, integer: true },
   },
   segmentation: {
     autoDetectOnImport: BOOL,

@@ -22,6 +22,7 @@ import {
 import { slabRefineRegion } from './slabPaint';
 import { shapeRefineRegion } from './boxPaint';
 import { cylinderRefineRegion } from './cylinderPaint';
+import { isSmoothFill, smoothFillFor } from './smoothFill';
 import { patternRefineRegion, patternSupportsSmooth, type PatternContext } from './colorPattern';
 
 type PatternDescriptor = Extract<RegionDescriptor, { kind: 'pattern' }>;
@@ -32,13 +33,15 @@ type PatternDescriptor = Extract<RegionDescriptor, { kind: 'pattern' }>;
  *  sent. Null ⇒ the pattern is skipped (no refinement). */
 export type PatternContextProvider = (d: PatternDescriptor, index: number) => PatternContext | null;
 
-/** True when a descriptor drives mesh subdivision: any brush stroke, or a slab /
+/** True when a descriptor drives mesh subdivision: any brush stroke, a slab /
  *  oriented shape / cylinder / smooth-capable pattern with smoothing enabled
- *  (`smooth` + a positive `maxEdge`). Descriptors saved before smoothing
- *  existed omit those fields and refine nothing, preserving their blocky edges.
- *  The single predicate shared by main.ts and the Worker. */
+ *  (`smooth` + a positive `maxEdge`), or a bucket fill with `smooth` set.
+ *  Descriptors saved before smoothing existed omit those fields and refine
+ *  nothing, preserving their blocky edges. The single predicate shared by
+ *  main.ts and the Worker. */
 export function descriptorRefines(d: RegionDescriptor): boolean {
   if (d.kind === 'brushStroke') return true;
+  if (isSmoothFill(d)) return true;
   if (d.kind === 'slab' || d.kind === 'box' || d.kind === 'cylinder') {
     return !!d.smooth && (d.maxEdge ?? 0) > 0;
   }
@@ -112,6 +115,8 @@ export function collectRefineRegions(
       regions.push(shapeRefineRegion(d.shape ?? 'box', { center: d.center, size: d.size, quaternion: d.quaternion }, d.maxEdge!));
     } else if (d.kind === 'cylinder' && descriptorRefines(d)) {
       regions.push(cylinderRefineRegion(d.center, d.rMin, d.rMax, d.zMin, d.zMax, d.maxEdge!, d.axis ?? 'z'));
+    } else if (isSmoothFill(d)) {
+      regions.push(smoothFillFor(d, base).refine);
     } else if (d.kind === 'pattern' && descriptorRefines(d) && patternContext) {
       const ctx = patternContext(d, i);
       const region = ctx ? patternRefineRegion(d, ctx, d.maxEdge!) : null;

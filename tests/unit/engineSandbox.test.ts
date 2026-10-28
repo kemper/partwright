@@ -16,7 +16,11 @@ import { ENGINE_WORKER_MESSAGE_TYPES } from '../../src/geometry/workerMessageVal
 import {
   getEngineSandboxMode,
   isEngineSandboxMode,
+  isRemovedEngineSandboxMode,
+  originModeAvailable,
   parseSandboxOrigin,
+  resolveDefaultEngineSandboxMode,
+  resolveEngineSandboxMode,
   setEngineSandboxMode,
 } from '../../src/sandbox/engineSandboxSetting';
 
@@ -54,10 +58,11 @@ describe('engine sandbox protocol guards', () => {
   });
 
   it('accepts parent messages only from the app origins', () => {
-    expect([...allowedParentOrigins('http://localhost:5202', undefined)]).toEqual(['http://localhost:5202']);
-    expect([...allowedParentOrigins('https://sandbox.example.com', 'https://www.example.com, https://example.com/x, junk')])
-      .toEqual(['https://sandbox.example.com', 'https://www.example.com', 'https://example.com']);
-    expect(allowedParentOrigins('null', 'javascript:alert(1)').size).toBe(0);
+    expect([...allowedParentOrigins(undefined)]).toEqual([]);
+    // Only the configured app origins — never the frame's own (sandbox) origin.
+    expect([...allowedParentOrigins('https://www.example.com, https://example.com/x, junk')])
+      .toEqual(['https://www.example.com', 'https://example.com']);
+    expect(allowedParentOrigins('javascript:alert(1)').size).toBe(0);
   });
 
   it('validates frame → app messages', () => {
@@ -96,34 +101,58 @@ describe('engine sandbox setting', () => {
     expect(parseSandboxOrigin(undefined)).toBeNull();
   });
 
-  it('round-trips the per-browser mode and defaults to off without a configured sandbox origin', () => {
+  it('round-trips the per-browser mode and defaults to off without a sandbox host', () => {
     const store = new Map<string, string>();
     vi.stubGlobal('localStorage', {
       getItem: (k: string) => store.get(k) ?? null,
       setItem: (k: string, v: string) => { store.set(k, v); },
       removeItem: (k: string) => { store.delete(k); },
     });
+    // The unit tier has no VITE_SANDBOX_ORIGIN: the default is 'off'.
     expect(getEngineSandboxMode()).toBe('off');
-    setEngineSandboxMode('opaque');
-    expect(getEngineSandboxMode()).toBe('opaque');
+    setEngineSandboxMode('origin');
+    expect(getEngineSandboxMode()).toBe('origin');
     store.set('partwright-engine-sandbox', 'bogus');
     expect(getEngineSandboxMode()).toBe('off');
     setEngineSandboxMode('off');
     expect(store.size).toBe(0); // the default clears the override
     expect(isEngineSandboxMode('origin')).toBe(true);
+    expect(isEngineSandboxMode('opaque')).toBe(false);
     expect(isEngineSandboxMode('none')).toBe(false);
   });
 
-  it('defaults to the separate origin when the build configures one', () => {
-    vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {}, removeItem: () => {} });
-    vi.stubEnv('VITE_SANDBOX_ORIGIN', 'https://sandbox.example.com');
-    try {
-      expect(getEngineSandboxMode()).toBe('origin');
-      vi.stubEnv('VITE_ENGINE_SANDBOX', 'opaque');
-      expect(getEngineSandboxMode()).toBe('opaque');
-    } finally {
-      vi.unstubAllEnvs();
-    }
+  it("migrates a saved 'opaque' choice: removed from storage, back to the default", () => {
+    const store = new Map<string, string>([['partwright-engine-sandbox', 'opaque']]);
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => { store.set(k, v); },
+      removeItem: (k: string) => { store.delete(k); },
+    });
+    expect(isRemovedEngineSandboxMode('opaque')).toBe(true);
+    expect(getEngineSandboxMode()).toBe('off');
+    expect(store.has('partwright-engine-sandbox')).toBe(false);
+  });
+
+  it("defaults to 'origin' only when this page can use the configured sandbox host", () => {
+    const base = { buildDefault: undefined, sandboxOrigin: 'https://sandbox.example.com', appOrigins: 'https://www.example.com,https://example.com', pageOrigin: 'https://www.example.com' };
+    expect(resolveDefaultEngineSandboxMode(base)).toBe('origin');
+    expect(resolveDefaultEngineSandboxMode({ ...base, pageOrigin: 'https://example.com' })).toBe('origin');
+    // No / invalid sandbox origin, no app origins, a page the frame won't accept
+    // (a preview deploy), or the sandbox host itself: off.
+    expect(resolveDefaultEngineSandboxMode({ ...base, sandboxOrigin: undefined })).toBe('off');
+    expect(resolveDefaultEngineSandboxMode({ ...base, sandboxOrigin: 'javascript:x' })).toBe('off');
+    expect(resolveDefaultEngineSandboxMode({ ...base, appOrigins: undefined })).toBe('off');
+    expect(resolveDefaultEngineSandboxMode({ ...base, pageOrigin: 'https://abc123.preview.example.dev' })).toBe('off');
+    expect(resolveDefaultEngineSandboxMode({ ...base, sandboxOrigin: 'https://www.example.com' })).toBe('off');
+    expect(resolveDefaultEngineSandboxMode({ ...base, pageOrigin: null })).toBe('off');
+    // VITE_ENGINE_SANDBOX names the build default; 'opaque' there is ignored.
+    expect(resolveDefaultEngineSandboxMode({ ...base, buildDefault: 'off' })).toBe('off');
+    expect(resolveDefaultEngineSandboxMode({ ...base, buildDefault: 'opaque' })).toBe('origin');
+    expect(originModeAvailable(base)).toBe(true);
+    // An explicit stored choice wins (the kill switch); a removed one doesn't.
+    expect(resolveEngineSandboxMode({ ...base, stored: 'off' })).toBe('off');
+    expect(resolveEngineSandboxMode({ ...base, stored: 'opaque' })).toBe('origin');
+    expect(resolveEngineSandboxMode({ ...base, stored: null })).toBe('origin');
   });
 
   it('survives blocked storage', () => {
@@ -133,6 +162,6 @@ describe('engine sandbox setting', () => {
       removeItem: () => { throw new Error('blocked'); },
     });
     expect(getEngineSandboxMode()).toBe('off');
-    expect(() => setEngineSandboxMode('opaque')).not.toThrow();
+    expect(() => setEngineSandboxMode('origin')).not.toThrow();
   });
 });
