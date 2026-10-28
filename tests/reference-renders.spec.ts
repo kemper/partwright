@@ -77,11 +77,13 @@ test.describe('annotated sections', () => {
       const y = pw.renderSection({ axis: 'y', offset: 3 });
       const x = pw.renderSection({ axis: 'x', offset: 5 });
       const z = pw.renderSection({ axis: 'z', offset: 18 });
+      const miss = pw.renderSection({ axis: 'z', offset: 50 }) as { svg: string };
+      const missParses = !new DOMParser().parseFromString(miss.svg, 'image/svg+xml').querySelector('parsererror');
       await pw.setReferenceGeometry(head);
       const withRef = pw.renderSection({ axis: 'y', offset: 3 });
       const noRef = pw.renderSection({ axis: 'y', offset: 3, reference: false });
       pw.clearReferenceGeometry();
-      return { y, x, z, withRef, noRef };
+      return { y, x, z, miss, missParses, withRef, noRef };
     }, ['return api.Manifold.cube([40, 2, 30]).translate([-5, 2, -5]);']);
     type S = { view: { right: string; up: string }; boundingBox: { min: number[]; max: number[] }; svg: string; area: number; referenceContours?: number };
     const y = out.y as S, x = out.x as S, z = out.z as S;
@@ -106,6 +108,14 @@ test.describe('annotated sections', () => {
     expect(y.svg).toContain('>+X<');
     expect(y.svg).toContain('>+Z<');
     expect(y.svg).toContain('30 × 20');
+
+    // A plane that misses the model says so, framed by the model's extent.
+    const miss = out.miss as S;
+    expect(out.missParses).toBe(true);
+    expect(miss.boundingBox).toBeNull();
+    expect(miss.area).toBe(0);
+    expect(miss.svg).toContain('no section here');
+    expect(miss.svg).not.toContain('×');
 
     const withRef = out.withRef as S, noRef = out.noRef as S;
     expect(withRef.referenceContours).toBeGreaterThan(0);

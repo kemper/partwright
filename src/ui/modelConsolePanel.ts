@@ -95,10 +95,10 @@ export function createModelConsolePanel(): ModelConsolePanel {
     el.classList.remove('flex');
   });
   copyBtn.addEventListener('click', () => {
-    navigator.clipboard.writeText(lines.join('\n')).then(
-      () => showToast('Console output copied', { variant: 'success' }),
-      () => showToast('Could not copy the console output', { variant: 'warn' }),
-    );
+    const failed = () => showToast('Could not copy the console output', { variant: 'warn' });
+    const write = navigator.clipboard?.writeText(lines.join('\n'));
+    if (!write) { failed(); return; }
+    write.then(() => showToast('Console output copied', { variant: 'success' }), failed);
   });
 
   sync();

@@ -548,13 +548,16 @@ export interface SliceAnnotations {
   /** World directions pointing right and up in the image, e.g. '+X' / '+Z'. */
   right: string;
   up: string;
+  /** Shown in the middle of the frame instead of the section's extents —
+   *  e.g. that the plane misses the model. */
+  note?: string;
   /** Section of the reference ("ghost") geometry through the same plane, in
    *  the same 2D frame — drawn as a dashed outline. */
   reference?: [number, number][][];
 }
 
 /** A round length (1, 2 or 5 × 10ⁿ) close to `target`, for a scale bar. */
-export function niceLength(target: number): number {
+function niceLength(target: number): number {
   if (!(target > 0)) return 1;
   const pow = 10 ** Math.floor(Math.log10(target));
   const m = target / pow;
@@ -606,12 +609,17 @@ export function renderSliceSVG(polygons: [number, number][][], boundingBox: { mi
   let overlay = '';
   if (annotations) {
     const font = maxDim * 0.045;
-    const textAttrs = `font-family="ui-monospace, Menlo, monospace" font-size="${font}" fill="#e4e4e7"`;
+    const textAttrs = (size = font) => `font-family="ui-monospace, Menlo, monospace" font-size="${size}" fill="#e4e4e7"`;
+    // Monospace glyphs are ~0.6 em wide: shrink a long caption to fit the width.
+    const fit = (text: string) => Math.min(font, (vbW - padding) / (text.length * 0.6));
     for (const contour of annotations.reference ?? []) {
       if (contour.length < 2) continue;
       overlay += `<path d="${contourPath(contour)}" fill="none" stroke="#34d399" stroke-width="${stroke * 1.5}" stroke-dasharray="${stroke * 6},${stroke * 4}"/>`;
     }
-    overlay += `<text x="${vbX + padding * 0.5}" y="${vbY + top * 0.7}" ${textAttrs}>${escapeXml(annotations.title)}</text>`;
+    overlay += `<text x="${vbX + padding * 0.5}" y="${vbY + top * 0.7}" ${textAttrs(fit(annotations.title))}>${escapeXml(annotations.title)}</text>`;
+    if (annotations.note) {
+      overlay += `<text x="${vbX + vbW / 2}" y="${-(minY + maxY) / 2}" text-anchor="middle" ${textAttrs(fit(annotations.note))} fill-opacity="0.8">${escapeXml(annotations.note)}</text>`;
+    }
     // Axis arrows, bottom-left.
     const ox = vbX + padding * 0.5;
     const oy = vbY + vbH - padding * 0.5;
@@ -620,8 +628,8 @@ export function renderSliceSVG(polygons: [number, number][][], boundingBox: { mi
     const axisStroke = `stroke="#e4e4e7" stroke-width="${stroke * 1.5}" fill="none"`;
     overlay += `<path d="M${ox},${oy} L${ox + len},${oy} M${ox + len - head},${oy - head * 0.6} L${ox + len},${oy} L${ox + len - head},${oy + head * 0.6}" ${axisStroke}/>`;
     overlay += `<path d="M${ox},${oy} L${ox},${oy - len} M${ox - head * 0.6},${oy - len + head} L${ox},${oy - len} L${ox + head * 0.6},${oy - len + head}" ${axisStroke}/>`;
-    overlay += `<text x="${ox + len + font * 0.3}" y="${oy + font * 0.35}" ${textAttrs}>${escapeXml(annotations.right)}</text>`;
-    overlay += `<text x="${ox - font * 0.6}" y="${oy - len - font * 0.4}" ${textAttrs}>${escapeXml(annotations.up)}</text>`;
+    overlay += `<text x="${ox + len + font * 0.3}" y="${oy + font * 0.35}" ${textAttrs()}>${escapeXml(annotations.right)}</text>`;
+    overlay += `<text x="${ox - font * 0.6}" y="${oy - len - font * 0.4}" ${textAttrs()}>${escapeXml(annotations.up)}</text>`;
     // Scale bar, bottom-right.
     const bar = niceLength(maxDim * 0.25);
     const bx1 = vbX + vbW - padding * 0.5;
@@ -629,10 +637,12 @@ export function renderSliceSVG(polygons: [number, number][][], boundingBox: { mi
     const by = oy;
     const tick = font * 0.35;
     overlay += `<path d="M${bx0},${by - tick} L${bx0},${by} L${bx1},${by} L${bx1},${by - tick}" ${axisStroke}/>`;
-    overlay += `<text x="${(bx0 + bx1) / 2}" y="${by - tick - font * 0.3}" text-anchor="middle" ${textAttrs}>${formatLength(bar)}</text>`;
-    // Section extents, bottom-centre.
-    const ext = `${formatLength(Number((boundingBox.maxX - boundingBox.minX).toFixed(3)))} × ${formatLength(Number((boundingBox.maxY - boundingBox.minY).toFixed(3)))}`;
-    overlay += `<text x="${vbX + vbW / 2}" y="${by + font * 0.35}" text-anchor="middle" ${textAttrs} fill-opacity="0.7">${escapeXml(ext)}</text>`;
+    overlay += `<text x="${(bx0 + bx1) / 2}" y="${by - tick - font * 0.3}" text-anchor="middle" ${textAttrs()}>${formatLength(bar)}</text>`;
+    // Section extents, bottom-centre (a note replaces them: no section).
+    if (!annotations.note) {
+      const ext = `${formatLength(Number((boundingBox.maxX - boundingBox.minX).toFixed(3)))} × ${formatLength(Number((boundingBox.maxY - boundingBox.minY).toFixed(3)))}`;
+      overlay += `<text x="${vbX + vbW / 2}" y="${by + font * 0.35}" text-anchor="middle" ${textAttrs()} fill-opacity="0.7">${escapeXml(ext)}</text>`;
+    }
   }
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${Math.round(size * vbH / vbW)}" viewBox="${vbX} ${vbY} ${vbW} ${vbH}" style="background:#1e1e2e">

@@ -884,6 +884,9 @@ type PartMeshCacheEntry = {
   /** The Worker's stats for a big mesh (see `currentManifoldFacts`), so a
    *  cache hit can defer the Manifold rebuild too. */
   manifoldFacts: ManifoldFacts | null;
+  /** What the run that made this mesh printed, so a cache hit restores the
+   *  console (and getGeometryData().logs) along with the geometry. */
+  logs: string[] | undefined;
 };
 const PART_MESH_CACHE_SIZE = 8;
 const partMeshCache = new Map<string, PartMeshCacheEntry>();
@@ -3371,6 +3374,7 @@ async function saveCurrentVersion(label?: string): Promise<
         paramsSchema: currentParamSchema ?? undefined,
         voxelRun: lastVoxelRun,
         manifoldFacts: manifoldFactsFor(meshToCache),
+        logs: lastRunLogs,
       };
       partMeshCache.delete(version.id);
       partMeshCache.set(version.id, entry);
@@ -9421,6 +9425,8 @@ async function main() {
       syncParamsPanel(cachedEntry.paramsSchema);
       // The grid behind a cached voxel mesh (null for other engines).
       lastVoxelRun = cachedEntry.voxelRun;
+      lastRunLogs = cachedEntry.logs;
+      modelConsolePanel?.setLogs(cachedEntry.logs);
       // Show the geometry; colours (model underlay + any user paint) are applied
       // by the single rehydrateColorRegions pass below, which both load branches
       // share — so this branch no longer hand-rolls its own colour stamp (the
@@ -9534,6 +9540,7 @@ async function main() {
           paramsSchema: currentParamSchema ?? undefined,
           voxelRun: lastVoxelRun,
           manifoldFacts: manifoldFactsFor(currentMeshData),
+          logs: lastRunLogs,
         };
         partMeshCache.delete(version.id);
         partMeshCache.set(version.id, entry);
@@ -10907,6 +10914,9 @@ async function main() {
     resetPaintWorkerState();
     currentMeshData = mesh;
     paintBaseMesh = mesh;
+    // Not the output of a code run, so no run's console output describes it.
+    lastRunLogs = undefined;
+    modelConsolePanel?.setLogs(undefined);
     releaseCurrentManifold();
     const mod = getModule();
     const facts = prebuilt.facts ?? (mesh === simplifyBaselineMesh ? simplifyBaselineFacts : null);
@@ -15476,10 +15486,13 @@ async function main() {
         if (u < minU) minU = u; if (u > maxU) maxU = u;
       }
       const hasSection = result.polygons.length > 0;
-      // An empty cut still gets a frame (the model's extent) for the caption.
+      // An empty cut is framed by the model's extent on the image axes (the
+      // frames' right/up are all positive world axes), so the caption fits.
+      const worldIdx = (a: string) => 'XYZ'.indexOf(a[1]);
+      const ri = worldIdx(frame.right), ui = worldIdx(frame.up);
       const box2d = hasSection
         ? { minX: minR, maxX: maxR, minY: minU, maxY: maxU }
-        : { minX: -1, maxX: 1, minY: -1, maxY: 1 };
+        : { minX: bb.min[ri], maxX: bb.max[ri], minY: bb.min[ui], maxY: bb.max[ui] };
 
       // The reference ghost through the same plane, rebuilt from its mesh
       // (pure data — no model code runs here).
@@ -15497,7 +15510,8 @@ async function main() {
 
       const offsetText = Number(actualOffset.toFixed(4));
       const svg = renderSliceSVG(result.polygons, box2d, size, {
-        title: `${axis} = ${offsetText} · seen from ${frame.from}${hasSection ? '' : ' · no section here'}`,
+        title: `${axis} = ${offsetText} · seen from ${frame.from}`,
+        ...(hasSection ? {} : { note: 'no section here — the plane misses the model' }),
         right: frame.right,
         up: frame.up,
         reference: referencePolys,
@@ -17651,6 +17665,10 @@ async function main() {
       if (bad) return bad;
       if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
       const mesh = currentMeshData;
+      const maxTris = getConfig().renderer.thicknessMapMaxTriangles;
+      if (mesh.numTri > maxTris) {
+        return { error: `thicknessMap: the model has ${mesh.numTri.toLocaleString()} triangles, over the ${maxTris.toLocaleString()} limit (one ray per triangle on the main thread). Simplify it first — partwright.simplifyModel({ targetTris: ${Math.min(maxTris, 500_000)} }) — or raise renderer.thicknessMapMaxTriangles.` };
+      }
       const threshold = opts?.threshold ?? loadPrinterSettings().nozzleWidth * 2;
       const t0 = performance.now();
       const field = thicknessField(mesh);
@@ -22399,10 +22417,6 @@ async function main() {
 
   // === Internal functions ===
 
-  /** Draw one rendered angle into the renderViews composite grid:
-   *  the rendered tile occupies the top of the cell, with a labelled
-   *  footer band beneath it identifying the angle. `cols` controls
-   *  whether cellIndex wraps after 1 or 2 columns. */
   /** Render `angles` of `mesh` into one labelled composite PNG data URL
    *  (renderViews, the thickness heatmap). Each angle renders through
    *  renderSingleView (one shared offscreen WebGLRenderer), is decoded, then
@@ -22435,6 +22449,10 @@ async function main() {
     return composite.toDataURL('image/png');
   }
 
+  /** Draw one rendered angle into the renderViews composite grid:
+   *  the rendered tile occupies the top of the cell, with a labelled
+   *  footer band beneath it identifying the angle. `cols` controls
+   *  whether cellIndex wraps after 1 or 2 columns. */
   function drawCell(
     ctx: CanvasRenderingContext2D,
     src: CanvasImageSource,
@@ -23458,7 +23476,6 @@ async function main() {
     const surfaceErrors = opts.surfaceErrors ?? true;
     const myGen = ++_runGeneration;
     lastRunRejection = null;
-    lastRunLogs = undefined;
     _running = true;
     // Ensure status shows "Running..." regardless of how this run was triggered
     // (runCode sets it before the RAF; import paths call runCodeSync directly).

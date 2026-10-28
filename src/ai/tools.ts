@@ -1790,7 +1790,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'thicknessMap',
-    description: 'Wall-thickness map of the current model: EVERY triangle\'s distance straight through the solid to the opposite wall (exact — checkPrintability only samples a few hundred). Returns the thinnest wall and where, the median, how much surface is below `threshold` (default 2 × the printer nozzle width), and the thin SPOTS — connected thin areas, thinnest first, each with { center, thinnest, thickness, area, triangleCount } — so you can thicken exactly those places. render: true adds a heatmap image (red ≤ ½·threshold, yellow at the threshold, grey ≥ 2·threshold).',
+    description: 'Wall-thickness map of the current model: EVERY triangle\'s distance straight through the solid to the opposite wall (exact on flat walls, a close estimate on curved ones — checkPrintability only samples a few hundred). Returns the thinnest wall and where, the median, how much surface is below `threshold` (default 2 × the printer nozzle width), and the thin SPOTS — connected thin areas, thinnest first, each with { center, thinnest, thickness, area, triangleCount } — so you can thicken exactly those places. render: true adds a heatmap image (red ≤ ½·threshold, yellow at the threshold, grey ≥ 2·threshold).',
     input_schema: {
       type: 'object',
       properties: {
@@ -3034,6 +3034,19 @@ function withUiToolIds(def: ToolDefinition, catalog: UiToolCatalogEntry[]): Tool
   };
 }
 
+/** thicknessMap stays available with vision off (its numbers are the point),
+ *  but its heatmap is an image, so the Views toggle removes the render
+ *  options from the schema the model sees. */
+function gateThicknessRender(t: ToolDefinition, toggles: ChatToggles): ToolDefinition {
+  if (t.name !== 'thicknessMap' || toggles.vision.views) return t;
+  const { render: _render, views: _views, size: _size, ...properties } = t.input_schema.properties as Record<string, unknown>;
+  return {
+    ...t,
+    description: t.description.replace(/ render: true adds a heatmap image[^.]*\./, ''),
+    input_schema: { ...t.input_schema, properties },
+  } as ToolDefinition;
+}
+
 /** `uiTools` is the UI tool catalogue (see buildUiToolCatalog) — pass it when
  *  building inside the agent Worker; on the main thread it defaults to the
  *  live registry. */
@@ -3049,7 +3062,7 @@ export function buildToolList(toggles: ChatToggles, uiTools?: UiToolCatalogEntry
       if (!PLAN_MODE_TOOLS.has(t.name)) return false;
       if (VIEWS_GATED.has(t.name)) return toggles.vision.views;
       return true;
-    });
+    }).map(t => gateThicknessRender(t, toggles));
   }
 
   return ALL_TOOLS.filter(t => {
@@ -3072,7 +3085,7 @@ export function buildToolList(toggles: ChatToggles, uiTools?: UiToolCatalogEntry
     if (VIEWS_GATED.has(t.name)) return toggles.vision.views;
     if (AUTORESUME_GATED.has(t.name)) return toggles.autoResume === true;
     return false;
-  }).map(t => (t.name === 'openTool' ? withUiToolIds(t, uiTools ?? buildUiToolCatalog()) : t));
+  }).map(t => (t.name === 'openTool' ? withUiToolIds(t, uiTools ?? buildUiToolCatalog()) : gateThicknessRender(t, toggles)));
 }
 
 type PartwrightAPI = Record<string, (...args: unknown[]) => unknown>;

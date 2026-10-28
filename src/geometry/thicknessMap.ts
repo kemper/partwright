@@ -64,17 +64,16 @@ export function thicknessField(mesh: MeshData): Float32Array {
   // Start just inside the surface so the ray can't hit its own triangle.
   const eps = Math.max(1e-6, diag * 1e-6);
   const ray = new THREE.Ray();
+  const vp = mesh.vertProperties, tv = mesh.triVerts, np = mesh.numProp;
   for (let t = 0; t < mesh.numTri; t++) {
-    const a = vertex(mesh, mesh.triVerts[t * 3]);
-    const b = vertex(mesh, mesh.triVerts[t * 3 + 1]);
-    const c = vertex(mesh, mesh.triVerts[t * 3 + 2]);
-    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
-    const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+    const a = tv[t * 3] * np, b = tv[t * 3 + 1] * np, c = tv[t * 3 + 2] * np;
+    const ux = vp[b] - vp[a], uy = vp[b + 1] - vp[a + 1], uz = vp[b + 2] - vp[a + 2];
+    const vx = vp[c] - vp[a], vy = vp[c + 1] - vp[a + 1], vz = vp[c + 2] - vp[a + 2];
     let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
     const nl = Math.hypot(nx, ny, nz);
     if (!(nl > 0)) continue; // degenerate triangle
     nx /= nl; ny /= nl; nz /= nl;
-    const cx = (a[0] + b[0] + c[0]) / 3, cy = (a[1] + b[1] + c[1]) / 3, cz = (a[2] + b[2] + c[2]) / 3;
+    const cx = (vp[a] + vp[b] + vp[c]) / 3, cy = (vp[a + 1] + vp[b + 1] + vp[c + 1]) / 3, cz = (vp[a + 2] + vp[b + 2] + vp[c + 2]) / 3;
     ray.origin.set(cx - nx * eps, cy - ny * eps, cz - nz * eps);
     ray.direction.set(-nx, -ny, -nz);
     const h = bvh.raycastFirst(ray, THREE.DoubleSide, 0, diag * 2);

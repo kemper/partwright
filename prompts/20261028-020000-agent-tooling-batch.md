@@ -127,3 +127,25 @@ The collapsed state is a per-viewer localStorage convenience.
 ## Assistant
 
 Added a 4-Ls retro (retros/inbox/20261028-030000-agent-tooling-batch.md).
+
+## Assistant
+
+## Review fixes (work-reviewer pass on the draft PR)
+
+- **thicknessMap without vision**: the AI tool's `render`/`views`/`size`
+  are stripped when the Views toggle is off, the same as renderView, so a
+  text-only model can't ask for an image it can't see. Covered in
+  `aiToolGating.test.ts`.
+- **A cap on the BVH pass**: `renderer.thicknessMapMaxTriangles` (default
+  1M, in Advanced Settings). Over it, the call errors and points at
+  `simplifyModel`, so a 4M-triangle import doesn't freeze the tab. The ray
+  loop now reads vertices inline instead of allocating per triangle.
+- **Console logs survive a cached object switch**: the per-object mesh cache
+  stores the run's logs, so the panel and `getGeometryData().logs` match the
+  geometry on screen.
+- **Empty cuts**: a section plane that misses the model is framed by the
+  model's extent on the image axes, with a centred "no section here" note
+  in place of the extents. Long captions shrink to fit the width.
+- Nits: `niceLength` un-exported, `composeViews` moved above drawCell's doc
+  comment, Copy guards a missing `navigator.clipboard`, and thicknessMap is in
+  the plan-mode tool list text.
