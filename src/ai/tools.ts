@@ -18,7 +18,7 @@ import { ASK_USER_TOOL, CARD_TOOL_ACK, PROPOSE_PLAN_TOOL } from './planReply';
 import { detectorIds, paramsJsonSchema } from '../segmentation/registry';
 import type { ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
-import { RENDER_VIEW_MODES, EDGE_MODES } from '../renderer/multiview';
+import { RENDER_VIEW_MODES, EDGE_MODES, DEFAULT_VIEW_AZIMUTH, DEFAULT_VIEW_ELEVATION } from '../renderer/multiview';
 import { getRenderBudget, loadSettings } from './settings';
 import { assetPath } from '../deployment';
 import { applyLiteralPatch, applyPatches } from './patch';
@@ -243,6 +243,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r, g, b] in 0..1.' },
         name: { type: 'string', description: 'Optional human-readable region name. Defaults to "Component <index>".' },
         topOnly: { type: 'boolean', description: 'If true, only paint upward-facing triangles (skip side walls + bottom). Same shortcut as paintInBox.topOnly.' },
+        withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
       },
       required: ['index', 'color'],
     },
@@ -411,7 +412,7 @@ const ALL_TOOLS: ToolDefinition[] = [
             elevation: { type: 'number' },
             azimuth: { type: 'number' },
             ortho: { type: 'boolean' },
-            size: { type: 'integer' },
+            size: { type: 'integer', description: 'Image size in px. Omit only if the renderView call omitted it too (both then use your render budget size).' },
           },
         },
       },
@@ -432,7 +433,7 @@ const ALL_TOOLS: ToolDefinition[] = [
             elevation: { type: 'number' },
             azimuth: { type: 'number' },
             ortho: { type: 'boolean' },
-            size: { type: 'integer' },
+            size: { type: 'integer', description: 'Image size in px. Omit only if the renderView call omitted it too (both then use your render budget size).' },
           },
         },
       },
@@ -502,9 +503,9 @@ const ALL_TOOLS: ToolDefinition[] = [
       type: 'object',
       properties: {
         elevation: { type: 'number', description: 'Camera elevation in degrees. 0 = side view, 90 = top. Default 30.' },
-        azimuth: { type: 'number', description: 'Camera azimuth in degrees. 0 = front, 90 = right, 180 = back, 270 = left. Default 0.' },
+        azimuth: { type: 'number', description: 'Camera azimuth in degrees. 0 = front, 90 = right, 180 = back, 270 = left. Default 315 (a front-left three-quarter view).' },
         ortho: { type: 'boolean', description: 'true = orthographic (technical drawing), false = perspective. Default false.' },
-        size: { type: 'integer', description: 'Pixel size of the rendered square. Default 320. Larger costs more tokens.' },
+        size: { type: 'integer', description: 'Pixel size of the rendered square. Default: your render budget (256 / 384 / 512 px by spending mode); the result label states the size used — pass that same size to probePixel. Larger costs more tokens.' },
         edges: { type: 'string', enum: [...EDGE_MODES], description: 'Edge overlay style. "crease" (default for uncolored models) draws only feature edges — corners and the silhouette — so the shape reads cleanly without facet noise on curves. "none" is a plain shaded surface (best when reading painted colors; the default for painted models). "wireframe" draws every triangle edge — use only to inspect tessellation or debug a failed boolean.' },
         reference: { type: 'boolean', description: 'Draw the setReferenceGeometry ghost (translucent, depth-tested: it shows where it pokes through the model). Default true when a reference is set; false hides it.' },
       },
@@ -518,7 +519,7 @@ const ALL_TOOLS: ToolDefinition[] = [
       properties: {
         views: { type: 'string', enum: [...RENDER_VIEW_MODES], description: '"auto" (default) picks angles from the model aspect ratio. "tri" = front + top + iso (3 cells). "all" = front + right + top + iso (4 cells). "box" = all 6 orthographic faces front/back/left/right/top/bottom (guaranteed all-faces check). Ignored when `angles` is given.' },
         angles: { type: 'array', description: 'Explicit list of camera angles; overrides `views`. Same angle semantics as renderView. Use to put specific suspect angles side-by-side in one composite.', items: { type: 'object', properties: { elevation: { type: 'number', description: '0 = side, 90 = top, -90 = bottom.' }, azimuth: { type: 'number', description: '0 = front, 90 = right, 180 = back, 270 = left.' }, ortho: { type: 'boolean', description: 'true = orthographic. Default false.' }, label: { type: 'string', description: 'Optional caption for the cell.' } }, required: ['elevation', 'azimuth'] } },
-        size: { type: 'integer', description: 'Pixel size per cell. Default 320. Raise to 512-768 for a high-resolution final check; larger costs more tokens.' },
+        size: { type: 'integer', description: 'Pixel size per cell. Default: your render budget (256 / 384 / 512 px by spending mode). Raise to 512-768 for a high-resolution final check; larger costs more tokens.' },
         edges: { type: 'string', enum: [...EDGE_MODES], description: 'Edge overlay applied to every tile. "crease" (default for uncolored models) draws only feature edges — corners and silhouette — so shape reads cleanly without facet noise on curves. "none" is a plain shaded surface (best for reading painted colors; default for painted models). "wireframe" draws every triangle edge — use only to inspect tessellation or debug a failed boolean.' },
         reference: { type: 'boolean', description: 'Draw the setReferenceGeometry ghost (translucent, depth-tested: it shows where it pokes through the model). Default true when a reference is set; false hides it.' },
       },
@@ -2625,26 +2626,15 @@ for (const tool of ALL_TOOLS) {
   }
 }
 
-/** Committing paint tools that take a PART scope (#1003): the region is
- *  selected as usual, then clipped to one api.label part, and keeps that scope
- *  across code edits (main.ts wraps the matching window.partwright methods). */
-export const PART_SCOPE_TOOLS = new Set<string>([
+/** Committing paint tools whose part scope is `withinPart`. Earlier builds
+ *  advertised a separate `scope: { label }` param on them; chats from then can
+ *  still replay it, so executeTool maps it onto `withinPart` (nothing in the
+ *  API reads `scope`, and the per-tool APIs would otherwise drop it and paint
+ *  unscoped). */
+const LEGACY_SCOPE_TOOLS = new Set<string>([
   'paintRegion', 'paintNearestRegion', 'paintFaces', 'paintSlab', 'paintInBox', 'paintInOrientedBox',
   'paintNear', 'paintInCylinder', 'paintConnected', 'paintStroke', 'paintComponent', 'paintImage',
 ]);
-// (main.ts's PART_SCOPED_PAINT_METHODS is the window.partwright side — it also
-// covers API-only verbs like paintAirbrush; paintImage handles scope itself.)
-const PART_SCOPE_PROP = {
-  type: 'object',
-  description: 'Optional. Confine this paint to one PART of the object: { label: "<part name>" } (an api.label region from listObjectParts). The selection is computed as usual, then clipped to that part — e.g. paintSlab on the top 5 mm with scope {label:"handle"} paints only the handle\'s top. The scope persists, so the paint stays inside the part when the code changes. When the user has a part selected (their message starts with "[Selected in the Objects list: part …]"), scope your paint to it.',
-  properties: { label: { type: 'string', description: 'Part (api.label) name.' } },
-  required: ['label'],
-};
-for (const tool of ALL_TOOLS) {
-  if (PART_SCOPE_TOOLS.has(tool.name) && !('scope' in tool.input_schema.properties)) {
-    tool.input_schema.properties.scope = PART_SCOPE_PROP;
-  }
-}
 
 const ALWAYS_AVAILABLE = new Set([
   ASK_USER_TOOL,
@@ -3295,6 +3285,17 @@ export async function executeTool(name: string, rawInput: Record<string, unknown
         if (mismatch) return { content: mismatch, isError: true };
       }
     }
+    if (LEGACY_SCOPE_TOOLS.has(name) && input.scope !== undefined) {
+      const label = (input.scope as { label?: unknown } | null)?.label;
+      if (typeof label !== 'string' || !label) {
+        return { content: 'scope must be { label: "<part name>" } — prefer withinPart: "<part name>"', isError: true };
+      }
+      if (input.withinPart !== undefined && input.withinPart !== label) {
+        return { content: `scope.label "${label}" and withinPart "${String(input.withinPart)}" disagree — pass only withinPart`, isError: true };
+      }
+      input.withinPart = label;
+      delete input.scope;
+    }
     const api = getApi();
     // Object addressing: an object-scoped tool may name an `object` target (name,
     // id, or 0-based index; `part` is the pre-rename spelling, still accepted).
@@ -3518,8 +3519,8 @@ function executeGetAttachments(api: PartwrightAPI): ToolExecResult {
 
 function executeRenderView(api: PartwrightAPI, input: Record<string, unknown>): ToolExecResult {
   const result = api.renderView(input) as string | { error: string } | null | undefined;
-  const elevation = (input.elevation as number | undefined) ?? 30;
-  const azimuth = (input.azimuth as number | undefined) ?? 0;
+  const elevation = (input.elevation as number | undefined) ?? DEFAULT_VIEW_ELEVATION;
+  const azimuth = (input.azimuth as number | undefined) ?? DEFAULT_VIEW_AZIMUTH;
   const ortho = (input.ortho as boolean | undefined) ?? false;
   // Mirror the budget-driven default size applied in window.partwright.renderView
   // so the label reports the size actually rendered.

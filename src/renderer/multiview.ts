@@ -296,6 +296,11 @@ function createElevationScene(geometry: THREE.BufferGeometry, bgColor: number, e
  *  For orthographic views, pass ortho: true.
  *  elevation/azimuth are in degrees: elevation 0 = horizon, 90 = top-down.
  *  azimuth 0 = front (-Y), 90 = right (+X), 180 = back (+Y), 270 = left (-X). */
+/** Camera defaults for an omitted elevation / azimuth — shared by renders,
+ *  pixel probes and the AI tool's view label so they can't disagree. */
+export const DEFAULT_VIEW_ELEVATION = 30;
+export const DEFAULT_VIEW_AZIMUTH = 315;
+
 /** Build the same THREE.Camera that `renderSingleView` would render
  *  through for these options. Exported so `probePixel` (in
  *  geometry/rayCast.ts) can replay the camera exactly and unproject
@@ -311,8 +316,8 @@ export function buildViewCamera(meshData: MeshData, options: {
    *  The rest of the mesh still renders — anything in front occludes. */
   frame?: { min: [number, number, number]; max: [number, number, number] };
 }): THREE.Camera {
-  const elevation = (options.elevation ?? 30) * Math.PI / 180;
-  const azimuth = (options.azimuth ?? 315) * Math.PI / 180;
+  const elevation = (options.elevation ?? DEFAULT_VIEW_ELEVATION) * Math.PI / 180;
+  const azimuth = (options.azimuth ?? DEFAULT_VIEW_AZIMUTH) * Math.PI / 180;
 
   // Bounding box from the raw vertProperties — same numbers
   // renderSingleView computes after constructing the BufferGeometry.

@@ -527,7 +527,7 @@ partwright.reassignPaint(regionId, partName)  // Fix UNMATCHED paint (part renam
 
 // Color regions -- tag face regions with a color. Full API in /ai/colors.md.
 // Quick reference (~30 methods total):
-partwright.probePixel({pixel, view})                                      // pixel-in-render -> {point, normal, distance, triangleId}
+partwright.probePixel({pixel, view})                                      // pixel-in-render -> {point, normal, distance, triangleId}; view = the renderView call's camera (omitted size = the same render-budget default)
 partwright.probePixels([[x,y], ...], view)                                // batch: many pixels, one camera -> {results:[{pixel, hit, point?, normal?, triangleId?}], hitCount, missCount, modelPixelBounds?} (bounds on any miss; null = model not in view)
 partwright.paintConnected({seed, maxDeviationDeg?, color, name?, withinPart?, withinBox?, zMin?, zMax?, smooth?, smoothness?}) // BFS-flood by seed-normal deviation (organic meshes); withinBox/zMin/zMax clamp the flood so it can't leak; smooth: true = clean boundary instead of a triangle sawtooth
 partwright.paintRegion({point, normal?, color, name?, withinPart?, tolerance?, smooth?, smoothness?}) // bucket: coplanar flood-fill (edge-bounded); tolerance is a COSINE (default 0.9995)
@@ -545,7 +545,7 @@ partwright.paintPattern({pattern, colors, withinPart?, scope?, scale?, axis?, wa
 partwright.paintInCylinder({rMin, rMax, zMin, zMax, center?, axis?, normalCone?, color, name?, smooth?})  // cylindrical/annular shell (rMin=0 = solid); axis x|y|z (default z)
 partwright.paintByLabel({label, color, name?})                            // by api.label() name (manifold-js) or top-level `label("name")` (SCAD)
 partwright.paintByLabels([{label, color, name?}, ...])                    // batch sibling
-partwright.paintComponent({index, color, name?, topOnly?})                // by listComponents() index
+partwright.paintComponent({index, color, name?, topOnly?, withinPart?})   // by listComponents() index
 // paintNear/InBox/InOrientedBox/Slab/InCylinder/Connected/Region/NearestRegion/Stroke/Airbrush/Image/Faces (and paintPreview, findFaces) take withinPart: '<label>' to clip the paint to one part (e.g. a detected part of an import) — see colors.md.
 partwright.paintPreview({...selector, withImage?, view?})                 // dry-run
 partwright.paintExplain({region, withImage?, view?})                      // diagnose committed region
