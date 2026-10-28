@@ -20,6 +20,88 @@ import { closestPointOnTriangle } from './adjacency';
 
 export type BrushShape = 'circle' | 'square' | 'diamond';
 
+/** Brush surface (footprint volume) mode — see `BrushStroke.surface`. */
+export type BrushSurface = 'geodesic' | 'slab' | 'sphere';
+
+/** Which way a `slab` brush's prism points. `surface` = the normal of the
+ *  triangle under each sample (the original behaviour); `area` = that normal
+ *  averaged over the brush area, so the prism doesn't jitter on bumpy meshes;
+ *  `view` = down the camera ray, so the brush outline stays a circle on screen
+ *  and paints whatever is under it ("projected" in other paint tools). */
+export type BrushAlign = 'surface' | 'area' | 'view';
+
+/** Camera captured with a stroke: `dir` is the unit forward vector, `origin`
+ *  the camera position for a perspective camera (rays then fan out from it;
+ *  absent for orthographic). */
+export interface BrushView {
+  dir: [number, number, number];
+  origin?: [number, number, number];
+}
+
+/** Front faces only: a triangle counts as facing the camera when its normal is
+ *  within this angle of the direction back to it (90° = anything not facing
+ *  away). Stored per stroke as `frontFaceMaxDeg`. */
+export const FRONT_FACE_MAX_DEG = 90;
+
+/** Steepest surface tilt (degrees away from the camera) a view-aligned stroke
+ *  still covers with its whole circle under the auto depth. A point s off-centre
+ *  on a surface tilted θ sits s·sinθ along the ray but s·cosθ across it, so the
+ *  full radius needs a depth of r·tanθ. Beyond this tilt the paint narrows. */
+const VIEW_AUTO_DEPTH_TILT_DEG = 70;
+
+/** Auto paint depth (the depth knob at 0) for a slab stroke. A view-aligned
+ *  prism measures depth along the camera ray, so it reaches r·tan(70°) to keep
+ *  the whole circle on steeply tilted surfaces; surface-aligned prisms keep the
+ *  original half-radius shell. */
+export function autoPaintDepth(radius: number, align: BrushAlign | undefined): number {
+  return align === 'view' ? radius * Math.tan((VIEW_AUTO_DEPTH_TILT_DEG * Math.PI) / 180) : radius * 0.5;
+}
+
+/** True when `view` is a usable stored camera (a finite, non-zero `dir`, and an
+ *  optional finite `origin`). Guards replay of imported/hand-edited sessions. */
+export function isValidBrushView(view: unknown): view is BrushView {
+  const v = view as BrushView | undefined;
+  const vec = (a: unknown): boolean => Array.isArray(a) && a.length === 3 && a.every(n => typeof n === 'number' && Number.isFinite(n));
+  return !!v && vec(v.dir) && Math.hypot(v.dir[0], v.dir[1], v.dir[2]) > 0 && (v.origin === undefined || vec(v.origin));
+}
+
+/** Unit ray direction (camera → scene) for each sample: per-sample through the
+ *  camera position for a perspective view, the shared forward vector for an
+ *  orthographic one. */
+export function viewDirsForSamples(
+  samples: [number, number, number][],
+  view: BrushView,
+): [number, number, number][] {
+  const f = unit3(view.dir);
+  const o = view.origin;
+  if (!o) return samples.map(() => f);
+  return samples.map(s => {
+    const d = unit3([s[0] - o[0], s[1] - o[1], s[2] - o[2]]);
+    return d[0] === 0 && d[1] === 0 && d[2] === 0 ? f : d;
+  });
+}
+
+/** Whether triangle (a, b, c) passes a stroke's front-faces-only test: its
+ *  outward normal (manifold winding) is within the cutoff of the direction back
+ *  to the camera. Always true when the stroke has no facing filter. */
+function facesCamera(stroke: BrushStroke, a: number[], b: number[], c: number[]): boolean {
+  const ff = stroke.frontFacing;
+  if (!ff) return true;
+  const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], wx = c[0] - a[0], wy = c[1] - a[1], wz = c[2] - a[2];
+  const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+  const o = ff.view.origin, d = ff.view.dir;
+  const tx = o ? o[0] - (a[0] + b[0] + c[0]) / 3 : -d[0];
+  const ty = o ? o[1] - (a[1] + b[1] + c[1]) / 3 : -d[1];
+  const tz = o ? o[2] - (a[2] + b[2] + c[2]) / 3 : -d[2];
+  const nl = Math.hypot(nx, ny, nz), tl = Math.hypot(tx, ty, tz);
+  return nl > 0 && tl > 0 && (nx * tx + ny * ty + nz * tz) / (nl * tl) >= ff.cos;
+}
+
+function unit3(v: number[]): [number, number, number] {
+  const l = Math.hypot(v[0], v[1], v[2]);
+  return l > 0 ? [v[0] / l, v[1] / l, v[2] / l] : [0, 0, 0];
+}
+
 /** Convert a wrap-tolerance angle (degrees, 0–180) to the `maxBendCos` threshold
  *  `buildGeodesicField` gates edge crossings with: the cosine of the maximum
  *  dihedral angle paint may flow across. 180° → −1 (no gate, cross any edge);
@@ -45,7 +127,7 @@ export interface BrushStroke {
    *  (the brush is a surface tool, not a 3D ball). Omitted → treated as `slab`
    *  for back-compat. (A true `geodesic` walk is added in a later pass; until
    *  then it falls back to the unconstrained 3D footprint.) */
-  surface?: 'geodesic' | 'slab';
+  surface?: BrushSurface;
   /** Slab thickness in mesh units: the largest offset along the local surface
    *  normal a point may have and still count as inside the footprint. Only used
    *  in `slab` mode; the depth knob is how far through a wall paint may reach. */
@@ -67,6 +149,11 @@ export interface BrushStroke {
    *  clip (the edge is the dither). Works with any shape (circle/square/diamond
    *  spackle) since it reuses the footprint's signed distance. */
   spray?: { strength: number; softness: number; seed: number };
+  /** Front faces only: a triangle is painted only when its outward normal is
+   *  within `acos(cos)` of the direction back to the camera (`view`). Applied
+   *  per triangle when the footprint is resolved, so back faces inside the
+   *  brush volume (the far side of a thin part, an undercut) stay unpainted. */
+  frontFacing?: { view: BrushView; cos: number };
 }
 
 export interface Aabb {
@@ -498,6 +585,9 @@ function brushClassifier(stroke: BrushStroke): TriClassifier {
   const normals = stroke.sampleNormals;
   const tangents = stroke.sampleTangents;
   return (a, b, c) => {
+    // Front faces only: a back face is never painted, so don't refine it either
+    // (its children share its plane, so the test is exact for them too).
+    if (!facesCamera(stroke, a, b, c)) return 'outside';
     let inside = 0;
     if (withinFootprint(a[0], a[1], a[2], stroke)) inside++;
     if (withinFootprint(b[0], b[1], b[2], stroke)) inside++;
@@ -606,6 +696,42 @@ export function deriveSampleNormals(
     out.push(bi >= 0 ? triNormal(bi) : [0, 0, 1]);
   }
   return out;
+}
+
+/** Per-sample unit normals averaged over the brush area: the area-weighted mean
+ *  normal of the triangles whose centroid lies within `radius` of the sample,
+ *  counting only triangles on the same side as the nearest one (so the far
+ *  wall of a thin part doesn't cancel it out). Falls back to the nearest
+ *  triangle's normal (`deriveSampleNormals`) when nothing qualifies. Steadier
+ *  than the per-triangle normal on bumpy or noisy meshes. */
+export function deriveAreaNormals(
+  samples: [number, number, number][],
+  base: MeshData,
+  radius: number,
+): [number, number, number][] {
+  const nearest = deriveSampleNormals(samples, base);
+  if (!(radius > 0)) return nearest;
+  const { triVerts, vertProperties: p, numProp: P } = base;
+  const grid = triGridFor(base);
+  const r2 = radius * radius;
+  return samples.map((s, i) => {
+    const ref = nearest[i];
+    let sx = 0, sy = 0, sz = 0;
+    const box: Aabb = { min: [s[0] - radius, s[1] - radius, s[2] - radius], max: [s[0] + radius, s[1] + radius, s[2] + radius] };
+    for (const t of grid.query(box)) {
+      const a = triVerts[t * 3] * P, b = triVerts[t * 3 + 1] * P, c = triVerts[t * 3 + 2] * P;
+      const cx = (p[a] + p[b] + p[c]) / 3 - s[0], cy = (p[a + 1] + p[b + 1] + p[c + 1]) / 3 - s[1], cz = (p[a + 2] + p[b + 2] + p[c + 2]) / 3 - s[2];
+      if (cx * cx + cy * cy + cz * cz > r2) continue;
+      const ux = p[b] - p[a], uy = p[b + 1] - p[a + 1], uz = p[b + 2] - p[a + 2];
+      const vx = p[c] - p[a], vy = p[c + 1] - p[a + 1], vz = p[c + 2] - p[a + 2];
+      // Cross product = normal scaled by twice the area: an area-weighted sum.
+      const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      if (nx * ref[0] + ny * ref[1] + nz * ref[2] <= 0) continue;
+      sx += nx; sy += ny; sz += nz;
+    }
+    const n = unit3([sx, sy, sz]);
+    return n[0] === 0 && n[1] === 0 && n[2] === 0 ? ref : n;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1108,6 +1234,7 @@ export function strokeFootprintTriangles(mesh: MeshData, stroke: BrushStroke): S
     const cx2 = vertProperties[v2 * numProp], cy2 = vertProperties[v2 * numProp + 1], cz2 = vertProperties[v2 * numProp + 2];
     if (triOutsideAabb([ax, ay, az], [bx, by, bz], [cx2, cy2, cz2], box)) continue;
     const cx = (ax + bx + cx2) / 3, cy = (ay + by + cy2) / 3, cz = (az + bz + cz2) / 3;
+    if (stroke.frontFacing && !facesCamera(stroke, [ax, ay, az], [bx, by, bz], [cx2, cy2, cz2])) continue;
     if (stroke.spray) {
       // Spray: dither coverage at the centroid's footprint depth.
       const sd = strokeSignedDist(cx, cy, cz, stroke);

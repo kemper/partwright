@@ -9,13 +9,13 @@ import { disposeBaseRemap } from './baseRemap';
 import { buildAdjacency, findColorRegion, findCoplanarRegion, gateRegionByBend, getTriangleNormal, type AdjacencyGraph } from './adjacency';
 import { addRegion, getRegions, buildTriColors, isPainted, clipToPart, type ColorRegion } from './regions';
 import { dropIfClippedEmpty, getPaintScope, withPaintScope } from './paintScope';
-import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel, requestRender } from '../renderer/viewport';
+import { getScene, getMeshGroup, getRenderer, getCamera, addPointerSuppressor, isPointerOverModel, requestRender } from '../renderer/viewport';
 import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshChanged as onSlabDragMeshChanged } from './slabDrag';
 import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshChanged as onBoxDragMeshChanged } from './boxDrag';
 import { smoothEdgeForResolution } from './slabPaint';
 import { setPaintAccessors, notifyUserPaint } from './paintAccessors';
 import { getSlotById, hexToRgb, isPaletteConstrained, nearestSlot, onPaletteChange } from './palette';
-import { tangentBasis, wrapAngleGate, type BrushShape } from './subdivide';
+import { FRONT_FACE_MAX_DEG, autoPaintDepth, deriveAreaNormals, tangentBasis, wrapAngleGate, type BrushAlign, type BrushShape, type BrushSurface, type BrushView } from './subdivide';
 import { getConfig } from '../config/appConfig';
 import { buildAdjacencyInWorker } from './adjacencyClient';
 import { showToast } from '../ui/toast';
@@ -66,7 +66,25 @@ export const SMOOTH_DIVISOR_MAX = 1024;
  *  footprint along the connected surface — pick it for curved/organic shapes or
  *  gap-separated geometry, where a thin slab would clip the dab or a generous one
  *  would reach a nearby surface. Old sessions resolve as `slab` for back-compat. */
-let brushSurface: 'geodesic' | 'slab' = 'slab';
+let brushSurface: BrushSurface = 'slab';
+/** Which way the brush faces (see `BrushAlign`). `view` (the default) keeps the
+ *  brush a circle on screen and paints what is under it — the "projected" brush
+ *  of other paint tools, steadiest on complex models. `surface` follows the
+ *  triangle under each sample, `area` the normal averaged over the brush. */
+let brushAlign: BrushAlign = 'view';
+/** Front faces only: skip triangles facing away from the camera, so paint
+ *  doesn't reach the far side of a thin part or the inside of an undercut. */
+let brushFrontOnly = true;
+/** Camera captured at the start of the active stroke (view alignment and the
+ *  front-face test are measured against it; the camera can't orbit mid-drag). */
+let strokeView: BrushView | null = null;
+/** Picked (visible) triangles of the active stroke, and how many of them face
+ *  away from the camera. A visible triangle can only face away when the mesh's
+ *  winding is inverted or mixed (e.g. a raw STL drawn double-sided), and then
+ *  the front-face test would drop the very surface being painted — so a stroke
+ *  whose picks mostly face away skips it. */
+let strokePicks = 0;
+let strokeBackPicks = 0;
 /** Paint depth in mesh units: how far through the surface a slab-mode stroke may
  *  reach. 0 = auto (half the brush radius), resolved at commit time. */
 let brushPaintDepth = 0;
@@ -316,12 +334,59 @@ export function getBrushSmoothDivisor(): number {
   return brushSmoothDivisor;
 }
 
-export function setBrushSurface(mode: 'geodesic' | 'slab'): void {
+export function setBrushSurface(mode: BrushSurface): void {
   brushSurface = mode;
 }
 
-export function getBrushSurface(): 'geodesic' | 'slab' {
+export function getBrushSurface(): BrushSurface {
   return brushSurface;
+}
+
+export function setBrushAlign(mode: BrushAlign): void {
+  brushAlign = mode;
+}
+
+export function getBrushAlign(): BrushAlign {
+  return brushAlign;
+}
+
+export function setBrushFrontOnly(on: boolean): void {
+  brushFrontOnly = on;
+}
+
+export function isBrushFrontOnly(): boolean {
+  return brushFrontOnly;
+}
+
+/** The live camera as a stroke view: forward direction + position (the
+ *  viewport camera is always perspective). */
+function captureBrushView(): BrushView {
+  const cam = getCamera();
+  const dir = cam.getWorldDirection(new THREE.Vector3());
+  const pos = cam.getWorldPosition(new THREE.Vector3());
+  return { dir: [dir.x, dir.y, dir.z], origin: [pos.x, pos.y, pos.z] };
+}
+
+/** True when the stroke ignores the wrap tolerance: a view-aligned slab paints
+ *  what's under the brush (front faces + depth limit it instead), and a sphere
+ *  is a plain volume. */
+function wrapGateOff(): boolean {
+  return brushSurface === 'sphere' || (brushSurface === 'slab' && brushAlign === 'view');
+}
+
+/** Direction the brush ring / preview faces at `point`: back toward the camera
+ *  for view alignment and the sphere, the averaged normal for `area`, else the
+ *  picked surface normal. */
+function brushFacing(point: [number, number, number], normal: [number, number, number]): [number, number, number] {
+  if (brushSurface === 'sphere' || (brushSurface === 'slab' && brushAlign === 'view')) {
+    const p = getCamera().getWorldPosition(new THREE.Vector3());
+    const d = new THREE.Vector3(p.x - point[0], p.y - point[1], p.z - point[2]).normalize();
+    return [d.x, d.y, d.z];
+  }
+  if (brushSurface === 'slab' && brushAlign === 'area' && currentMesh) {
+    return deriveAreaNormals([point], currentMesh, brushRadius)[0];
+  }
+  return normal;
 }
 
 /** Set the slab-mode paint depth (mesh units). 0 = auto (half the radius). */
@@ -595,18 +660,19 @@ function processMouseMove(event: MouseEvent): void {
     const result = pickFace(event);
     if (result) {
       const added = recordStrokeSample(result.point);
+      if (added) notePick(result.triangleIndex);
       if (brushWillSubdivide()) {
         // Smooth mode resolves triangles from the stroke samples on commit, so
         // skip the per-move O(mesh) footprint scan. Grow the live fill by one
         // fan only when a new (decimated) sample was recorded — O(1) per move,
         // not a full rebuild of the whole trail each mousemove.
-        if (added) appendBrushFillStamp(result.point, result.normal);
+        if (added) appendBrushFillStamp(result.point, brushFacing(result.point, result.normal));
       } else {
         collectBrushFootprint(event, result, brushSession);
         showHighlight(inPaintScope(brushSession));
       }
       // Ring must come after showHighlight (which calls clearHighlight internally).
-      if (brushRadius > 0) showBrushRing(result.point, result.normal);
+      if (brushRadius > 0) showBrushRing(result.point, brushFacing(result.point, result.normal));
       else clearBrushRing();
     } else {
       clearBrushRing();
@@ -627,8 +693,8 @@ function processMouseMove(event: MouseEvent): void {
   if (currentTool === 'brush' && brushWillSubdivide()) {
     clearHighlight();
     hoveredTriangles = null;
-    appendBrushFillStamp(result.point, result.normal);
-    showBrushRing(result.point, result.normal);
+    appendBrushFillStamp(result.point, brushFacing(result.point, result.normal));
+    showBrushRing(result.point, brushFacing(result.point, result.normal));
     return;
   }
 
@@ -652,14 +718,14 @@ function processMouseMove(event: MouseEvent): void {
 
   if (hoveredTriangles && setsEqual(hoveredTriangles, region)) {
     // Triangles unchanged — just update ring position without rebuilding highlight.
-    if (currentTool === 'brush' && brushRadius > 0) showBrushRing(result.point, result.normal);
+    if (currentTool === 'brush' && brushRadius > 0) showBrushRing(result.point, brushFacing(result.point, result.normal));
     return;
   }
 
   hoveredTriangles = region;
   showHighlight(inPaintScope(region));
   // Ring must come after showHighlight.
-  if (currentTool === 'brush' && brushRadius > 0) showBrushRing(result.point, result.normal);
+  if (currentTool === 'brush' && brushRadius > 0) showBrushRing(result.point, brushFacing(result.point, result.normal));
   else if (currentTool === 'brush') clearBrushRing();
 }
 
@@ -692,6 +758,10 @@ function onPointerDown(event: PointerEvent): void {
     brushPainting = true;
     brushSession = new Set<number>();
     strokeSamples = [];
+    strokeView = captureBrushView();
+    strokePicks = 0;
+    strokeBackPicks = 0;
+    notePick(result.triangleIndex);
     recordStrokeSample(result.point);
     // Capture the pointer so a brush drag keeps tracking (and pointerup still
     // fires here) even if the finger/cursor leaves the canvas mid-stroke.
@@ -701,7 +771,7 @@ function onPointerDown(event: PointerEvent): void {
       // and show the smooth fill instead of the covered triangles. clearHighlight
       // drops any prior fill so this stroke starts fresh.
       clearHighlight();
-      appendBrushFillStamp(result.point, result.normal);
+      appendBrushFillStamp(result.point, brushFacing(result.point, result.normal));
     } else {
       collectBrushFootprint(event, result, brushSession);
       showHighlight(inPaintScope(brushSession));
@@ -760,7 +830,10 @@ function commitBrushStroke(): boolean {
         maxEdge: brushTargetEdge(),
         surface: brushSurface,
         depth: brushPaintDepth,
-        wrapAngleDeg: brushWrapAngle,
+        wrapAngleDeg: wrapGateOff() ? 180 : brushWrapAngle,
+        align: brushAlign,
+        ...(strokeView && (brushAlign === 'view' || brushFrontOnly) ? { view: strokeView } : {}),
+        ...(brushFrontOnly && strokeBackPicks * 2 <= strokePicks ? { frontFaceMaxDeg: FRONT_FACE_MAX_DEG } : {}),
         spray: brushSpray ? { strength: brushSprayStrength, softness: brushSpraySoftness, seed: spraySeed++ } : undefined,
       }),
       new Set<number>(),
@@ -788,6 +861,30 @@ function commitBrushStroke(): boolean {
  *  triangle when projection isn't available (radius 0, or no mesh/GPU). Occluded
  *  back faces are excluded by the projection's depth test, so paint never bleeds
  *  through to the far side of a thin wall. */
+/** Whether triangle `t` faces away from the camera (beyond the front-face
+ *  cutoff), by its winding normal. */
+function triFacesAway(t: number, adj: AdjacencyGraph, cam: THREE.Vector3): boolean {
+  const { normals, centroids } = adj;
+  const tx = cam.x - centroids[t * 3], ty = cam.y - centroids[t * 3 + 1], tz = cam.z - centroids[t * 3 + 2];
+  const tl = Math.hypot(tx, ty, tz) || 1;
+  return (normals[t * 3] * tx + normals[t * 3 + 1] * ty + normals[t * 3 + 2] * tz) / tl < Math.cos((FRONT_FACE_MAX_DEG * Math.PI) / 180);
+}
+
+/** Count a visible pick toward the active stroke's winding check. */
+function notePick(t: number): void {
+  if (!adjacency) return;
+  strokePicks++;
+  if (triFacesAway(t, adjacency, getCamera().getWorldPosition(new THREE.Vector3()))) strokeBackPicks++;
+}
+
+/** Remove triangles facing away from the camera (more than FRONT_FACE_MAX_DEG
+ *  off the direction back to it). The projection's depth test already hides
+ *  most of them; this catches the grazing ones on a silhouette. */
+function dropBackFaces(tris: Set<number>, adj: AdjacencyGraph): void {
+  const cam = getCamera().getWorldPosition(new THREE.Vector3());
+  for (const t of tris) if (triFacesAway(t, adj, cam)) tris.delete(t);
+}
+
 function collectBrushFootprint(event: MouseEvent, result: FacePickResult, target: Set<number>): void {
   const seed = result.triangleIndex;
   target.add(seed);
@@ -798,15 +895,21 @@ function collectBrushFootprint(event: MouseEvent, result: FacePickResult, target
     radius: brushRadius,
     shape: brushShape,
     hitPoint: result.point,
+    adjacency,
   });
   if (!proj) return;
+  // The picked triangle is visible, so it facing away means the winding is
+  // unreliable here (inverted/mixed): don't drop by facing then.
+  const cam = getCamera().getWorldPosition(new THREE.Vector3());
+  if (brushFrontOnly && adjacency && !triFacesAway(seed, adjacency, cam)) dropBackFaces(proj, adjacency);
   // Apply the wrap tolerance: the screen-projection footprint is a flat spatial
   // set with no surface gate, so on its own it wraps over any edge inside the
   // brush disk. Restrict it to the part connected to the picked triangle without
   // crossing an edge sharper than the tolerance — the same dihedral gate the
   // smooth/geodesic brush applies in `buildGeodesicField`, so non-wrapping
   // behaves identically with smooth edges on or off. 180° (cos -1) is a no-op.
-  const maxBendCos = wrapAngleGate(brushWrapAngle);
+  // A view-aligned brush paints what's under it, so no gate there.
+  const maxBendCos = wrapGateOff() ? -1 : wrapAngleGate(brushWrapAngle);
   if (maxBendCos <= -1 || !adjacency) {
     for (const t of proj) target.add(t);
     return;
@@ -890,7 +993,7 @@ function clearBrushRing(): void {
 /** Effective slab paint depth in mesh units (0 = auto = half the radius), the
  *  same value `descriptorToStroke` resolves at paint time. */
 function effectivePaintDepth(): number {
-  return brushPaintDepth > 0 ? brushPaintDepth : brushRadius * 0.5;
+  return brushPaintDepth > 0 ? brushPaintDepth : autoPaintDepth(brushRadius, brushAlign);
 }
 
 /** Geometry for the slab depth prism: the brush cross-section (cylinder / cuboid
@@ -1229,7 +1332,9 @@ function rebuildBrushFill(): void {
     transparent: true,
     opacity: 1,
     side: THREE.DoubleSide,
-    depthTest: true,
+    // A camera-facing stamp cuts into a tilted surface, so the depth test would
+    // hide half of it; draw it on top instead (it is a screen-space footprint).
+    depthTest: !(brushSurface === 'sphere' || (brushSurface === 'slab' && brushAlign === 'view')),
     depthWrite: false,
     polygonOffset: true,
     polygonOffsetFactor: -1,
