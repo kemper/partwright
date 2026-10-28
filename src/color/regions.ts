@@ -2,7 +2,7 @@
 
 import type { MeshData } from '../geometry/types';
 import type { ShapeType } from './boxPaint';
-import type { BrushShape } from './subdivide';
+import type { BrushShape, BrushSurface, BrushAlign, BrushView } from './subdivide';
 import type { ColorPatternKind, PatternScope } from './colorPattern';
 
 export interface ColorRegion {
@@ -120,7 +120,15 @@ type RegionDescriptorKind =
   // edge when the faces bend by ≤ this angle, so a stroke stops at sharp corners
   // (≥90°) but flows over gentle curves. Omitted ⇒ 180° (no gate) for back-compat
   // with strokes saved before the slider existed.
-  | { kind: 'brushStroke'; samples: [number, number, number][]; radius: number; shape: BrushShape; maxEdge: number; surface?: 'geodesic' | 'slab'; depth?: number; wrapAngleDeg?: number; spray?: { strength: number; softness: number; seed: number } }
+  // `align` points a slab stroke's prism along each sample's surface normal
+  // ('surface', the default and the only behaviour before the field), the
+  // normal averaged over the brush ('area'), or the camera ray ('view', using
+  // the stored `view`). `surface: 'sphere'` is a plain 3D ball (cube/octahedron
+  // for square/diamond) with no depth or wrap gate. `frontFaceMaxDeg` keeps only
+  // triangles facing the stored `view` camera within that angle. All optional:
+  // strokes saved without them resolve exactly as before.
+  | { kind: 'brushStroke'; samples: [number, number, number][]; radius: number; shape: BrushShape; maxEdge: number; surface?: BrushSurface; depth?: number; wrapAngleDeg?: number; spray?: { strength: number; softness: number; seed: number };
+      align?: BrushAlign; view?: BrushView; frontFaceMaxDeg?: number }
   // Image projection: per-triangle colors computed at apply-time by projecting
   // an image onto the mesh from a chosen axis direction. The projected result is
   // stored as a flat [triIdx, r, g, b, …] array (r/g/b in 0–255) so the region

@@ -38,6 +38,10 @@ import {
   WRAP_ANGLE_MAX,
   setBrushSurface,
   getBrushSurface,
+  setBrushAlign,
+  getBrushAlign,
+  setBrushFrontOnly,
+  isBrushFrontOnly,
   setBrushSpray,
   isBrushSpray,
   setBrushSprayStrength,
@@ -65,6 +69,7 @@ import {
   onPaletteChange,
 } from './palette';
 import { usedSlotIds } from './regions';
+import type { BrushAlign, BrushSurface } from './subdivide';
 import { openPaletteManager, registerPaletteTool } from './paletteManager';
 import {
   getRegions,
@@ -219,7 +224,9 @@ const PAINT_PREFILL_SCHEMA: PrefillSchema = {
   brush: { type: 'object', description: 'Brush settings.', fields: {
     size: { type: 'number', min: 0, description: 'Radius in mesh units (0 = one triangle).' },
     shape: { type: 'enum', values: ['circle', 'square', 'diamond'] },
-    surface: { type: 'enum', values: ['slab', 'geodesic'] },
+    surface: { type: 'enum', values: ['slab', 'geodesic', 'sphere'], description: 'Brush volume: slab = prism with a depth limit, geodesic = connected surface, sphere = 3D ball.' },
+    align: { type: 'enum', values: ['view', 'surface', 'area'], description: 'Slab prism direction: view = camera ray (default), surface = triangle normal, area = averaged normal.' },
+    frontFacesOnly: { type: 'boolean', description: 'Skip triangles facing away from the camera.' },
     depth: { type: 'number', min: 0, description: 'Slab paint depth (0 = auto).' },
     wrapAngleDeg: { type: 'number', min: WRAP_ANGLE_MIN, max: WRAP_ANGLE_MAX },
     smooth: { type: 'boolean', description: 'Smooth (sub-triangle) edges.' },
@@ -250,7 +257,8 @@ export function getPaintToolState(): Record<string, unknown> {
     withinPart: getPaintScope(),
     bucket: { mode: getBucketMode(), angleDeg: toleranceToAngleDeg(tol), tolerance: tol, colorTolerance: getBucketColorTolerance() },
     brush: {
-      size: getBrushRadius(), shape: getBrushShape(), surface: getBrushSurface(), depth: getBrushPaintDepth(),
+      size: getBrushRadius(), shape: getBrushShape(), surface: getBrushSurface(), align: getBrushAlign(),
+      frontFacesOnly: isBrushFrontOnly(), depth: getBrushPaintDepth(),
       wrapAngleDeg: getBrushWrapAngle(), smooth: isBrushSmooth(), divisor: getBrushSmoothDivisor(),
       spray: isBrushSpray(), strength: getBrushSprayStrength(), softness: getBrushSpraySoftness(),
     },
@@ -263,6 +271,12 @@ export function getPaintToolState(): Record<string, unknown> {
     regions: getRegions().length,
     visible: isPaintVisible(),
   };
+}
+
+/** Re-sync every paint panel control with the paint state (after a console /
+ *  agent setter changed it). No-op before the panel is built. */
+export function syncPaintControls(): void {
+  for (const sync of controlSyncs) sync();
 }
 
 /** Open the Paint panel (if closed) with an already schema-validated prefill. */
@@ -302,7 +316,9 @@ function openPaintWithPrefill(p: Record<string, unknown> | undefined, ctx: ToolO
   const brush = (pre.brush ?? {}) as Record<string, unknown>;
   if (brush.size !== undefined) setBrushRadius(brush.size as number);
   if (brush.shape !== undefined) setBrushShape(brush.shape as BrushShape);
-  if (brush.surface !== undefined) setBrushSurface(brush.surface as 'geodesic' | 'slab');
+  if (brush.surface !== undefined) setBrushSurface(brush.surface as BrushSurface);
+  if (brush.align !== undefined) setBrushAlign(brush.align as BrushAlign);
+  if (brush.frontFacesOnly !== undefined) setBrushFrontOnly(brush.frontFacesOnly as boolean);
   if (brush.depth !== undefined) setBrushPaintDepth(brush.depth as number);
   if (brush.wrapAngleDeg !== undefined) setBrushWrapAngle(brush.wrapAngleDeg as number);
   if (brush.smooth !== undefined) setBrushSmooth(brush.smooth as boolean);
@@ -325,7 +341,7 @@ function openPaintWithPrefill(p: Record<string, unknown> | undefined, ctx: ToolO
   }
 
   syncToolPanels();
-  for (const sync of controlSyncs) sync();
+  syncPaintControls();
   refreshBucketPreview();
   return { applied: pre, ignored: [] };
 }
@@ -1103,8 +1119,8 @@ function createBrushControls(): HTMLElement {
   wrap.appendChild(surfaceLabel);
 
   const surfaceRow = document.createElement('div');
-  surfaceRow.className = 'grid grid-cols-2 gap-1';
-  const surfaceButtons: Partial<Record<'geodesic' | 'slab', HTMLButtonElement>> = {};
+  surfaceRow.className = 'grid grid-cols-3 gap-1';
+  const surfaceButtons: Partial<Record<BrushSurface, HTMLButtonElement>> = {};
   // Reassigned once their elements exist; called on every mode change.
   let syncDepthVisibility = (): void => {};
   // Reflect the active surface on the buttons. Both modes work for spray now
@@ -1118,6 +1134,7 @@ function createBrushControls(): HTMLElement {
   for (const [mode, labelText, tip] of [
     ['slab', 'Slab', 'Paint a thin shell within Paint depth of the surface. Use the depth knob to control how far through a wall paint reaches. Default.'],
     ['geodesic', 'Geodesic', 'Paint follows the connected surface and never bleeds through walls \u2014 no depth needed. Best for curved/organic shapes or geometry with nearby surfaces.'],
+    ['sphere', 'Sphere', 'Paint everything inside a 3D ball around the cursor (a cube or octahedron for the square/diamond shapes), across gaps and edges. Pair with Front faces only so it doesn\u2019t reach the back of thin parts.'],
   ] as const) {
     const btn = document.createElement('button');
     btn.textContent = labelText;
@@ -1132,6 +1149,55 @@ function createBrushControls(): HTMLElement {
     surfaceButtons[mode] = btn;
   }
   wrap.appendChild(surfaceRow);
+
+  // Alignment (slab only) \u2014 which way the brush prism points.
+  const alignWrap = document.createElement('div');
+  alignWrap.id = 'brush-align-wrap';
+  const alignLabel = document.createElement('div');
+  alignLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 mt-2 font-medium';
+  alignLabel.textContent = 'Align to';
+  alignWrap.appendChild(alignLabel);
+  const alignRow = document.createElement('div');
+  alignRow.className = 'grid grid-cols-3 gap-1';
+  const alignButtons: Partial<Record<BrushAlign, HTMLButtonElement>> = {};
+  const refreshAlignButtons = (): void => {
+    for (const [k, b] of Object.entries(alignButtons)) if (b) b.className = axisButtonClass(k === getBrushAlign());
+  };
+  for (const [mode, labelText, tip] of [
+    ['view', 'View', 'The brush stays a circle on screen and paints whatever is under it, however the surface is tilted. Steadiest on complex models. Default.'],
+    ['surface', 'Surface', 'The brush lies flat on the triangle under the cursor, so it tilts with every facet.'],
+    ['area', 'Smoothed', 'The brush lies flat on the surface averaged over the brush area \u2014 follows curves without jittering on bumpy meshes.'],
+  ] as const) {
+    const btn = document.createElement('button');
+    btn.textContent = labelText;
+    btn.title = tip;
+    btn.dataset.align = mode;
+    btn.className = axisButtonClass(mode === getBrushAlign());
+    btn.addEventListener('click', () => {
+      setBrushAlign(mode);
+      refreshAlignButtons();
+      syncDepthVisibility();
+    });
+    alignRow.appendChild(btn);
+    alignButtons[mode] = btn;
+  }
+  alignWrap.appendChild(alignRow);
+  wrap.appendChild(alignWrap);
+
+  // Front faces only \u2014 skip triangles turned away from the camera.
+  const frontToggle = document.createElement('button');
+  frontToggle.id = 'brush-front-toggle';
+  frontToggle.title = 'Only paint triangles facing the camera, so a stroke never reaches the back of a thin part or the inside of an undercut.';
+  const syncFrontToggle = (): void => {
+    const on = isBrushFrontOnly();
+    frontToggle.className = on
+      ? 'w-full mt-2 px-2 py-1 rounded text-[10px] bg-blue-500/30 text-blue-200 border border-blue-500/50 transition-colors text-center'
+      : 'w-full mt-2 px-2 py-1 rounded text-[10px] bg-zinc-700/40 text-zinc-300 hover:bg-zinc-600/60 border border-transparent transition-colors text-center';
+    frontToggle.textContent = on ? '\u25c9 Front faces only: On' : '\u25cb Front faces only: Off';
+  };
+  frontToggle.addEventListener('click', () => { setBrushFrontOnly(!isBrushFrontOnly()); syncFrontToggle(); });
+  syncFrontToggle();
+  wrap.appendChild(frontToggle);
 
   // Paint depth (slab mode only) \u2014 how far through the surface a stroke reaches.
   const depthWrap = document.createElement('div');
@@ -1153,7 +1219,7 @@ function createBrushControls(): HTMLElement {
   depthSlider.step = '1';
   depthSlider.value = String(Math.round(Math.min(getBrushPaintDepth(), 20) * 10));
   depthSlider.className = 'flex-1 accent-blue-500 min-w-0';
-  depthSlider.title = 'How far through the surface paint reaches. 0 = auto (half the brush size). Lower values stop paint bleeding through thin/hollow walls.';
+  depthSlider.title = 'How far through the surface paint reaches. 0 = auto (half the brush size; the full brush size when aligned to View, where depth runs along the camera ray). Lower values stop paint bleeding through thin/hollow walls.';
 
   const depthInput = document.createElement('input');
   depthInput.type = 'number';
@@ -1162,7 +1228,7 @@ function createBrushControls(): HTMLElement {
   depthInput.step = '0.1';
   depthInput.value = getBrushPaintDepth().toFixed(1);
   depthInput.className = 'w-14 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
-  depthInput.title = 'Paint depth (0 = auto = half the brush size)';
+  depthInput.title = 'Paint depth (0 = auto: half the brush size, or the full size when aligned to View)';
 
   const depthUnit = document.createElement('span');
   depthUnit.className = 'text-[10px] text-zinc-500';
@@ -1196,9 +1262,14 @@ function createBrushControls(): HTMLElement {
 
   syncDepthVisibility = (): void => {
     depthWrap.classList.toggle('hidden', getBrushSurface() !== 'slab');
+    alignWrap.classList.toggle('hidden', getBrushSurface() !== 'slab');
+    // A view-aligned slab paints what's under the brush and a sphere is a plain
+    // volume, so neither uses the wrap tolerance.
+    wrapWrap.classList.toggle('hidden', getBrushSurface() === 'sphere' || (getBrushSurface() === 'slab' && getBrushAlign() === 'view'));
   };
-  syncDepthVisibility();
   controlSyncs.push(() => {
+    refreshAlignButtons();
+    syncFrontToggle();
     refreshSurfaceButtons();
     syncDepthVisibility();
     depthSlider.value = String(Math.round(Math.min(getBrushPaintDepth(), 20) * 10));
@@ -1208,10 +1279,12 @@ function createBrushControls(): HTMLElement {
   // Wrap tolerance — how sharp an edge paint may flow across. Applies to both
   // surface modes: lower stops the stroke at corners (stays on one face), higher
   // lets it wrap around edges. 180° = wrap freely (the pre-slider behaviour).
+  const wrapWrap = document.createElement('div');
+  wrapWrap.id = 'brush-wrap-wrap';
   const wrapLabel = document.createElement('div');
   wrapLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 mt-2 font-medium';
   wrapLabel.textContent = 'Wrap tolerance';
-  wrap.appendChild(wrapLabel);
+  wrapWrap.appendChild(wrapLabel);
 
   const wrapRow = document.createElement('div');
   wrapRow.className = 'flex items-center gap-2';
@@ -1256,12 +1329,14 @@ function createBrushControls(): HTMLElement {
   wrapRow.appendChild(wrapSlider);
   wrapRow.appendChild(wrapInput);
   wrapRow.appendChild(wrapUnit);
-  wrap.appendChild(wrapRow);
+  wrapWrap.appendChild(wrapRow);
 
   const wrapHelp = document.createElement('div');
   wrapHelp.className = 'text-[10px] text-zinc-500 mt-1';
   wrapHelp.textContent = 'Stops at corners ←——→ Wraps around edges';
-  wrap.appendChild(wrapHelp);
+  wrapWrap.appendChild(wrapHelp);
+  wrap.appendChild(wrapWrap);
+  syncDepthVisibility();
 
   // Spray (airbrush) — soft speckle instead of a solid fill, on whichever
   // Surface (slab / geodesic) is selected; reveals strength/softness.
