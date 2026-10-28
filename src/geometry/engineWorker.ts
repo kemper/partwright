@@ -48,6 +48,7 @@ import { voxelEngine, runVoxelGrid } from './engines/voxel';
 import type { VoxelGridTransfer } from './voxel/grid';
 import { ensureBrepLoaded, sourceUsesBrep, parseStepBlob, pushPendingBrepImport, clearPendingBrepImports } from './brepRuntime';
 import { sourceUsesManifoldText, preloadTextFonts } from './textGlyphs';
+import { sourceUsesHuman, preloadHumanAsset } from '../human/humanAsset';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
 import { setCircularSegmentsOverride } from './qualitySettings';
 import { setSdfPreviewScale, sourceUsesSdfBuild } from './sdf';
@@ -332,6 +333,11 @@ self.onmessage = async (event: MessageEvent) => {
         // Same lazy-load pattern as BREP — fonts are cached after the first run.
         if (sourceUsesManifoldText(code as string) || /\bapi\.(?:fasteners|printFit)\b/.test(code as string) || /[{,]\s*(?:fasteners|printFit)\s*[,}]/.test(code as string)) {
           await preloadTextFonts();
+        }
+        // The parametric human's mesh/morph/skeleton asset (~4 MB), same lazy
+        // pattern: fetched once on first use, cached for later runs.
+        if (sourceUsesHuman(code as string)) {
+          try { await preloadHumanAsset(); } catch { /* api.human reports the missing asset itself */ }
         }
         setActiveImports(runImports);
         // Progressive render for SDF models (figures): a throwaway coarse pass
