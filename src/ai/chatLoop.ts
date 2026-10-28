@@ -18,7 +18,7 @@ import { streamTurn as streamTurnCustom } from './custom';
 import { getKey, recordUsage, putMessages } from './db';
 import { resolveCustomApiKey } from './customEndpoints';
 import { recordEvent } from './diagnostics';
-import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, RETRY_SAFE_TOOLS, declinedToolMessage, preConfirmToolResult, unofferedToolMessage, LEGACY_TOOL_ALIASES, TURN_ENDING_TOOLS, type ToolExecResult } from './tools';
+import { buildToolList, executeTool, type ToolDefinition, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, RETRY_SAFE_TOOLS, declinedToolMessage, preConfirmToolResult, unofferedToolMessage, LEGACY_TOOL_ALIASES, TURN_ENDING_TOOLS, type ToolExecResult } from './tools';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { loadSettings } from './settings';
 import { turnCostUsd } from './cost';
@@ -27,6 +27,7 @@ import { getConfig } from '../config/appConfig';
 import { isTransientError, isTransientToolFailure } from './transientError';
 import { elideStaleToolImages, providerCachesHistory, pruneStaleToolPayloads } from './historyElision';
 import { REDUCED_TOOLS_NOTE, resolveCustomPromptTier, toolsForCustomTier } from './customContext';
+import { LOAD_TOOLS_TOOL, loadToolsDefinition, loadToolsResult, loadedToolGroups, selectOfferedTools, toolGroupsSuffix } from './toolGroups';
 
 /** Look up the stored API key for a hosted provider. Returns null when
  *  no key is stored; chatLoop turns that into an "open AI Settings to
@@ -144,6 +145,45 @@ export interface RunTurnInput {
    *  agent Worker has no tool registry, so the Worker client snapshots it on
    *  the main thread and passes it here; omitted = read the live registry. */
   uiTools?: import('./tools').UiToolCatalogEntry[];
+  /** Tool groups implied by the session state (paint regions, an imported
+   *  mesh — see sessionToolGroups in aiPanel), loaded from the first request
+   *  so the model doesn't spend a step on loadTools. Main-thread state, so the
+   *  caller computes it; the agent Worker can't. */
+  preloadToolGroups?: string[];
+}
+
+/** Whether this turn sends the core tool set plus loaded groups
+ *  (toolGroups.ts) instead of every tool. Hosted providers and Full-tier
+ *  Custom endpoints only: plan mode keeps its own read-only subset, and Local
+ *  and the Custom Medium / Slim tiers have their own trimmed lists. */
+function toolGroupsActive(toggles: ChatToggles): boolean {
+  if (!getConfig().ai.onDemandToolGroups || toggles.planFirst) return false;
+  if (toggles.provider === 'local') return false;
+  if (toggles.provider === 'custom' && resolveCustomPromptTier(toggles) !== 'full') return false;
+  return true;
+}
+
+const LOAD_TOOLS_DEF: ToolDefinition = loadToolsDefinition();
+
+/** The schemas one request sends, and the matching per-turn suffix line.
+ *  Recomputed every iteration: a loadTools call (or a readDoc, or a grouped
+ *  tool the model called anyway) widens the list for the next step. Shared
+ *  with the panel's context meter so it counts what is really sent. */
+export function toolsForRequest(
+  toggles: ChatToggles,
+  gatedTools: ToolDefinition[],
+  history: readonly ChatMessage[],
+  preloadToolGroups: readonly string[] = [],
+): { tools: ToolDefinition[]; suffixLine: string } {
+  if (toolGroupsActive(toggles)) {
+    const loaded = loadedToolGroups(history, preloadToolGroups);
+    return {
+      tools: selectOfferedTools(gatedTools, loaded, LOAD_TOOLS_DEF),
+      suffixLine: toolGroupsSuffix(loaded, new Set(gatedTools.map(t => t.name))),
+    };
+  }
+  if (toggles.provider === 'custom') return { tools: toolsForCustomTier(gatedTools, resolveCustomPromptTier(toggles)), suffixLine: '' };
+  return { tools: gatedTools, suffixLine: '' };
 }
 
 export interface RunTurnCallbacks {
@@ -242,13 +282,13 @@ export async function buildActiveSystemPrompt(toggles: ChatToggles): Promise<str
 export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks = {}): Promise<ChatMessage[]> {
   const { apiKey, toggles, sessionId, history, userBlocks, signal } = input;
   const gatedTools = buildToolList(toggles, input.uiTools);
-  const tools = toggles.provider === 'custom' ? toolsForCustomTier(gatedTools, resolveCustomPromptTier(toggles)) : gatedTools;
   // Only the tools this turn's gates allow may run. Hiding a tool is how plan
   // mode and the scope toggles gate it, but a model can still call one it saw
   // earlier in the history (a second plan after a build is the classic case).
   // Checked against the gated list, not the custom-tier trim: that trim saves
   // context, it doesn't withhold permission.
   const offeredTools = new Set(gatedTools.map(t => t.name));
+  if (toolGroupsActive(toggles)) offeredTools.add(LOAD_TOOLS_TOOL);
 
   // The preamble + full ai.md is ~22K tokens — fine for hosted Claude with
   // prompt caching. Most local models have 32K context so it technically fits
@@ -338,6 +378,9 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       },
     };
 
+    const { tools, suffixLine } = toolsForRequest(toggles, gatedTools, workingHistory, input.preloadToolGroups);
+    const baseSuffix = toggleSuffix(toggles);
+    const systemSuffix = suffixLine ? `${baseSuffix}\n\n${suffixLine}` : baseSuffix;
     const requestSummary = `${workingHistory.length} msg(s), ${tools.length} tool def(s), vision=${toggles.vision.views ? 'on' : 'off'}, thinking=${toggles.thinking}`;
     // Transient provider failures (HTTP 429/5xx, dropped stream, network blip)
     // are retried in place with exponential backoff so an auto-continue run
@@ -375,7 +418,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           apiKey,
           model: toggles.anthropicModel,
           systemPrompt,
-          systemSuffix: toggleSuffix(toggles),
+          systemSuffix,
           apiMessages,
           tools,
           thinking: toggles.thinking,
@@ -390,7 +433,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           apiKey: openaiKey,
           model: toggles.openaiModel,
           systemPrompt,
-          systemSuffix: toggleSuffix(toggles),
+          systemSuffix,
           history: sentHistory,
           tools,
           thinking: toggles.thinking,
@@ -402,7 +445,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           apiKey: geminiKey,
           model: toggles.geminiModel,
           systemPrompt,
-          systemSuffix: toggleSuffix(toggles),
+          systemSuffix,
           history: sentHistory,
           tools,
           thinking: toggles.thinking,
@@ -420,7 +463,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           baseUrl: toggles.customBaseUrl,
           model: toggles.customModel,
           systemPrompt,
-          systemSuffix: toggleSuffix(toggles),
+          systemSuffix,
           history: sentHistory,
           tools,
           thinking: toggles.thinking,
@@ -433,7 +476,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
         result = await streamLocalTurn({
           modelId: toggles.localModel,
           systemPrompt,
-          systemSuffix: toggleSuffix(toggles),
+          systemSuffix,
           history: sentHistory,
           tools,
         }, streamCallbacks, signal);
@@ -810,6 +853,15 @@ async function executeAllWithRetry(
         onEachResult?.(declined, i);
         continue;
       }
+    }
+    // loadTools only widens the next request's tool list (toolsForRequest
+    // reads the call back out of the history), so it is answered here.
+    if (tc.name === LOAD_TOOLS_TOOL) {
+      const loaded: PersistedToolResult = { toolUseId: tc.id, ...loadToolsResult(tc.input, offeredTools) };
+      results.push(loaded);
+      callbacks.onToolResult?.(tc.id, tc.name, loaded);
+      onEachResult?.(loaded, i);
+      continue;
     }
     let attempt = 0;
     let result = await timedExecuteTool(tc.name, tc.input, executeToolFn);

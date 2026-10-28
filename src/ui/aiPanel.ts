@@ -3,7 +3,8 @@
 // input row, the cost meter, and the compact button. State lives in the
 // ai/* modules; this file is mostly DOM wiring.
 
-import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens, runTurn as runTurnOnMainThread, buildActiveSystemPrompt, type RunTurnInput, type RunTurnCallbacks } from '../ai/chatLoop';
+import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens, runTurn as runTurnOnMainThread, buildActiveSystemPrompt, toolsForRequest, type RunTurnInput, type RunTurnCallbacks } from '../ai/chatLoop';
+import { getActiveImports } from '../import/importedMesh';
 import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerClient';
 import { getConfig } from '../config/appConfig';
 import { drainToolAppliedNotes, clearToolAppliedNotes, UI_APPLIED_NOTE_PREFIX } from './toolRegistry';
@@ -31,7 +32,7 @@ import { PLAN_FIRST_PREFIX, PLAN_REFINE_PREFIX, planApprovalText, planTurn } fro
 import { ASK_USER_TOOL, CARD_TOOL_ACK, PROPOSE_PLAN_TOOL, answersText, type AskUserQuestion, derivePendingPlan, latestPlanReply, parseAskUser, parseProposedPlan, pendingAskUser, planMarkdown } from '../ai/planReply';
 import { buildFixPrompt, countModelChangingCalls, latestUserRequest, overSpendCap, parseReviewVerdict, requestText, resolveReviewer, shouldActOnReview, shouldAutoReview, userConversation } from '../ai/autoReview';
 import { buildToolList, isModelChangingTool, confirmToolLabel } from '../ai/tools';
-import { DEFAULT_CUSTOM_CONTEXT, REDUCED_TOOLS_NOTE, customContextWindow, resolveCustomPromptTier, toolsForCustomTier } from '../ai/customContext';
+import { DEFAULT_CUSTOM_CONTEXT, REDUCED_TOOLS_NOTE, customContextWindow, resolveCustomPromptTier } from '../ai/customContext';
 import { carriedAttachments, CARRIED_ATTACHMENTS_NOTE } from '../ai/compactionAttachments';
 import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
 import { showAiPromptLibraryModal } from './aiPromptLibraryModal';
@@ -106,12 +107,19 @@ const state: PanelState = {
  *  lands. */
 let cachedAiMdLength = 55_000;
 
-/** Effective system-prompt length in characters for the active provider /
- *  model / override combo. Drives the context meter and the auto-compact
+/** Fixed per-request overhead in characters for the active provider / model /
+ *  override combo: the system prompt plus, for every provider but Local, the
+ *  tool schemas actually sent (#1126 — they used to be left out, ~60K tokens
+ *  for hosted providers). Drives the context meter and the auto-compact
  *  threshold — recomputed each render so flipping provider in AI settings
- *  doesn't strand us with the wrong number. */
-function effectiveSystemPromptChars(): number {
+ *  doesn't strand us with the wrong number. `history` matters because loaded
+ *  tool groups (toolGroups.ts) are read from it. */
+function effectiveSystemPromptChars(history: readonly ChatMessage[]): number {
   const s = loadSettings();
+  return basePromptChars(s) + requestToolChars(s.toggles, history);
+}
+
+function basePromptChars(s: ReturnType<typeof loadSettings>): number {
   const override = s.systemPromptOverrides?.[s.toggles.provider] ?? null;
   if (override !== null) return override.length;
   // Every hosted provider gets the full ai.md prompt (see chatLoop's
@@ -120,12 +128,8 @@ function effectiveSystemPromptChars(): number {
   // made the context meter / auto-compaction fire far too late.
   if (s.toggles.provider === 'custom') {
     const tier = resolveCustomPromptTier(s.toggles);
-    if (tier !== 'full') {
-      // Medium / Slim exist for small windows, where the tool schemas are a
-      // real share of the budget — count them too.
-      const prompt = tier === 'medium' ? buildMediumLocalSystemPrompt() : buildLocalSystemPrompt();
-      return prompt.length + REDUCED_TOOLS_NOTE.length + JSON.stringify(toolsForCustomTier(buildToolList(s.toggles), tier)).length;
-    }
+    if (tier === 'medium') return buildMediumLocalSystemPrompt().length + REDUCED_TOOLS_NOTE.length;
+    if (tier === 'slim') return buildLocalSystemPrompt().length + REDUCED_TOOLS_NOTE.length;
   }
   if (s.toggles.provider !== 'local') return cachedAiMdLength;
   if (s.toggles.localModel) {
@@ -139,6 +143,33 @@ function effectiveSystemPromptChars(): number {
     }
   }
   return buildLocalSystemPrompt().length;
+}
+
+/** Memo for requestToolChars: the stringified schema is ~240K chars, so only
+ *  re-measure when the set of tools sent changes. */
+let toolCharsMemo: { key: string; chars: number } | null = null;
+
+/** Characters of tool schema the next request sends. Local is left at 0: it
+ *  folds compact tool signatures into its own prompt budget (local.ts). */
+function requestToolChars(toggles: ChatToggles, history: readonly ChatMessage[]): number {
+  if (toggles.provider === 'local') return 0;
+  const { tools } = toolsForRequest(toggles, buildToolList(toggles), history, sessionToolGroups());
+  const key = `${toggles.provider}|${tools.map(t => t.name).join(',')}`;
+  if (toolCharsMemo?.key !== key) toolCharsMemo = { key, chars: JSON.stringify(tools).length };
+  return toolCharsMemo.chars;
+}
+
+/** Tool groups the open session implies, sent from the first request so the
+ *  model doesn't spend a step on loadTools: an imported mesh means part
+ *  detection and import/reconstruction tools. (Paint regions deliberately
+ *  don't preload `paint` — the core label-driven paint verbs create them, so
+ *  that would load the whole group on nearly every chat.) */
+function sessionToolGroups(): string[] {
+  try {
+    return getActiveImports().length > 0 ? ['import', 'parts'] : [];
+  } catch {
+    return [];
+  }
 }
 
 /** Token limit for the active provider/model — drives the % full bar
@@ -1803,9 +1834,9 @@ function togglePill(label: string, on: boolean, tooltip: string, onClick: () => 
 function renderCostMeter(): void {
   if (!costMeterEl) return;
   const settings = loadSettings();
-  const tokens = totalTokensEstimate(state.history, effectiveSystemPromptChars());
+  const tokens = totalTokensEstimate(state.history, effectiveSystemPromptChars(state.history));
   const cost = totalCost(state.history);
-  const cachedPrefix = estimateCachedPrefixTokens(effectiveSystemPromptChars());
+  const cachedPrefix = estimateCachedPrefixTokens(effectiveSystemPromptChars(state.history));
   // Per-turn estimate covers the user's input + a typical response. Image
   // tokens (Show AI snapshot + any renderView calls the model makes) are
   // observed on the post-turn meter rather than predicted here — they're
@@ -3062,7 +3093,8 @@ function fillSystemPromptBody(pre: HTMLElement): void {
   void buildActiveSystemPrompt(toggles)
     .then((base) => {
       if (seq !== systemPromptFillSeq) return;
-      pre.textContent = `${base}\n\n${toggleSuffix(toggles)}`;
+      const { suffixLine } = toolsForRequest(toggles, buildToolList(toggles), state.history, sessionToolGroups());
+      pre.textContent = `${base}\n\n${toggleSuffix(toggles)}${suffixLine ? `\n\n${suffixLine}` : ''}`;
     })
     .catch(() => {
       if (seq !== systemPromptFillSeq) return;
@@ -3885,6 +3917,7 @@ async function showToolConfirmation(toolName: string, input: Record<string, unkn
 }
 
 function runTurn(input: RunTurnInput, callbacks?: RunTurnCallbacks): Promise<ChatMessage[]> {
+  input = { ...input, preloadToolGroups: input.preloadToolGroups ?? sessionToolGroups() };
   return input.toggles.provider === 'local'
     ? runTurnOnMainThread(input, callbacks)
     : runTurnInWorker(input, callbacks);
@@ -4586,7 +4619,7 @@ async function maybeAutoCompact(): Promise<void> {
   // message needs. Local users who pick a mode themselves still get it.
   if (settings.toggles.provider === 'local' && !settings.autoCompactUserSet) return;
 
-  const tokens = totalTokensEstimate(state.history, effectiveSystemPromptChars());
+  const tokens = totalTokensEstimate(state.history, effectiveSystemPromptChars(state.history));
   const ctxLimit = contextLimitFor(settings);
   const pct = ctxLimit > 0 ? tokens / ctxLimit : 0;
 
