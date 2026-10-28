@@ -28,7 +28,7 @@ import { assetPath, appPath, appRoute } from './deployment';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
 import { initEngine, executeCodeAsync, runVoxelGridInWorker, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language, type MeshOpFacts } from './geometry/engine';
 import { formatEngineMemory, engineHeapWarning } from './geometry/engineMemory';
-import { onQualitySettingsChange, loadQualitySettings, clampCustomSegments, segmentsToPreset, QUALITY_SEGMENTS, MIN_CUSTOM_SEGMENTS, MAX_CUSTOM_SEGMENTS, type QualityLevel, type QualitySettings } from './geometry/qualitySettings';
+import { onQualitySettingsChange, loadQualitySettings, getDefaultCircularSegments, clampCustomSegments, segmentsToPreset, QUALITY_SEGMENTS, MIN_CUSTOM_SEGMENTS, MAX_CUSTOM_SEGMENTS, type QualityLevel, type QualitySettings } from './geometry/qualitySettings';
 import { validateAppConfigValue, withConfigValue, describeAppConfig } from './config/appConfigBounds';
 import { queryDiagnosticLog, LOG_LEVELS, LOG_SOURCES } from './diagnostics/logQuery';
 import { resolveParamValues, pruneParamValues, type ParamSpec, type ParamValue } from './geometry/params';
@@ -160,7 +160,8 @@ import { probeIndexedInWorker, probeSTLInWorker, STLProbeAbortError, type STLPro
 import { parse3MF, type ThreeMFParseResult } from './import/parsers/threemf';
 import { looksLikeZip } from './import/zipReader';
 import { parseVox } from './import/parsers/vox';
-import { generateImportCode } from './import/codegen';
+import { generateImportCode, rewriteImportsWithParts } from './import/codegen';
+import { partsFromLabels } from './import/importParts';
 import { besideOffset, composeImportIntoCode, importAsParts, translatedVerts, vertexBox } from './import/composeIntoCode';
 import { imageDataToVoxelGrid, generateVoxelImportCode, type ImageToVoxelOptions } from './import/imageToVoxel';
 import { VoxelGrid } from './geometry/voxel/grid';
@@ -379,9 +380,14 @@ import {
   initSessionTabSync,
   setViewerPredicate,
   refreshCurrentSession,
+  setVersionSnapshotProvider,
   type ExportedSession,
   type ExportOptions,
 } from './storage/sessionManager';
+import { computeModelFingerprint, compareModelFingerprints, parseModelFingerprint, type ModelFingerprint } from './geometry/modelFingerprint';
+import { toSavedMesh, parseSavedMesh, type SavedMesh, type VersionSnapshot } from './storage/versionMesh';
+import { mountModelDriftPill, showModelDriftDialog } from './ui/modelDriftNotice';
+import { buildInfo } from './buildInfo';
 import { isQuotaError } from './storage/quota';
 import { isolationSupported } from './geometry/isolation';
 import { getEngineSandboxStatus, isEngineSandboxUnavailableError, runWithoutEngineSandbox } from './sandbox/sandboxHost';
@@ -606,6 +612,108 @@ let currentMeshData: MeshData | null = null;
  *  code itself (#1090). */
 type VoxelRunCache = { code: string; paramsKey: string; grid: unknown };
 let lastVoxelRun: VoxelRunCache | null = null;
+/** The last successful mesh-producing run: the code + Customizer values it ran
+ *  with, what else fed it (the object, its imports and companion files, the
+ *  curvature quality), the mesh the ENGINE built (before api.surface.*
+ *  textures — what a version's fingerprint describes) and the mesh it
+ *  displayed (`shown`, the textured one when a texture applied). A save of that
+ *  same model records a snapshot from it (versionSnapshotFor); a version load
+ *  compares against it (checkVersionDrift). Null after a failed run and at the
+ *  start of every version load, so it never describes another model. */
+type EngineRunRecord = {
+  code: string;
+  paramsKey: string;
+  partId: string | null;
+  inputsKey: string;
+  segments: number;
+  mesh: MeshData;
+  shown: MeshData;
+  /** The engine mesh's fingerprint, computed on first use. */
+  print?: ModelFingerprint;
+};
+let lastEngineRun: EngineRunRecord | null = null;
+
+/** Identity of a run's non-code inputs: the active imports and companion files. */
+function runInputsKey(): string {
+  const companions = getCompanionFiles();
+  return `${getActiveImports().map(m => m.id).join(',')}|${Object.keys(companions).length ? simpleHash(JSON.stringify(companions)) : ''}`;
+}
+
+/** Whether two code strings are the same model source. A caller may run the
+ *  raw string (partwright.run / runAndSave) while the editor holds, and saves,
+ *  its auto-formatted form. */
+function sameModelCode(a: string, b: string): boolean {
+  return a === b || formatAsEditorWould(a) === b || formatAsEditorWould(b) === a;
+}
+
+/** The fingerprint of a run's engine mesh, tagged with the quality it ran at. */
+function runFingerprint(run: EngineRunRecord): ModelFingerprint {
+  run.print ??= { ...computeModelFingerprint(run.mesh), segments: run.segments };
+  return run.print;
+}
+
+/** The model snapshot a save of `code` with `paramValues` records, or null
+ *  when the live model wasn't built from exactly that code, those values and
+ *  this object's inputs (some save paths commit code that isn't on screen).
+ *  The fingerprint is of the engine's mesh; the stored mesh is what the
+ *  viewport shows (paint refinement and colours included), capped by
+ *  versionMeshMaxTriangles (and, for a textured mesh, by the texture cap). */
+function versionSnapshotFor(code: string, paramValues: Record<string, unknown> | undefined): VersionSnapshot | null {
+  const run = lastEngineRun;
+  if (!run || run.paramsKey !== voxelParamsKey(paramValues) || !sameModelCode(run.code, code)) return null;
+  if (run.partId !== (getState().currentPart?.id ?? null) || run.inputsKey !== runInputsKey()) return null;
+  const snapshot: VersionSnapshot = { fingerprint: runFingerprint(run) };
+  // paintBaseMesh is the displayed run mesh until another run or a bake
+  // replaces it; currentMeshData is that mesh or its paint-refined version. A
+  // parked (cancelled or failed) texture means the shown mesh isn't the model.
+  const shown = currentMeshData;
+  const cfg = getConfig().renderer;
+  const cap = run.shown === run.mesh ? cfg.versionMeshMaxTriangles : Math.min(cfg.versionMeshMaxTriangles, cfg.surfaceTexturePersistMaxTriangles);
+  if (shown && paintBaseMesh === run.shown && !pendingSurface && shown.numTri <= cap) {
+    snapshot.mesh = toSavedMesh(hasColorRegions() || hasModelColorRegions() ? applyTriColors(shown) : shown);
+  }
+  return snapshot;
+}
+setVersionSnapshotProvider(versionSnapshotFor);
+
+/** The opened version whose code now builds a different model than the one
+ *  saved with it ("Built differently than saved"), while it's on screen. Set by
+ *  checkVersionDrift after a version load's run; cleared by the next load or a
+ *  run of other code. Module scope: version loads can run before init's later
+ *  lines (see "Editing src/main.ts — scope traps" in CLAUDE.md). */
+let modelDrift: {
+  versionId: string;
+  versionIndex: number;
+  versionLabel: string;
+  code: string;
+  /** The run the comparison was made on (Customizer values, quality). */
+  paramsKey: string;
+  segments: number;
+  savedWith: string | null;
+  diffs: string[];
+  /** The version's stored mesh, when it kept one (newest versions only). */
+  savedMesh: SavedMesh | null;
+  thumbnail: Blob | null;
+} | null = null;
+/** Versions whose drift notice the user chose to ignore, remembered on this
+ *  device (localStorage; a per-viewer convenience — losing it just shows the
+ *  notice again). Capped to the most recent DRIFT_IGNORED_MAX. */
+const DRIFT_IGNORED_KEY = 'partwright-drift-ignored';
+const DRIFT_IGNORED_MAX = 500;
+const dismissedDrift = {
+  has(id: string): boolean {
+    try { return (JSON.parse(localStorage.getItem(DRIFT_IGNORED_KEY) ?? '[]') as string[]).includes(id); } catch { return false; }
+  },
+  add(id: string): void {
+    try {
+      const ids = (JSON.parse(localStorage.getItem(DRIFT_IGNORED_KEY) ?? '[]') as string[]).filter(x => x !== id);
+      ids.push(id);
+      localStorage.setItem(DRIFT_IGNORED_KEY, JSON.stringify(ids.slice(-DRIFT_IGNORED_MAX)));
+    } catch { /* storage unavailable: the notice just shows again next time */ }
+  },
+};
+/** The viewport pill for modelDrift (mounted during init). */
+let driftPill: { show(): void; hide(): void } | null = null;
 
 /** Engine trust domain for a session (#1090): model code from one session
  *  never shares a geometry Worker realm with another session's runs. Objects
@@ -892,6 +1000,9 @@ type PartMeshCacheEntry = {
   /** The Worker's stats for a big mesh (see `currentManifoldFacts`), so a
    *  cache hit can defer the Manifold rebuild too. */
   manifoldFacts: ManifoldFacts | null;
+  /** The run that built this mesh (see `lastEngineRun`), so a save after a
+   *  cache hit still records the model's fingerprint and mesh. */
+  engineRun: EngineRunRecord | null;
   /** What the run that made this mesh printed, so a cache hit restores the
    *  console (and getGeometryData().logs) along with the geometry. */
   logs: string[] | undefined;
@@ -1436,7 +1547,7 @@ function computeObjectPartInfo(key: string): PartInfo | null {
   const pieceOf = new Map<number, number>();
   for (const p of summary.pieces) for (const t of p.triangles) pieceOf.set(t, p.index);
   const pieces = new Set<number>();
-  for (const t of tris) { const p = pieceOf.get(t); if (p !== undefined) pieces.add(p + 1); }
+  for (const t of tris) { const p = pieceOf.get(t); if (p !== undefined) pieces.add(p); }
   return {
     size: [st.max[0] - st.min[0], st.max[1] - st.min[1], st.max[2] - st.min[2]],
     area: st.area,
@@ -3413,7 +3524,7 @@ function enrichGeometryDataWithColors(geoData: Record<string, unknown> | null): 
  *  window.partwright.saveVersion() API and the mod+S keyboard shortcut.
  *  Returns `{ id, index, label }` on success, `{ error }` when no session is
  *  active, or `{ skipped }` when nothing changed since the current version. */
-async function saveCurrentVersion(label?: string, opts: { importedMeshes?: ImportedMesh[] } = {}): Promise<
+async function saveCurrentVersion(label?: string, opts: { importedMeshes?: ImportedMesh[]; force?: boolean } = {}): Promise<
   | { error: string }
   | { id: string; index: number; label: string; colorRegions?: ReturnType<typeof colorRegionStats> }
   | { skipped: true; reason: string }
@@ -3428,7 +3539,7 @@ async function saveCurrentVersion(label?: string, opts: { importedMeshes?: Impor
     return { error: 'This session is open and being edited in another tab. Use "Take over" in the viewer banner to edit here.' };
   }
   const thumbnail = await captureThumbnail();
-  const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, undefined, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave(), ...(opts.importedMeshes ? { importedMeshes: opts.importedMeshes } : {}) });
+  const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, undefined, { force: opts.force, paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave(), ...(opts.importedMeshes ? { importedMeshes: opts.importedMeshes } : {}) });
   if (version) cacheCurrentPaintRefine();
   if (version) {
     // Keep the mesh cache valid for the newly-saved version so that switching
@@ -3448,6 +3559,7 @@ async function saveCurrentVersion(label?: string, opts: { importedMeshes?: Impor
         paramsSchema: currentParamSchema ?? undefined,
         voxelRun: lastVoxelRun,
         manifoldFacts: manifoldFactsFor(meshToCache),
+        engineRun: lastEngineRun?.shown === meshToCache ? lastEngineRun : null,
         logs: lastRunLogs,
       };
       partMeshCache.delete(version.id);
@@ -3727,7 +3839,11 @@ async function main() {
 
   // Import an already-parsed session payload. Used by both file import and the
   // window.partwright.importSessionData() API so AI agents can bypass the file picker.
-  async function importSessionPayload(data: ExportedSession): Promise<{ sessionId: string }> {
+  async function importSessionPayload(
+    data: ExportedSession,
+    /** Newer-schema / compatibility warnings. Default: a warn toast. */
+    onWarning: (message: string) => void = (m) => showToast(m, { variant: 'warn', source: 'import' }),
+  ): Promise<{ sessionId: string; name: string }> {
     // Import the session STRUCTURE first, without regenerating any thumbnails.
     // Regenerating a thumbnail runs that version's code through WASM (seconds
     // apiece for a complex figure), and doing it inside importSession deferred
@@ -3738,13 +3854,14 @@ async function main() {
     // then backfill the missing thumbnails offscreen in the background. Embedded
     // thumbnails (when the export carried them) are still restored by
     // importSession; only versions exported without one need the backfill.
-    const session = await importSession(data);
+    const session = await importSession(data, undefined, onWarning);
     const version = await openSession(session.id);
     if (version) {
       // Skip surface texture computation during import — the surface Worker
       // (voronoi/knurl/woven) can take 30–120s on complex models and would block
-      // the load. Textures apply on the first user-triggered run.
-      await loadVersionIntoEditor(version, { skipSurface: true });
+      // the load. Textures apply on the first user-triggered run. Never stash
+      // the outgoing session's buffer as a draft of the imported one.
+      await loadVersionIntoEditor(version, { skipSurface: true, skipDraftSave: true });
       // The latest version is now rendered live with full colour (model labels
       // AND user paint), so snapshot its thumbnail straight from that state —
       // the most accurate tile for the version the user is actually looking at,
@@ -3754,11 +3871,16 @@ async function main() {
         if (thumb) await updateVersionThumbnail(version.id, thumb);
       }
     }
+    else if (getState().session?.id === session.id) {
+      // A chat- or notes-only export: show the starter (and restore its
+      // attachments) rather than leaving the previous session's model up.
+      await loadPartIntoEditor(null, { skipDraftSave: true });
+    }
     // Fire-and-forget: render a snapshot for each remaining version that
     // imported without a thumbnail. Runs AFTER the user is already on the new
     // part, fully offscreen, so it never disturbs the live viewport or editor.
     void backfillImportedThumbnails(session.id);
-    return { sessionId: session.id };
+    return { sessionId: session.id, name: session.name };
   }
 
   // Build the model-declared colour layer (api.label({color}) + optionally
@@ -6274,7 +6396,9 @@ async function main() {
     const saved = getActiveImports();
     try {
       setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
-      const result = await executeCodeAsync(version.code, lang, undefined, undefined, undefined, undefined, { domain });
+      // The version's own Customizer values and SCAD companions, so the baked
+      // object matches what it shows when opened (and an `include <…>` resolves).
+      const result = await executeCodeAsync(version.code, lang, version.paramValues, undefined, undefined, version.companionFiles ?? getCompanionFiles(), { domain });
       if (result.error || !result.mesh) return null;
       return [toImportedMesh(label, result.mesh)];
     } finally {
@@ -6322,6 +6446,8 @@ async function main() {
       // set was passed. Without this, an old SCAD part with `include <lib>` would
       // build with no companions, fail, and be silently dropped from the export.
       companionFiles: version.companionFiles ?? getCompanionFiles(),
+      // Its saved Customizer values, so the export matches its thumbnail.
+      params: version.paramValues,
       onStart: opts.onStart,
       domain,
     });
@@ -9586,6 +9712,10 @@ async function main() {
   surfaceReapplyEl.addEventListener('click', () => { void reapplySurfaceTextures(); });
   viewportPane.appendChild(surfaceReapplyEl);
 
+  // "Built differently than saved" pill — see checkVersionDrift.
+  driftPill = mountModelDriftPill(viewportPane, () => openModelDriftDialog());
+  if (modelDrift && !dismissedDrift.has(modelDrift.versionId)) driftPill.show();
+
   // The open object's parts/pieces actions (the object list's part rows and
   // the Parts panel). Each goes through the same window.partwright method an
   // agent would call (UI ↔ API parity); failures surface as a toast.
@@ -10171,12 +10301,17 @@ async function main() {
     // `switchedSession`: the editor buffer still holds the outgoing session,
     // so it must not be stashed as a draft of the opened one.
     (version, switchedSession) => loadPartIntoEditor(version, { skipDraftSave: switchedSession }),
-    async (code: string, importedMeshes) => {
-      // Seed this version's imported meshes so `api.imports[0]` resolves to its
-      // own geometry when the thumbnail is regenerated (else a stale capture).
-      setActiveImports(importedMeshes ?? []);
-      await runCodeSync(code);
-      return captureThumbnail();
+    // Import via the app's one import path (validation, newer-schema warning,
+    // full version load, offscreen thumbnail backfill in each version's own
+    // engine) — not a per-version re-run in whatever engine is active.
+    async (data: unknown, accept: () => void) => {
+      const validated = validateSessionPayload(data);
+      if (!validated) {
+        showToast('Invalid session file.', { variant: 'warn', source: 'import' });
+        return;
+      }
+      accept();
+      await importSessionPayload(validated);
     },
     startNewSessionInEditor,
   );
@@ -10276,6 +10411,10 @@ async function main() {
     // after navigation would write the wrong session's voxels into the new
     // editor. Also unlocks the editor and clears the floating panel.
     cancelVoxelPaintIfActive();
+    clearModelDrift();
+    // The previous run describes the outgoing model; the cache hit below
+    // restores this version's own, and a cache miss records a fresh one.
+    lastEngineRun = null;
     // Preserve the user's interactive camera angle across version switches
     // *within* a session. Loading a version re-renders the geometry, whose
     // updateMesh auto-frames the camera back to the default 3/4 view — undoing
@@ -10294,6 +10433,7 @@ async function main() {
     // silently drop work-in-progress in the language we're leaving.
     // skipDraftSave is set by onSelectPart, which saves the outgoing draft
     // before calling changePart (ensuring it lands under the correct part id).
+    let ranVersionCode = false;
     const versionLang = effectiveVersionLanguage(version, getState().session);
     if (versionLang !== getActiveLanguage()) {
       if (!opts.skipDraftSave) {
@@ -10338,6 +10478,7 @@ async function main() {
       }
       currentLabelMap = cachedEntry.labelMap;
       currentLabelMesh = currentMeshData;
+      lastEngineRun = cachedEntry.engineRun;
       currentLostLabels = cachedEntry.lostLabels;
       setPaintLabels(currentLabelMap);
       noteLabelMapChanged();
@@ -10426,6 +10567,7 @@ async function main() {
       } finally {
         if (deferRefineRunGen === deferGen) deferRefineRunGen = -1;
       }
+      if (applied) ranVersionCode = true;
       // If a newer version-switch arrived while we were compiling, our result
       // was discarded — don't rehydrate colours or annotations for the wrong version.
       if (!applied) {
@@ -10460,6 +10602,9 @@ async function main() {
           paramsSchema: currentParamSchema ?? undefined,
           voxelRun: lastVoxelRun,
           manifoldFacts: manifoldFactsFor(currentMeshData),
+          // (Cast: TS keeps lastEngineRun narrowed to the null set above, but
+          // runCodeSync assigned it since.)
+          engineRun: (lastEngineRun as EngineRunRecord | null)?.shown === currentMeshData ? lastEngineRun : null,
           logs: lastRunLogs,
         };
         partMeshCache.delete(version.id);
@@ -10482,6 +10627,157 @@ async function main() {
     await rehydrateColorRegions(version.geometryData);
     applyVersionAnnotations(version);
     await restoreAttachmentsForActiveSession();
+    if (ranVersionCode) checkVersionDrift(version);
+  }
+
+  /** After a version load re-ran its code: compare what it built with the
+   *  fingerprint saved with the version and raise the "Built differently than
+   *  saved" pill when they differ. Versions saved before fingerprints aren't
+   *  compared: their stored stats can come from another quality setting or a
+   *  bake on another machine, which reads as a change that isn't one. */
+  function checkVersionDrift(version: Version): void {
+    const run = lastEngineRun;
+    if (!run || !sameModelCode(run.code, version.code)) return;
+    if (run.partId !== version.partId) return;
+    const savedPrint = parseModelFingerprint(version.fingerprint);
+    if (!savedPrint) return;
+    // A different curvature quality (not persisted across reloads) changes
+    // every curved surface; that is the user's setting, not a changed model.
+    if (savedPrint.segments !== undefined && savedPrint.segments !== run.segments) return;
+    const cmp = compareModelFingerprints(savedPrint, runFingerprint(run));
+    if (!cmp.changed) return;
+    modelDrift = {
+      versionId: version.id,
+      versionIndex: version.index,
+      versionLabel: version.label,
+      code: version.code,
+      paramsKey: run.paramsKey,
+      segments: run.segments,
+      savedWith: version.appVersion ?? null,
+      diffs: cmp.diffs,
+      savedMesh: parseSavedMesh(version.latestMesh),
+      thumbnail: version.thumbnail,
+    };
+    errorLog.capture({
+      level: 'info',
+      source: 'engine',
+      message: `v${version.index} builds differently than when it was saved: ${cmp.diffs.join(', ')}`,
+    });
+    if (!dismissedDrift.has(version.id)) driftPill?.show();
+  }
+
+  function clearModelDrift(): void {
+    modelDrift = null;
+    driftPill?.hide();
+  }
+
+  /** `partwright.getModelDrift()`: whether the open version builds differently
+   *  than saved, and how. */
+  function modelDriftReport(): Record<string, unknown> {
+    const d = modelDrift;
+    if (!d) return { changed: false };
+    return {
+      changed: true,
+      version: d.versionIndex,
+      label: d.versionLabel,
+      savedWith: d.savedWith,
+      running: buildInfo.version,
+      differences: d.diffs,
+      canRestore: d.savedMesh !== null,
+      dismissed: dismissedDrift.has(d.versionId),
+    };
+  }
+
+  /** Why a drift action can't write from this tab, or null when it can. */
+  function driftWriteBlocked(): string | null {
+    if (isSharedPreview()) return 'This is a read-only shared preview. Fork it first to make edits you can save.';
+    if (isReadOnlyViewer()) return 'This session is open and being edited in another tab. Use "Take over" in the viewer banner to edit here.';
+    return null;
+  }
+
+  /** Bring back the model as saved: the version's stored mesh, committed as a
+   *  new version (the same path as a baked surface modifier, colours carried).
+   *  A mesh that isn't a closed solid (render-only output) comes back
+   *  render-only rather than failing. */
+  async function restoreSavedModel(): Promise<Record<string, unknown>> {
+    const blocked = driftWriteBlocked();
+    if (blocked) return { error: blocked };
+    const d = modelDrift;
+    if (!d) return { error: 'Nothing to restore: the open version builds the same model it was saved with.' };
+    if (!d.savedMesh) {
+      return { error: `v${d.versionIndex} has no saved mesh to restore: only each object's newest version keeps one. Use keepRebuiltModel() to keep the new model instead.` };
+    }
+    const mesh = d.savedMesh as MeshData;
+    let solid = false;
+    try {
+      const m = getModule()?.Manifold.ofMesh(mesh);
+      solid = !!m;
+      m?.delete?.();
+    } catch {
+      solid = false;
+    }
+    const priorLang = getActiveLanguage();
+    const result = await commitSurfaceModifier({
+      kind: 'manifold',
+      label: `v${d.versionIndex} as saved`,
+      mesh,
+      code: `// v${d.versionIndex} restored as it was saved${d.savedWith ? ` (Partwright v${d.savedWith})` : ''}, on ${new Date().toISOString().slice(0, 10)}.\n` +
+        `// Its code now builds a different model; this is the mesh saved with it,\n// baked onto api.imports[0]. The original code is in v${d.versionIndex}.\n` +
+        (solid
+          ? `const { Manifold } = api;\nreturn Manifold.ofMesh(api.imports[0]);\n`
+          : `// It isn't a closed solid, so it is shown render-only (no booleans, slicing or paint by part).\nreturn api.renderMesh(api.imports[0]);\n`),
+    }, true);
+    if (result.error) return result;
+    clearModelDrift();
+    if (priorLang === 'voxel') {
+      const warning = `Restored v${d.versionIndex} as a mesh: it is no longer a voxel model, so VOX export and voxel editing don't apply. Its voxel code stays in v${d.versionIndex}.`;
+      showToast(warning, { variant: 'warn', source: 'engine' });
+      const prior = Array.isArray(result.warnings) ? result.warnings as string[] : [];
+      return { ...result, warnings: [...prior, warning] };
+    }
+    return result;
+  }
+
+  /** Accept the rebuilt model: save it as a new version, which records the new
+   *  fingerprint (and newest mesh). */
+  async function keepRebuiltModel(): Promise<Record<string, unknown>> {
+    const blocked = driftWriteBlocked();
+    if (blocked) return { error: blocked };
+    const d = modelDrift;
+    if (!d) return { error: 'Nothing to keep: the open version builds the same model it was saved with.' };
+    if (!sameModelCode(d.code, getValue())) return { error: 'The code has been edited since the version was opened; save it normally instead.' };
+    const running = buildInfo.version !== 'unknown' ? ` on v${buildInfo.version}` : '';
+    const r = await saveCurrentVersion(`v${d.versionIndex} rebuilt${running}`, { force: true });
+    if ('error' in r) return r;
+    clearModelDrift();
+    return { ok: true, ...r };
+  }
+
+  /** Stop showing the drift notice for the open version on this device. */
+  function dismissModelDrift(): Record<string, unknown> {
+    const d = modelDrift;
+    if (!d) return { error: 'Nothing to dismiss: the open version builds the same model it was saved with.' };
+    dismissedDrift.add(d.versionId);
+    driftPill?.hide();
+    return { ok: true, version: d.versionIndex };
+  }
+
+  function openModelDriftDialog(): void {
+    const d = modelDrift;
+    if (!d) return;
+    showModelDriftDialog({
+      versionIndex: d.versionIndex,
+      versionLabel: d.versionLabel,
+      savedWith: d.savedWith,
+      running: buildInfo.version,
+      diffs: d.diffs,
+      canRestore: d.savedMesh !== null,
+      thumbnail: d.thumbnail,
+    }, {
+      restore: restoreSavedModel,
+      keep: keepRebuiltModel,
+      dismiss: () => { dismissModelDrift(); },
+    });
   }
 
   async function openEditorFromLanding() {
@@ -13371,7 +13667,7 @@ async function main() {
     return null;
   }
 
-  async function commitSurfaceModifier(result: ModifierResult, preserveColor: boolean, opts?: { warnOnBake?: boolean }): Promise<Record<string, unknown>> {
+  async function commitSurfaceModifier(result: ModifierResult, preserveColor: boolean, opts?: { warnOnBake?: boolean; toastBakeWarning?: boolean }): Promise<Record<string, unknown>> {
     // Refuse to bake while a coarse fast-preview is on screen: the modifier would
     // bind to the throwaway low-res mesh, which the full-quality render is about
     // to replace. Tell the user to let it finish (it auto-completes in seconds).
@@ -13381,11 +13677,12 @@ async function main() {
       return { error: msg };
     }
     // Capture the language *before* the commit switches it, so we can warn when a
-    // SCAD/BREP session is silently baked to a mesh. The transform path
-    // (commitTransform) emits its own, more specific warning and passes
-    // warnOnBake:false to avoid double-reporting.
+    // SCAD/BREP session is silently baked to a mesh. Pass warnOnBake:false only
+    // when the caller already reports that loss itself, and toastBakeWarning:
+    // false when the caller toasts the returned `warnings` (the Place modal).
     const priorLang = getActiveLanguage();
     const warnOnBake = opts?.warnOnBake !== false;
+    const toastBakeWarning = opts?.toastBakeWarning !== false;
     // For manifold results the modifier already baked colors into its input and
     // carried them through subdivision — result.mesh.triColors has the correct
     // per-triangle paint (dense mesh, same shape as the engine output). We use
@@ -13402,6 +13699,21 @@ async function main() {
       ? (result.mesh.triColors != null ? result.mesh
         : (preserveColor && result.colorSource?.triColors != null ? result.colorSource : null))
       : null;
+    // The model's parts (api.label regions, or an import's detected parts)
+    // would otherwise vanish with the code that declared them: carry them onto
+    // the baked mesh as import parts, loaded back as labels by
+    // api.importWithParts (#1025). Read before the commit replaces the run.
+    // A part keeps the colour its code gave it (api.label's colour) when the
+    // bake keeps colour, so the rail and later paint scopes still show it.
+    const partColors = new Map<string, string>();
+    if (preserveColor) {
+      for (const r of getModelRegions()) {
+        if (r.descriptor?.kind === 'byLabel' && !partColors.has(r.descriptor.label)) partColors.set(r.descriptor.label, rgbToHexStr(r.color));
+      }
+    }
+    const carriedParts = result.kind === 'manifold' && currentLabelMap && currentLabelMap.size > 0 && currentLabelMesh && currentMeshData
+      ? partsFromLabels(currentLabelMap, currentLabelMesh, currentMeshData, result.mesh, partColors)
+      : null;
     cancelVoxelPaintIfActive();
     dropPaintState();
     if (result.kind === 'manifold') {
@@ -13415,13 +13727,15 @@ async function main() {
         numVert: result.mesh.numVert,
         numTri: result.mesh.numTri,
         numProp: 3,
+        ...(carriedParts ? { parts: carriedParts } : {}),
       };
+      const code = carriedParts ? rewriteImportsWithParts(result.code, 0).code : result.code;
       setActiveImports([comp]);
-      setValue(result.code);
+      setValue(code);
       // A surface modifier decorates the existing model in place (same bounds),
       // so keep the user's camera angle instead of snapping back to the default
       // framing when the baked result renders.
-      const ok = await runCodeSync(result.code, { preserveCamera: true });
+      const ok = await runCodeSync(code, { preserveCamera: true });
       if (!ok) return { error: `Failed to apply ${result.label}` };
       let geoData = getGeometryDataObj();
       let carried = 0;
@@ -13434,7 +13748,7 @@ async function main() {
         }
       }
       const thumbnail = await captureThumbnail();
-      await saveVersion(result.code, geoData, thumbnail, result.label, undefined, {
+      await saveVersion(code, geoData, thumbnail, result.label, undefined, {
         force: true,
         importedMeshes: [comp],
       });
@@ -13449,13 +13763,14 @@ async function main() {
         }
       }
       const bakeWarning = warnOnBake ? engineBakeWarning(priorLang, 'manifold-js') : null;
-      if (bakeWarning) showToast(bakeWarning, { variant: 'warn', source: 'engine' });
+      if (bakeWarning && toastBakeWarning) showToast(bakeWarning, { variant: 'warn', source: 'engine' });
       const allWarnings = [...(bakeWarning ? [bakeWarning] : []), ...colorWarnings];
       return {
         ok: true,
         label: result.label,
         geometry: getGeometryDataObj(),
         colorsCarried: carried,
+        ...(carriedParts ? { partsCarried: carriedParts.names } : {}),
         ...(allWarnings.length > 0 ? { warnings: allWarnings } : {}),
       };
     }
@@ -13472,7 +13787,7 @@ async function main() {
     const thumbnail = await captureThumbnail();
     await saveVersion(result.code, getGeometryDataObj(), thumbnail, result.label, undefined, { force: true });
     const voxelBakeWarning = warnOnBake ? engineBakeWarning(priorLang, 'voxel') : null;
-    if (voxelBakeWarning) showToast(voxelBakeWarning, { variant: 'warn', source: 'engine' });
+    if (voxelBakeWarning && toastBakeWarning) showToast(voxelBakeWarning, { variant: 'warn', source: 'engine' });
     return {
       ok: true,
       label: result.label,
@@ -13530,7 +13845,10 @@ async function main() {
     const ok = await runCodeSync(newCode);
     if (!ok) return { error: `Failed to apply ${label}` };
     const thumbnail = await captureThumbnail();
-    await saveVersion(newCode, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, undefined, { force: true });
+    // The transform wraps the same parametric model, run with the live
+    // Customizer values — save them, or reopening the version renders the
+    // defaults under a translate computed for the param'd shape.
+    await saveVersion(newCode, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, undefined, { force: true, paramValues: currentParamValues, companionFiles: getCompanionFiles() });
     return { ok: true, label, mode: 'parametric', geometry: getGeometryDataObj() };
   }
 
@@ -13560,9 +13878,15 @@ async function main() {
       result = await commitTransformParametric(steps, label);
     } else {
       const preserve = preserveColor ?? true;
-      result = await commitSurfaceModifier(applyTransform(meshForModifier(preserve), steps, label), preserve, { warnOnBake: false });
+      // Let the commit add the engine warning (SCAD/BREP source and STEP export
+      // lost): the reasons above say why it baked, not what the bake costs —
+      // and an explicit mode 'bake' had no warning at all. It's returned, not
+      // toasted: the Place modal toasts the result's warnings once.
+      result = await commitSurfaceModifier(applyTransform(meshForModifier(preserve), steps, label), preserve, { toastBakeWarning: false });
     }
-    return warnings.length && !result.error ? { ...result, warnings } : result;
+    if (!warnings.length || result.error) return result;
+    const own = Array.isArray(result.warnings) ? (result.warnings as string[]) : [];
+    return { ...result, warnings: [...warnings, ...own] };
   }
 
   /** Reposition the current model onto the print bed (drop-to-floor / center). */
@@ -15268,15 +15592,17 @@ async function main() {
     /** Build a session export (.partwright.json). Returns the parsed JSON object directly.
      *  Pass `options.includeThumbnails: true` to embed the per-version
      *  thumbnail PNG data URLs — needed when generating catalog entries. */
-    async exportSessionData(sessionId?: string, options?: { includeThumbnails?: boolean; includeAnnotations?: boolean; includeNotes?: boolean }) {
+    async exportSessionData(sessionId?: string, options?: { includeThumbnails?: boolean; includeAnnotations?: boolean; includeNotes?: boolean; includeChat?: boolean; includeLatestMeshes?: boolean }) {
       const bad = argError(() => {
         assertString(sessionId, 'exportSessionData(sessionId)', { optional: true, allowEmpty: false });
         if (options !== undefined) {
           const o = assertObject(options, 'exportSessionData(_, options)')!;
-          assertNoUnknownKeys(o, ['includeThumbnails', 'includeAnnotations', 'includeNotes'], 'exportSessionData(_, options)');
+          assertNoUnknownKeys(o, ['includeThumbnails', 'includeAnnotations', 'includeNotes', 'includeChat', 'includeLatestMeshes'], 'exportSessionData(_, options)');
           if (o.includeThumbnails !== undefined) assertBoolean(o.includeThumbnails, 'exportSessionData.options.includeThumbnails');
           if (o.includeAnnotations !== undefined) assertBoolean(o.includeAnnotations, 'exportSessionData.options.includeAnnotations');
           if (o.includeNotes !== undefined) assertBoolean(o.includeNotes, 'exportSessionData.options.includeNotes');
+          if (o.includeChat !== undefined) assertBoolean(o.includeChat, 'exportSessionData.options.includeChat');
+          if (o.includeLatestMeshes !== undefined) assertBoolean(o.includeLatestMeshes, 'exportSessionData.options.includeLatestMeshes');
         }
       });
       if (bad) return bad;
@@ -15335,8 +15661,10 @@ async function main() {
       }
       const validated = validateSessionPayload(payload);
       if (!validated) return { error: 'importSessionData(data): payload missing partwright/mainifold brand, session, or any of versions[]/chat[]/notes[]' };
-      const result = await importSessionPayload(validated);
-      return { sessionId: result.sessionId };
+      // Report a newer-schema warning to the caller (an agent can't see a toast).
+      let warning: string | null = null;
+      const result = await importSessionPayload(validated, (msg) => { warning = msg; });
+      return { sessionId: result.sessionId, ...(warning ? { warning } : {}) };
     },
 
     /**
@@ -17143,6 +17471,34 @@ async function main() {
       return saveCurrentVersion(label);
     },
 
+    /** Whether the open version's code now builds a different model than the
+     *  one saved with it (an app update changed a builder, or the code is
+     *  random) — the "Built differently than saved" pill. Returns
+     *  `{ changed: false }` or `{ changed: true, version, label, savedWith,
+     *  running, differences, canRestore, dismissed }`. */
+    getModelDrift() {
+      return modelDriftReport();
+    },
+
+    /** Restore the open version's model as it was saved — its stored mesh,
+     *  committed as a new version — when it builds differently now. Only each
+     *  object's newest version keeps a mesh (`getModelDrift().canRestore`). */
+    async restoreSavedModel() {
+      return restoreSavedModel();
+    },
+
+    /** Keep the rebuilt model of a version that builds differently now: save
+     *  it as a new version (recording its new fingerprint). */
+    async keepRebuiltModel() {
+      return keepRebuiltModel();
+    },
+
+    /** Stop showing the "Built differently than saved" notice for the open
+     *  version on this device (the dialog's Ignore). The version is unchanged. */
+    dismissModelDrift() {
+      return dismissModelDrift();
+    },
+
     /** Save every part in the active session that has unsaved changes, in one
      *  call — the non-interactive twin of the 💾 button's multi-part save
      *  modal. Each part is loaded, saved, and the originally-active part is
@@ -17362,7 +17718,7 @@ async function main() {
       return typeof r === 'string' ? { error: r } : { ok: true, triangles: r };
     },
 
-    /** Size, surface area, triangle count and the pieces (1-based) a part or
+    /** Size, surface area, triangle count and the pieces (0-based indices) a part or
      *  piece touches -> { size:[x,y,z], area, triangleCount, pieces } or { error } */
     getObjectPartInfo(target: string | { part?: string; piece?: number; unlabeled?: boolean }) {
       const key = objectPartTargetKey(target, 'getObjectPartInfo');
@@ -17806,9 +18162,12 @@ async function main() {
       // Restore this version's Customizer overrides before the re-run so it
       // renders with the values it was saved at (matches loadVersionIntoEditor).
       currentParamValues = { ...(version.paramValues ?? {}) };
-      await runCodeSync(version.code, { preserveCamera: true });
+      clearModelDrift();
+      lastEngineRun = null;
+      const ran = await runCodeSync(version.code, { preserveCamera: true });
       await rehydrateColorRegions(version.geometryData);
       applyVersionAnnotations(version);
+      if (ran) checkVersionDrift(version);
       // Labels are runtime state from the just-executed code. Surface
       // whether any were registered so callers can decide between
       // paintByLabel (when available) and paintComponent / paintInBox
@@ -17822,6 +18181,9 @@ async function main() {
         geometryData: version.geometryData,
         labelsAvailable: labelCount > 0,
         labelCount,
+        // The code now builds a different model than the one saved (see
+        // getModelDrift / restoreSavedModel / keepRebuiltModel).
+        ...(modelDrift ? { builtDifferently: modelDriftReport() } : {}),
       };
     },
 
@@ -18264,8 +18626,9 @@ async function main() {
         assertString(sessionId, 'exportSession(sessionId)', { optional: true });
         if (options !== undefined) {
           const o = assertObject(options, 'exportSession(options)')!;
-          assertNoUnknownKeys(o, ['includeThumbnails', 'includeAnnotations', 'includeNotes', 'includeColorRegions'], 'exportSession(options)');
-          for (const k of ['includeThumbnails', 'includeAnnotations', 'includeNotes', 'includeColorRegions'] as const) {
+          const flags = ['includeThumbnails', 'includeAnnotations', 'includeNotes', 'includeColorRegions', 'includeChat', 'includeLatestMeshes'] as const;
+          assertNoUnknownKeys(o, [...flags], 'exportSession(options)');
+          for (const k of flags) {
             assertBoolean(o[k], `exportSession(options).${k}`, { optional: true });
           }
         }
@@ -18316,25 +18679,11 @@ async function main() {
       });
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       let warning: string | null = null;
-      const session = await importSession(
-        data,
-        async (code: string, importedMeshes) => {
-          // Seed this version's imported meshes so `api.imports[0]` resolves to
-          // its own geometry when regenerating the thumbnail (else a stale part).
-          setActiveImports(importedMeshes ?? []);
-          await runCodeSync(code);
-          return captureThumbnail();
-        },
-        (msg) => { warning = msg; },
-      );
-      const version = await openSession(session.id);
-      if (version) {
-        setValue(version.code);
-        await runCodeSync(version.code, { preserveCamera: true });
-      }
-      // Restore attachments from imported session (session-level).
-      await restoreAttachmentsForActiveSession();
-      return { id: session.id, name: session.name, ...(warning ? { warning } : {}) };
+      // The same path as a file import: full version load (paint, annotations,
+      // params, attachments — not just the code), and thumbnails backfilled
+      // offscreen in each version's own engine.
+      const imported = await importSessionPayload(data, (msg) => { warning = msg; });
+      return { id: imported.sessionId, name: imported.name, ...(warning ? { warning } : {}) };
     },
 
     /** Clear all sessions and versions from IndexedDB */
@@ -20882,9 +21231,9 @@ async function main() {
       cylinder?: { center?: [number, number]; rMin: number; rMax: number; zMin: number; zMax: number; axis?: CylinderAxis };
       slab?: { axis?: 'x' | 'y' | 'z'; normal?: [number, number, number]; offset: number; thickness: number };
       normalCone?: { axis: [number, number, number]; angleDeg: number };
-      /** Cylinder selector only — mirrors `paintInCylinder.topOnly`. Keeps just
-       *  the outward-radial faces so the dry-run matches what a
-       *  `paintInCylinder({ topOnly: true })` commit would actually paint. */
+      /** Mirrors the committing paint's `topOnly` (paintInBox / paintNear /
+       *  paintInCylinder) so the dry-run matches what that commit would
+       *  actually paint. */
       topOnly?: boolean;
       point?: [number, number, number];
       radius?: number;
@@ -20925,13 +21274,17 @@ async function main() {
       } else if (opts.point !== undefined && opts.radius !== undefined) {
         if (!Array.isArray(opts.point) || opts.point.length !== 3) return { error: 'point must be [x,y,z]' };
         if (typeof opts.radius !== 'number' || !Number.isFinite(opts.radius) || opts.radius <= 0) return { error: 'radius must be a positive finite number' };
-        const coneErr = validateNormalCone(opts.normalCone);
+        // topOnly resolves into a cone exactly as the committing paint does,
+        // so the dry-run counts what paintNear / paintInBox would paint.
+        const cone = resolvePaintCone(opts.normalCone, opts.topOnly);
+        const coneErr = validateNormalCone(cone);
         if (coneErr) return { error: coneErr };
-        triangles = collectTrianglesBySphere(mesh, opts.point, opts.radius, opts.normalCone, opts.coverageMode, opts.maxTriangleArea);
+        triangles = collectTrianglesBySphere(mesh, opts.point, opts.radius, cone, opts.coverageMode, opts.maxTriangleArea);
       } else if (opts.box !== undefined) {
-        const err = validateBoxAndCone(opts.box, opts.normalCone);
+        const cone = resolvePaintCone(opts.normalCone, opts.topOnly);
+        const err = validateBoxAndCone(opts.box, cone);
         if (err) return { error: err };
-        triangles = collectTrianglesByFilter(mesh, opts.box, opts.normalCone, null, opts.coverageMode, opts.maxTriangleArea);
+        triangles = collectTrianglesByFilter(mesh, opts.box, cone, null, opts.coverageMode, opts.maxTriangleArea);
       } else if (opts.cylinder !== undefined) {
         const c = opts.cylinder;
         if (typeof c !== 'object' || c === null) return { error: 'cylinder must be { rMin, rMax, zMin, zMax, center? }' };
@@ -21007,9 +21360,7 @@ async function main() {
       if (opts.region === undefined) return { error: 'paintExplain.region (id or name) is required' };
 
       const regions = getRegions();
-      const region = typeof opts.region === 'number'
-        ? regions.find(r => r.id === opts.region)
-        : regions.find(r => r.name === opts.region);
+      const region = findRegionByRef(regions, opts.region);
       if (!region) {
         const existing = regions.map(r => `"${r.name}" (id=${r.id})`).join(', ') || '(none)';
         return { error: `No region matching ${JSON.stringify(opts.region)}. Existing: ${existing}` };
@@ -21061,9 +21412,7 @@ async function main() {
       if (opts.region === undefined) return { passed: false, failures: ['assertPaint.region (id or name) is required'] };
 
       const regions = getRegions();
-      const region = typeof opts.region === 'number'
-        ? regions.find(r => r.id === opts.region)
-        : regions.find(r => r.name === opts.region);
+      const region = findRegionByRef(regions, opts.region);
       if (!region) return { passed: false, failures: [`No region matching ${JSON.stringify(opts.region)}. Existing: ${regions.map(r => `"${r.name}" (id=${r.id})`).join(', ') || '(none)'}`] };
 
       const stats = regionTriangleStats(region.triangles, mesh);
@@ -21073,6 +21422,9 @@ async function main() {
         const c = region.triangles.size;
         if (typeof opts.expectedTriangleCount === 'number') {
           if (c !== opts.expectedTriangleCount) failures.push(`triangle count: expected ${opts.expectedTriangleCount}, got ${c}`);
+        } else if (opts.expectedTriangleCount === null || typeof opts.expectedTriangleCount !== 'object') {
+          // A string (e.g. "50") used to read as an empty range and pass.
+          failures.push(`expectedTriangleCount must be a number or {min?, max?} (got ${JSON.stringify(opts.expectedTriangleCount)})`);
         } else {
           const { min, max } = opts.expectedTriangleCount;
           if (typeof min === 'number' && c < min) failures.push(`triangle count: expected >= ${min}, got ${c}`);
@@ -21978,8 +22330,8 @@ async function main() {
       }
 
       const cosTol = normalTolerance ?? 0.95;
-      if (typeof cosTol !== 'number' || !Number.isFinite(cosTol)) {
-        return { error: 'findFaces.normalTolerance must be a finite number in [-1, 1]' };
+      if (typeof cosTol !== 'number' || !Number.isFinite(cosTol) || cosTol < -1 || cosTol > 1) {
+        return { error: `findFaces.normalTolerance must be a cosine in [-1, 1] (got ${String(cosTol)}): cos(max angle off normal), e.g. 0.95 ≈ 18°, 0.7 ≈ 45°. To think in degrees, pass Math.cos(deg * Math.PI / 180).` };
       }
 
       let colorTarget: [number, number, number] | null = null;
@@ -22984,9 +23336,9 @@ async function main() {
         'setActiveLanguage': { signature: "await setActiveLanguage(lang) -- Swap engine ('manifold-js' | 'scad' | 'replicad' | 'voxel'); stashes the current buffer as a per-language draft and restores the target's draft. Versions keep their own language. Throws on a bad lang", docs: '/ai.md#switching-engines' },
         'isRunning': { signature: 'isRunning() -- Whether geometry code is executing right now -> boolean', docs: '/ai.md#console-api--windowpartwright' },
         // Isolated execution
-        'runIsolated':     { signature: 'await runIsolated(code) -- Test without side effects -> {geometryData, thumbnail, logs?}', docs: '/ai.md#testing-without-side-effects' },
-        'runAndAssert':    { signature: 'await runAndAssert(code, assertions) -- Validate geometry -> {passed, failures?, stats, logs?}', docs: '/ai.md#assertions----structured-validation' },
-        'runAndExplain':   { signature: 'await runAndExplain(code) -- Debug disconnected components -> {stats, components[], hints[], logs?}', docs: '/ai.md#debugging-disconnected-components' },
+        'runIsolated':     { signature: 'await runIsolated(code, view?: {elevation?, azimuth?, ortho?, size?, edges?}) -- Test without side effects -> {geometryData, thumbnail, logs?} (4-iso composite, or one angle with view)', docs: '/ai/iteration-workflow.md#testing-without-side-effects' },
+        'runAndAssert':    { signature: 'await runAndAssert(code, assertions) -- Validate geometry -> {passed, failures?, stats, logs?}', docs: '/ai/iteration-workflow.md#assertions--structured-validation' },
+        'runAndExplain':   { signature: 'await runAndExplain(code) -- Debug disconnected components -> {stats, components[], hints[], logs?}', docs: '/ai/gotchas.md#debugging-disconnected-components' },
         'modifyAndTest':   { signature: 'await modifyAndTest(patchFn, assertions?) -- Modify + test without committing -> {modifiedCode, codeDiff, stats, passed?}', docs: '/ai.md#modify-and-test' },
         'query':           { signature: 'query({sliceAt?, decompose?, boundingBox?}) -- Multi-query current geometry', docs: '/ai.md#multi-query-current-geometry' },
         // Sessions
@@ -22998,6 +23350,10 @@ async function main() {
         'listCharacterPresets': { signature: 'listCharacterPresets() -- The Character Creator starting characters -> [{id, label, description, spec}] (pass a spec to buildCharacter)', docs: '/ai/figure.md' },
         'randomCharacter': { signature: 'await randomCharacter({seed?, save?, label?}) -- Build a random, coherent figure (any body-plan style) (the panel\'s Random button) -> {seed, spec, code, ...}. Same seed = same character.', docs: '/ai/figure.md' },
         'saveVersion':     { signature: 'await saveVersion(label?) -- Save current state as version', docs: '/ai.md#console-api--windowpartwright' },
+        'getModelDrift':   { signature: 'getModelDrift() -- Does the open version build differently than saved? -> {changed:false} | {changed:true, version, label, savedWith, running, differences[], canRestore, dismissed}', docs: '/ai/file-io.md#built-differently-than-saved' },
+        'restoreSavedModel': { signature: 'await restoreSavedModel() -- Commit the open version\'s saved mesh as a new version (newest versions only; see getModelDrift().canRestore) -> {ok, label, geometry} | {error}', docs: '/ai/file-io.md#built-differently-than-saved' },
+        'keepRebuiltModel': { signature: 'await keepRebuiltModel() -- Save the rebuilt model of a drifted version as a new version -> {ok, id, index, label} | {error}', docs: '/ai/file-io.md#built-differently-than-saved' },
+        'dismissModelDrift': { signature: 'dismissModelDrift() -- Stop showing the drift notice for the open version on this device (the dialog\'s Ignore) -> {ok, version} | {error}', docs: '/ai/file-io.md#built-differently-than-saved' },
         'commitWithColors': { signature: 'await commitWithColors({code?, label?, assertions?}) -- Commit, routing for you: code given and different from the editor -> full runAndSave; otherwise a saveVersion snapshot -> {routed: "run"|"snapshot", ...that result} or {error}', docs: '/ai.md#assert--save-in-one-call' },
         'saveAllObjects':  { signature: 'await saveAllObjects() -- Save every object with unsaved changes', docs: '/ai.md#console-api--windowpartwright' },
         'listVersions':    { signature: 'await listVersions() -- List all versions in session', docs: '/ai.md#console-api--windowpartwright' },
@@ -23133,19 +23489,19 @@ async function main() {
         'probePixel':      { signature: 'probePixel({pixel: [x,y], view}) -- Translate a pixel in a rendered view back to a surface hit: {point, normal, distance, triangleId, nextStep}. The view spec must match the renderView call. On a background pixel returns {hit:false, modelPixelBounds, reason, hint} telling you where the model projects so you can re-aim.', docs: '/ai.md#console-api--windowpartwright' },
         'probePixels':     { signature: 'probePixels([[x,y] | {x,y}, ...], view) -- Batch probePixel: many pixels of one rendered view in one call (one camera, one BVH) -> {results:[{pixel, hit, point?, normal?, triangleId?}], hitCount, missCount, modelPixelBounds?} (bounds present on any miss; null = model not in view)', docs: '/ai.md#console-api--windowpartwright' },
         // Viewport controls
-        'setGridVisible':       { signature: 'setGridVisible(on?) -- Show/hide grid plane (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
-        'isGridVisible':        { signature: 'isGridVisible() -- Whether grid plane is visible', docs: '/ai.md#viewport-controls' },
-        'setStudioLighting':    { signature: 'setStudioLighting(on?) -- Toggle studio lighting: reflections + soft shadow, on by default (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
-        'isStudioLighting':     { signature: 'isStudioLighting() -- Whether studio lighting is on', docs: '/ai.md#viewport-controls' },
-        'setDimensionsVisible': { signature: 'setDimensionsVisible(on?) -- Show/hide bounding box dimensions (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
-        'areDimensionsVisible': { signature: 'areDimensionsVisible() -- Whether dimensions overlay is visible', docs: '/ai.md#viewport-controls' },
-        'setOrbitLock':         { signature: 'setOrbitLock(on?) -- Lock/unlock camera rotation (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
-        'isOrbitLocked':        { signature: 'isOrbitLocked() -- Whether camera orbit is locked', docs: '/ai.md#viewport-controls' },
-        'resetView':            { signature: 'resetView() -- Reset the camera to the default framing of the current model', docs: '/ai.md#viewport-controls' },
-        'setTheme':             { signature: 'setTheme("dark"|"light") -- Set color theme', docs: '/ai.md#viewport-controls' },
-        'getTheme':             { signature: 'getTheme() -- Current color theme', docs: '/ai.md#viewport-controls' },
-        'setAutoRun':           { signature: 'setAutoRun(enabled) -- Enable/disable auto-render on edit', docs: '/ai.md#viewport-controls' },
-        'isAutoRunEnabled':     { signature: 'isAutoRunEnabled() -- Whether auto-run is active', docs: '/ai.md#viewport-controls' },
+        'setGridVisible':       { signature: 'setGridVisible(on?) -- Show/hide grid plane (omit to toggle) -> boolean', docs: '/ai.md#console-api--windowpartwright' },
+        'isGridVisible':        { signature: 'isGridVisible() -- Whether grid plane is visible', docs: '/ai.md#console-api--windowpartwright' },
+        'setStudioLighting':    { signature: 'setStudioLighting(on?) -- Toggle studio lighting: reflections + soft shadow, on by default (omit to toggle) -> boolean', docs: '/ai.md#console-api--windowpartwright' },
+        'isStudioLighting':     { signature: 'isStudioLighting() -- Whether studio lighting is on', docs: '/ai.md#console-api--windowpartwright' },
+        'setDimensionsVisible': { signature: 'setDimensionsVisible(on?) -- Show/hide bounding box dimensions (omit to toggle) -> boolean', docs: '/ai.md#console-api--windowpartwright' },
+        'areDimensionsVisible': { signature: 'areDimensionsVisible() -- Whether dimensions overlay is visible', docs: '/ai.md#console-api--windowpartwright' },
+        'setOrbitLock':         { signature: 'setOrbitLock(on?) -- Lock/unlock camera rotation (omit to toggle) -> boolean', docs: '/ai.md#console-api--windowpartwright' },
+        'isOrbitLocked':        { signature: 'isOrbitLocked() -- Whether camera orbit is locked', docs: '/ai.md#console-api--windowpartwright' },
+        'resetView':            { signature: 'resetView() -- Reset the camera to the default framing of the current model', docs: '/ai.md#console-api--windowpartwright' },
+        'setTheme':             { signature: 'setTheme("dark"|"light") -- Set color theme', docs: '/ai.md#console-api--windowpartwright' },
+        'getTheme':             { signature: 'getTheme() -- Current color theme', docs: '/ai.md#console-api--windowpartwright' },
+        'setAutoRun':           { signature: 'setAutoRun(enabled) -- Enable/disable auto-render on edit', docs: '/ai.md#console-api--windowpartwright' },
+        'isAutoRunEnabled':     { signature: 'isAutoRunEnabled() -- Whether auto-run is active', docs: '/ai.md#console-api--windowpartwright' },
         'toggleClip': { signature: 'toggleClip(on?) -- Toggle the 3D clipping plane (omit to flip) -> {enabled, z, min, max}', docs: '/ai.md#console-api--windowpartwright' },
         'setClipZ': { signature: 'setClipZ(z) -- Set the clipping-plane height -> {enabled, z, min, max}. Throws on a non-number', docs: '/ai.md#console-api--windowpartwright' },
         'getClipState': { signature: 'getClipState() -- Clipping plane -> {enabled, z, min, max} (min/max = model Z range)', docs: '/ai.md#console-api--windowpartwright' },
@@ -23183,13 +23539,13 @@ async function main() {
         'getSnapToGrid':        { signature: 'getSnapToGrid() -- Whether snap-to-grid is currently on', docs: '/ai.md#arrange-mode' },
         'rotateSelection':      { signature: 'rotateSelection([rx,ry,rz]) -- Rotate selected parts in place (degrees); 2+ parts pivot around the group centroid (Z plane) -> {ok}', docs: '/ai.md#arrange-mode' },
         // View
-        'setView':         { signature: 'setView(tab) -- Switch tab: "interactive", "gallery", "images", "diff", "notes"', docs: '/ai.md#how-to-use-this-tool' },
-        'getViewState':    { signature: 'getViewState() -- Current tab, code-pane mode, and camera state', docs: '/ai.md#how-to-use-this-tool' },
+        'setView':         { signature: 'setView(tab) -- Switch tab: "interactive", "gallery", "versions", "images", "diff", "notes", "data"', docs: '/ai.md#console-api--windowpartwright' },
+        'getViewState':    { signature: 'getViewState() -- Current tab, code-pane mode, and camera state', docs: '/ai.md#console-api--windowpartwright' },
         // Core-operation parity (#1085)
-        'setCamera':           { signature: 'setCamera({azimuth?, elevation?, distance?, target?}) -- Orbit the LIVE viewport camera (getViewState().camera convention: az 0=front/-Y, 90=right; el 0=horizon, 90=top, <0=below) -> {camera}', docs: '/ai.md#viewport-controls' },
-        'frameObjectPart':     { signature: 'frameObjectPart(name | {piece: i} | {unlabeled: true}) -- Aim the live camera at one part/piece of the current object (keeps the view direction) -> {ok, triangles, bbox, camera}', docs: '/ai.md#viewport-controls' },
-        'setEdgesVisible':     { signature: 'setEdgesVisible(on?) -- Show/hide the mesh-edges (wireframe) overlay (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
-        'areEdgesVisible':     { signature: 'areEdgesVisible() -- Whether the mesh-edges overlay is showing', docs: '/ai.md#viewport-controls' },
+        'setCamera':           { signature: 'setCamera({azimuth?, elevation?, distance?, target?}) -- Orbit the LIVE viewport camera (getViewState().camera convention: az 0=front/-Y, 90=right; el 0=horizon, 90=top, <0=below) -> {camera}', docs: '/ai.md#console-api--windowpartwright' },
+        'frameObjectPart':     { signature: 'frameObjectPart(name | {piece: i} | {unlabeled: true}) -- Aim the live camera at one part/piece of the current object (keeps the view direction) -> {ok, triangles, bbox, camera}', docs: '/ai.md#console-api--windowpartwright' },
+        'setEdgesVisible':     { signature: 'setEdgesVisible(on?) -- Show/hide the mesh-edges (wireframe) overlay (omit to toggle) -> boolean', docs: '/ai.md#console-api--windowpartwright' },
+        'areEdgesVisible':     { signature: 'areEdgesVisible() -- Whether the mesh-edges overlay is showing', docs: '/ai.md#console-api--windowpartwright' },
         'getCurvatureQuality': { signature: 'getCurvatureQuality() -- Quality panel curvature: default circular segments for this tab -> {quality, segments, customSegments, language, presets, defaultSegments}', docs: '/ai.md#console-api--windowpartwright' },
         'setCurvatureQuality': { signature: 'await setCurvatureQuality({quality? | segments?}) -- Set the curvature preset (low|medium|high|highest|ultra|custom) or segment count (3..4096) and re-run -> {quality, segments, geometry}', docs: '/ai.md#console-api--windowpartwright' },
         'simplifyModel':       { signature: 'await simplifyModel({mode?: "simplify"|"enhance", targetTris? | targetEdge?, amount? (1..6), preserveColor?}) -- Quality panel Simplify/Enhance on the mesh; saves a version (baked mesh) -> {ok, mode, before, after, version}', docs: '/ai.md#console-api--windowpartwright' },
@@ -23211,7 +23567,7 @@ async function main() {
         'setAnnotateMode':     { signature: 'setAnnotateMode("pen"|"text"|"select"|null) -- Open Annotate in a sub-mode for the user (null closes) -> {mode}', docs: '/ai/annotations.md' },
         'getAnnotateMode':     { signature: 'getAnnotateMode() -- Active Annotate sub-mode or null', docs: '/ai/annotations.md' },
         'formatCode':          { signature: 'formatCode() -- Reformat the editor code (no run, no save) -> {changed, code}', docs: '/ai.md#console-api--windowpartwright' },
-        'setCodeView':     { signature: 'setCodeView(mode) -- Code pane: "mini" (compact code map), "full" (editor), or "hidden"', docs: '/ai.md#viewport-controls' },
+        'setCodeView':     { signature: 'setCodeView(mode) -- Code pane: "mini" (compact code map), "full" (editor), or "hidden"', docs: '/ai.md#console-api--windowpartwright' },
         // Export
         'exportGLB':       { signature: 'await exportGLB() -- Download GLB file', docs: '/ai.md#console-api--windowpartwright' },
         'exportSTL':       { signature: 'exportSTL() -- Download STL file', docs: '/ai.md#console-api--windowpartwright' },
@@ -23247,8 +23603,8 @@ async function main() {
         'exportOBJData':   { signature: 'await exportOBJData() -- Return OBJ as {filename, mimeType, text? | base64, sizeBytes}', docs: '/ai/file-io.md' },
         'export3MFData':   { signature: 'await export3MFData(filename?, {mergeColors?, maxColors?, colorMap?}) -- Return 3MF as {filename, mimeType, base64, sizeBytes}', docs: '/ai/file-io.md' },
         'exportVOXData':   { signature: 'await exportVOXData() -- Return .vox as {filename, mimeType, base64, sizeBytes} (voxel sessions)', docs: '/ai/file-io.md' },
-        'exportSessionData': { signature: 'await exportSessionData(sessionId?) -- Return parsed session JSON {filename, mimeType, data, sizeBytes}', docs: '/ai/file-io.md' },
-        'exportSession': { signature: 'await exportSession(sessionId?, {includeThumbnails?, includeAnnotations?, includeNotes?, includeColorRegions?}) -- Session (default: current) as an ExportedSession object (thumbnails off by default) -> object, null when none, or {error}', docs: '/ai/file-io.md' },
+        'exportSessionData': { signature: 'await exportSessionData(sessionId?, {includeThumbnails?, includeAnnotations?, includeNotes?, includeChat?, includeLatestMeshes?}?) -- Return parsed session JSON {filename, mimeType, data, sizeBytes}. The AI chat transcript is included unless includeChat: false', docs: '/ai/file-io.md' },
+        'exportSession': { signature: 'await exportSession(sessionId?, {includeThumbnails?, includeAnnotations?, includeNotes?, includeColorRegions?, includeChat?, includeLatestMeshes?}) -- Session (default: current) as an ExportedSession object (thumbnails and latest meshes off; chat transcript ON — pass includeChat: false to leave it out) -> object, null when none, or {error}', docs: '/ai/file-io.md' },
         'exportCodeData':  { signature: 'exportCodeData() -- Return editor source as {filename, mimeType, language, text, sizeBytes}', docs: '/ai/file-io.md' },
         // AI-friendly import — bypass the file picker
         'importSessionData': { signature: 'await importSessionData(jsonObjectOrString) -- Import .partwright.json payload -> {sessionId} or {error}', docs: '/ai/file-io.md' },
@@ -23771,6 +24127,15 @@ async function main() {
         suggestedTolerance: suggested,
       },
     };
+  }
+
+  /** A region by id (number) or name (string). A digit string that names no
+   *  region is read as an id — providers that type an untyped param as a
+   *  string (Gemini) send ids that way. */
+  function findRegionByRef(regions: readonly ColorRegion[], ref: unknown): ColorRegion | undefined {
+    if (typeof ref === 'number') return regions.find(r => r.id === ref);
+    if (typeof ref !== 'string') return undefined;
+    return regions.find(r => r.name === ref) ?? (/^\d+$/.test(ref) ? regions.find(r => r.id === Number(ref)) : undefined);
   }
 
   /** Resolve the normalCone to use for a paint op. Explicit cone wins;
@@ -24386,6 +24751,28 @@ async function main() {
     });
   }
 
+  /** The `skipSurface` counterpart of applySurfaceTextures (imports, which
+   *  must not block on a 30–120 s texture compute): a texture already in the
+   *  memo cache (e.g. seeded from the version's persisted texture) is applied
+   *  — that's instant — and anything else is parked behind the Re-apply pill,
+   *  so the user and ensureSurfaceTexturesApplied() can still bring it back
+   *  instead of the model silently rendering untextured. */
+  async function deferSurfaceTextures(result: MeshResult, src: string): Promise<void> {
+    const ops = result.surfaceOps;
+    if (!ops || ops.length === 0 || !result.mesh) {
+      lastAppliedSurface = null;
+      hideSurfaceReapplyPill();
+      return;
+    }
+    const baseKey = meshContentKey(result.mesh);
+    if (surfaceCacheStatus(baseKey, ops).cached) {
+      await applySurfaceTextures(result, src);
+      return;
+    }
+    lastAppliedSurface = null;
+    parkSurfaceChain({ base: result.mesh, ops, baseKey, src }, stalePillText(ops.length));
+  }
+
   async function applySurfaceTextures(result: MeshResult, src: string): Promise<void> {
     // Each mesh-producing run re-establishes what (if any) applied texture the
     // live mesh carries; stale-by-default until a branch below applies one.
@@ -24646,6 +25033,10 @@ async function main() {
     // The Customizer values this run was REQUESTED with (they can change while
     // it's in flight) — what a cached voxel grid must be keyed on.
     let runParamsKey = '';
+    // What else feeds this run, for the fingerprint snapshot (lastEngineRun).
+    const runPartId = getState().currentPart?.id ?? null;
+    const runInputs = runInputsKey();
+    const runSegments = getDefaultCircularSegments();
     try {
       runParamsKey = voxelParamsKey(currentParamValues);
       result = await executeCodeAsync(src, undefined, currentParamValues, onEnginePreview);
@@ -24700,6 +25091,7 @@ async function main() {
 
     if (result.error) {
       undoImportPreview();
+      lastEngineRun = null;
       const diagnostics = result.diagnostics ?? [];
       setStatus(statusBar, 'error', summarizeDiagnostics(result.error, diagnostics));
       if (printabilityIndicatorEl) printabilityIndicatorEl.style.display = 'none';
@@ -24757,6 +25149,7 @@ async function main() {
       // swaps in a new mesh invalidates them.
       const engineMesh = result.mesh;
       if (!opts.skipSurface) await applySurfaceTextures(result, src);
+      else await deferSurfaceTextures(result, src);
       // A compute can take seconds; if a newer run started meanwhile, abandon
       // this one rather than stamping a stale mesh over the new render.
       if (myGen !== _runGeneration) return false;
@@ -24765,6 +25158,11 @@ async function main() {
       // a refined mesh built from the OLD base over result.mesh.
       resetPaintWorkerState();
       currentMeshData = result.mesh;
+      lastEngineRun = { code: src, paramsKey: runParamsKey, partId: runPartId, inputsKey: runInputs, segments: runSegments, mesh: engineMesh, shown: result.mesh };
+      // A run of anything other than the drifted version's model (other code,
+      // Customizer values or quality) means the notice no longer describes
+      // what's on screen.
+      if (modelDrift && (!sameModelCode(src, modelDrift.code) || runParamsKey !== modelDrift.paramsKey || runSegments !== modelDrift.segments)) clearModelDrift();
       lastVoxelRun = result.voxelGrid
         ? { code: src, paramsKey: runParamsKey, grid: result.voxelGrid }
         : null;

@@ -43,7 +43,9 @@ await partwright.previewPartPresets({ algorithm: 'auto-merge' })   // -> { prese
 await partwright.applyPartPreset(0)
 
 // 2. Fused shell: place named seeds. Get points by clicking in your own
-//    renders: renderViews → probePixel(view, [px, py]) → .point
+//    renders: renderView(view) → probePixel({ pixel: [px, py], view }) → .point
+//    (probe a single renderView — renderViews composites tiles + labels, so its
+//    pixel coordinates don't map to one camera)
 //    An optional seed `color` becomes that part's colour (and its model colour on
 //    accept). listPartDetectors().labelPresets has the panel's default colours.
 await partwright.detectParts({
@@ -247,4 +249,4 @@ The full selector syntax is in [/ai/deform.md](/ai/deform.md#selecting-part-of-a
 - **Code you've restructured is left alone.** `acceptParts` only rewrites `Manifold.ofMesh(api.imports[i])` to `api.importWithParts(i)`. If your code loads the import some other way, call `api.importWithParts(i)` yourself. It returns a Manifold like `ofMesh`, and the labels survive later booleans.
 - **Re-detection keeps the draft.** A second `detectParts` goes into the existing draft as an undoable step: colours carry over by name, and locked parts and anything outside a focus stay as they are. `editParts({ops:[{op:'undo'}]})` steps back.
 - **Presets are listed per detector** in `listPartDetectors()` (`presets: [{name, params, featureOptions?}]`). The ranking score balances `grooveCoverage` against `grooveFidelity` (F1), discounted by stray islands and unassigned area. It's a heuristic, so look at the thumbnails too.
-- **Some operations drop parts.** Baking a surface texture or rescaling rebuilds the import's mesh, and the parts don't carry over yet. Re-detect afterwards. In code, `api.round` / `api.smoothWeld` keep the parts when you pass `keepLabels: true`. To edit one detected part as a solid (scale the head, turn an arm, delete or swap a piece), use `api.editPart(api.importWithParts(0), 'head', { scale: 1.2 })` — see [deform](/ai/deform.md#editpart--edit-one-part-as-a-solid) — and confirm only that part moved with `diffVersions(a, b, { geometry: true })`.
+- **Bakes keep the parts.** Baking a surface texture, or a scale / rotate / place in bake mode, rebuilds the mesh; the parts (detected ones and `api.label` regions alike) are carried onto the baked import by position and the code loads it with `api.importWithParts(0)`, so they stay labels. The bake's result lists them as `partsCarried`. Part edges follow the new triangles, so on a heavily re-meshed bake (engrave, a coarse texture) re-check a boundary that matters. In code, `api.round` / `api.smoothWeld` keep the parts when you pass `keepLabels: true`. To edit one detected part as a solid (scale the head, turn an arm, delete or swap a piece), use `api.editPart(api.importWithParts(0), 'head', { scale: 1.2 })` — see [deform](/ai/deform.md#editpart--edit-one-part-as-a-solid) — and confirm only that part moved with `diffVersions(a, b, { geometry: true })`.

@@ -178,6 +178,19 @@ export interface Version {
    *  dev/test builds where the version resolves to 'unknown' (we store nothing
    *  rather than the placeholder). Read by the cross-major migration seam. */
   appVersion?: string;
+  /** Geometry fingerprint of the mesh this version's code built when it was
+   *  saved (`ModelFingerprint`, src/geometry/modelFingerprint.ts; opaque here).
+   *  Opening the version compares it with the rebuilt mesh to notice when the
+   *  code now builds a different model. Absent on versions saved before
+   *  fingerprints existed, or by a save that had no matching run. */
+  fingerprint?: unknown;
+  /** The mesh this version displayed when saved (`SavedMesh`,
+   *  src/storage/versionMesh.ts; opaque here), colours included. Kept ONLY on
+   *  each object's newest version: saving a new version drops the previous
+   *  newest version's copy, so storage grows with objects, not history. Never
+   *  stored for a version whose model is already stored mesh data (imports, an
+   *  in-code surface texture, a baked voxel grid). */
+  latestMesh?: unknown;
 }
 
 /** Editor working buffer scoped to (session, part, language). One slot per
@@ -1013,6 +1026,11 @@ export interface SaveVersionOptions {
    *  Caller passes `buildInfo.version` (omit/undefined in dev where it's
    *  'unknown'); the db layer just stores it opaquely. */
   appVersion?: string;
+  /** Geometry fingerprint — see {@link Version.fingerprint}. */
+  fingerprint?: unknown;
+  /** Displayed mesh — see {@link Version.latestMesh}. Saving any version drops
+   *  the part's previous newest version's copy, whether or not this one has one. */
+  latestMesh?: unknown;
 }
 
 export async function saveVersion(
@@ -1036,6 +1054,8 @@ export async function saveVersion(
     operation,
     surfaceTexture,
     appVersion,
+    fingerprint,
+    latestMesh,
   } = options ?? {};
   // Compute the next index and write the version inside ONE readwrite
   // transaction. IndexedDB serializes overlapping readwrite transactions on
@@ -1057,6 +1077,9 @@ export async function saveVersion(
     cursorReq.onsuccess = () => {
       const cursor = cursorReq.result;
       const maxIndex = cursor ? (cursor.key as [string, number])[1] : 0;
+      // The part's newest version so far: the only one that can hold a
+      // latestMesh (see Version.latestMesh). This save supersedes it.
+      const prevNewestId = cursor ? cursor.primaryKey as string : null;
       const nextIndex = maxIndex + 1;
       const v: Version = {
         id: generateId(),
@@ -1078,9 +1101,23 @@ export async function saveVersion(
         ...(operation ? { operation } : {}),
         ...(surfaceTexture ? { surfaceTexture } : {}),
         ...(appVersion ? { appVersion } : {}),
+        ...(fingerprint ? { fingerprint } : {}),
+        ...(latestMesh ? { latestMesh } : {}),
       };
       const putReq = store.put(storedVersion(v));
-      putReq.onsuccess = () => resolve(v);
+      putReq.onsuccess = () => {
+        resolve(v);
+        // Drop the superseded newest version's mesh in the same transaction,
+        // chained from callbacks (an await here would let it auto-commit).
+        if (!prevNewestId) return;
+        const getReq = store.get(prevNewestId);
+        getReq.onsuccess = () => {
+          const prev = getReq.result as Version | undefined;
+          if (!prev || prev.latestMesh === undefined) return;
+          const { latestMesh: _dropped, ...rest } = prev;
+          store.put(rest);
+        };
+      };
       putReq.onerror = () => reject(putReq.error);
     };
     cursorReq.onerror = () => reject(cursorReq.error);

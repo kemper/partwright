@@ -108,6 +108,23 @@ function partRefs(v: unknown): unknown[] | undefined {
   return v.map((x) => (typeof x === 'string' && /^\d+$/.test(x.trim()) ? Number(x.trim()) : x));
 }
 
+// Typed schema fragments for object params. Gemini can only fill an object
+// param whose `properties` are declared (an untyped object sanitizes to
+// `properties: {}` and arrives empty), so every structured arg spells its
+// fields out.
+const VEC3_SCHEMA = { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 };
+const boxSchema = (description: string) => ({
+  type: 'object', description,
+  properties: { min: VEC3_SCHEMA, max: VEC3_SCHEMA },
+  required: ['min', 'max'],
+});
+const normalConeSchema = (description: string) => ({
+  type: 'object', description,
+  properties: { axis: VEC3_SCHEMA, angleDeg: { type: 'number' } },
+  required: ['axis', 'angleDeg'],
+});
+const AXIS_SCHEMA = { type: 'string', enum: ['x', 'y', 'z'] };
+
 const ALL_TOOLS: ToolDefinition[] = [
   {
     name: 'getActiveLanguage',
@@ -156,8 +173,8 @@ const ALL_TOOLS: ToolDefinition[] = [
           type: 'object',
           description: 'Map of parameter key → new value, e.g. { "width": 50, "rows": 3, "rounded": false }.',
         },
+        valuesJson: { type: 'string', description: 'Alternative to values: the same map as a JSON string, e.g. "{\\"width\\":50}". Use it if you cannot fill the values object. Used only when values is absent or empty.' },
       },
-      required: ['values'],
     },
   },
   {
@@ -220,11 +237,11 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: {
       type: 'object',
       properties: {
-        tolerance: { type: 'number', description: 'Coplanarity cosine in [-1, 1]. Default 0.999.' },
+        tolerance: { type: 'number', description: 'Coplanarity cosine in [-1, 1]. Default 0.9995.' },
         minTriangles: { type: 'integer', description: 'Drop groups smaller than this. Default 1.' },
-        maxGroups: { type: 'integer', description: 'Return only the N largest groups. Default unlimited — pass 8-16 for a first pass.' },
-        maxTrianglesPerGroup: { type: 'integer', description: 'Cap triangleIds per group. Pass 0 to OMIT triangleIds entirely (saves the most tokens — use this when you just need centroids/normals to plan painting).' },
-        withinBox: { type: 'object', description: 'Optional {min: [x,y,z], max: [x,y,z]} — return only groups whose bbox intersects this region. Use to focus on one feature (e.g. the eyes of a face) without pulling the whole mesh summary.' },
+        maxGroups: { type: 'integer', description: 'Return only the N largest groups. Default 256 — pass 8-16 for a first pass.' },
+        maxTrianglesPerGroup: { type: 'integer', description: 'Cap triangleIds per group (default 64). Pass 0 to OMIT triangleIds entirely (saves the most tokens — use this when you just need centroids/normals to plan painting).' },
+        withinBox: boxSchema('Optional {min: [x,y,z], max: [x,y,z]} — return only groups whose bbox intersects this region. Use to focus on one feature (e.g. the eyes of a face) without pulling the whole mesh summary.'),
       },
     },
   },
@@ -482,7 +499,7 @@ const ALL_TOOLS: ToolDefinition[] = [
       type: 'object',
       properties: {
         maxGroups: { type: 'integer', description: 'Return the N largest groups. Default 32.' },
-        withinBox: { type: 'object', description: 'Optional {min: [x,y,z], max: [x,y,z]} — only groups whose bbox intersects.' },
+        withinBox: boxSchema('Optional {min: [x,y,z], max: [x,y,z]} — only groups whose bbox intersects.'),
       },
     },
   },
@@ -564,12 +581,27 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: {
       type: 'object',
       properties: {
-        box: { type: 'object', description: '{min: [x,y,z], max: [x,y,z]}' },
-        cylinder: { type: 'object', description: 'Radial-shell selector: {rMin, rMax, zMin, zMax, center?: [a,b], axis?: "x"|"y"|"z"}. axis (default z) picks the shell axis; radius is measured in the plane normal to it. Previews the same triangles paintInCylinder would select (unsmoothed).' },
-        slab: { type: 'object', description: 'Slab selector: {axis: "x"|"y"|"z" OR normal: [nx,ny,nz], offset, thickness}. Previews the same triangles paintSlab would select (unsmoothed).' },
+        box: boxSchema('{min: [x,y,z], max: [x,y,z]}'),
+        cylinder: {
+          type: 'object',
+          description: 'Radial-shell selector: {rMin, rMax, zMin, zMax, center?: [a,b], axis?: "x"|"y"|"z"}. axis (default z) picks the shell axis; radius is measured in the plane normal to it. Previews the same triangles paintInCylinder would select (unsmoothed).',
+          properties: {
+            rMin: { type: 'number' }, rMax: { type: 'number' }, zMin: { type: 'number' }, zMax: { type: 'number' },
+            center: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+            axis: AXIS_SCHEMA,
+          },
+          required: ['rMin', 'rMax', 'zMin', 'zMax'],
+        },
+        slab: {
+          type: 'object',
+          description: 'Slab selector: {axis: "x"|"y"|"z" OR normal: [nx,ny,nz], offset, thickness}. Previews the same triangles paintSlab would select (unsmoothed).',
+          properties: { axis: AXIS_SCHEMA, normal: VEC3_SCHEMA, offset: { type: 'number' }, thickness: { type: 'number' } },
+          required: ['offset', 'thickness'],
+        },
         point: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         radius: { type: 'number' },
-        normalCone: { type: 'object', description: 'Optional {axis: [x,y,z], angleDeg: n} to restrict to faces pointing roughly in that direction.' },
+        normalCone: normalConeSchema('Optional {axis: [x,y,z], angleDeg: n} to restrict to faces pointing roughly in that direction.'),
+        topOnly: { type: 'boolean', description: 'Preview what the same selector with topOnly would paint (upward-facing faces only; overridden by normalCone).' },
         triangleIds: { type: 'array', items: { type: 'integer' }, description: 'Explicit triangle list — mostly for verifying findFaces results.' },
         withinPart: { type: 'string', description: 'Optional part (label) name: preview the selection clipped to that part, as a withinPart paint will be.' },
         withImage: { type: 'boolean', description: 'Default false (stats-only, free). Pass true to also return the highlighted thumbnail when the count is surprising or you want a visual sanity check.' },
@@ -597,6 +629,22 @@ const ALL_TOOLS: ToolDefinition[] = [
         index: { type: 'integer', description: '1-based version index.' },
       },
       required: ['index'],
+    },
+  },
+  {
+    name: 'getModelDrift',
+    description: 'Check whether the open version\'s code now builds a different model than the one saved with it — after a Partwright update changed a builder (a figure, a texture, a default), or because the code is random. The app shows this to the user as a "Built differently than saved" notice; loadVersion also reports it as builtDifferently. Returns {changed:false} or {changed:true, version, label, savedWith, running, differences (plain words, e.g. "volume +2.1%"), canRestore, dismissed}. Resolve it with resolveModelDrift — but ask the user first: it is their model.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'resolveModelDrift',
+    description: 'Resolve a version that builds differently than saved (see getModelDrift). choice "restore" commits the version\'s SAVED mesh (colours included) as a new version — only when getModelDrift().canRestore (each object\'s newest version keeps its mesh); the model then becomes a stored mesh, no longer editable as code. choice "keep" saves the newly built model as a new version. choice "ignore" leaves everything as it is and stops the notice for this version on this device. The drifted version itself is never changed. Only do this when the user has said which they want.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        choice: { type: 'string', enum: ['restore', 'keep', 'ignore'], description: '"restore" = bring back the saved mesh; "keep" = keep the newly built model; "ignore" = stop the notice.' },
+      },
+      required: ['choice'],
     },
   },
   {
@@ -722,7 +770,7 @@ const ALL_TOOLS: ToolDefinition[] = [
       properties: {
         point: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         radius: { type: 'number' },
-        normalCone: { type: 'object', description: 'Optional {axis: [x,y,z], angleDeg: n} to restrict to faces pointing roughly in that direction.' },
+        normalCone: normalConeSchema('Optional {axis: [x,y,z], angleDeg: n} to restrict to faces pointing roughly in that direction.'),
         topOnly: { type: 'boolean', description: 'Shortcut for normalCone: {axis: [0,0,1], angleDeg: 30}. Common case: paint only upward-facing faces in the region.' },
         coverageMode: { type: 'string', enum: ['centroid', 'fully_inside', 'any_vertex_inside'], description: 'Triangle containment test. Default "centroid". "fully_inside" requires all 3 vertices within radius — defangs fan-bleed.' },
         maxTriangleArea: { type: 'number', description: 'Skip triangles larger than this. Use to filter out the long radial triangles that cylinder/revolve produce.' },
@@ -752,6 +800,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
         withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
+        depth: { type: 'number', minimum: 0, description: 'Slab depth in mesh units (surface "slab" only; 0 = auto).' },
       },
       required: ['points', 'radius', 'color'],
     },
@@ -784,8 +833,8 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: {
       type: 'object',
       properties: {
-        box: { type: 'object', description: '{min: [x,y,z], max: [x,y,z]}' },
-        normalCone: { type: 'object', description: 'Optional {axis: [x,y,z], angleDeg: n}.' },
+        box: boxSchema('{min: [x,y,z], max: [x,y,z]}'),
+        normalCone: normalConeSchema('Optional {axis: [x,y,z], angleDeg: n}.'),
         topOnly: { type: 'boolean', description: 'Shortcut for normalCone: {axis: [0,0,1], angleDeg: 30}. Common case: paint the top face of a feature without catching its sides.' },
         coverageMode: { type: 'string', enum: ['centroid', 'fully_inside', 'any_vertex_inside'], description: 'Triangle containment test. Default "centroid". "fully_inside" requires all 3 vertices inside the box — defangs fan-bleed.' },
         maxTriangleArea: { type: 'number', description: 'Skip triangles larger than this. Use to filter out the long radial triangles that cylinder/revolve produce.' },
@@ -828,7 +877,7 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: {
       type: 'object',
       properties: {
-        axis: { type: 'string', enum: ['x', 'y', 'z'], description: 'Slab axis. Or pass `normal` for an arbitrary direction.' },
+        axis: { type: 'string', enum: ['x', 'y', 'z'], description: 'Slab axis. Pass exactly one of axis or normal (one is required).' },
         normal: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Use instead of axis for an oblique slab.' },
         offset: { type: 'number', description: 'Slab center along the axis/normal.' },
         thickness: { type: 'number', description: 'Slab thickness (paint catches anything within ±thickness/2 of offset).' },
@@ -853,7 +902,17 @@ const ALL_TOOLS: ToolDefinition[] = [
         pattern: { type: 'string', enum: ['soccer', 'stripes', 'spots', 'patches', 'gradient', 'checker'] },
         colors: { type: 'array', items: { type: 'string' }, description: 'Palette as hex strings: [base, mark, third?]. Soccer: [white, black].' },
         withinPart: { type: 'string', description: 'Part (label) to paint — e.g. a detected part after detectParts → acceptParts, or an api.label region (listLabels). Soccer fits the ball to this part.' },
-        scope: { type: 'object', description: 'Optional extra narrowing: {label?, above?:{axis,at}, below?:{axis,at}, box?:{min,max}, sphere?:{center,radius}} (triangle-centroid tests, ANDed).' },
+        scope: {
+          type: 'object',
+          description: 'Optional extra narrowing: {label?, above?:{axis,at}, below?:{axis,at}, box?:{min,max}, sphere?:{center,radius}} (triangle-centroid tests, ANDed).',
+          properties: {
+            label: { type: 'string' },
+            above: { type: 'object', properties: { axis: AXIS_SCHEMA, at: { type: 'number' } }, required: ['axis', 'at'] },
+            below: { type: 'object', properties: { axis: AXIS_SCHEMA, at: { type: 'number' } }, required: ['axis', 'at'] },
+            box: boxSchema('Centroid box.'),
+            sphere: { type: 'object', properties: { center: VEC3_SCHEMA, radius: { type: 'number' } }, required: ['center', 'radius'] },
+          },
+        },
         scale: { type: 'number', description: 'Feature size (stripe period / spot spacing / checker cell). Default ~1/8 of the model diagonal. Unused by soccer.' },
         axis: { type: 'string', enum: ['x', 'y', 'z'], description: 'Stripe axis (bands run across it). Default z.' },
         warp: { type: 'number', description: 'Noise wiggle 0..1 for stripes/patches/checker edges.' },
@@ -879,6 +938,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         searchRadius: { type: 'number', description: 'How far to look for a face. Default ~1.0.' },
         name: { type: 'string' },
         withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
+        tolerance: { type: 'number', minimum: -1, maximum: 1, description: 'Coplanar-flood tolerance as a COSINE (like paintRegion\'s console tolerance). Default 0.9995 ≈ 1.8°.' },
       },
       required: ['point', 'color'],
     },
@@ -889,9 +949,9 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: {
       type: 'object',
       properties: {
-        box: { type: 'object', description: '{min: [x,y,z], max: [x,y,z]}' },
+        box: boxSchema('{min: [x,y,z], max: [x,y,z]}'),
         normal: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
-        normalTolerance: { type: 'number' },
+        normalTolerance: { type: 'number', minimum: -1, maximum: 1, description: 'A COSINE, not degrees: keep faces whose normal is within acos(normalTolerance) of `normal`. Default 0.95 (≈18°); 0.7 ≈ 45°.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         region: { type: 'integer', description: 'Region id from listRegions().' },
         withinPart: { type: 'string', description: 'Only triangles of this part (label).' },
@@ -1640,7 +1700,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'getObjectPartInfo',
-    description: 'Size (bounding-box extents), surface area, triangle count and the pieces (1-based) one part or piece of the current object touches. Use it to measure a labelled feature without probing coordinates.',
+    description: 'Size (bounding-box extents), surface area, triangle count and the pieces (0-based indices, as listObjectParts and the piece tools use) one part or piece of the current object touches. Use it to measure a labelled feature without probing coordinates.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1752,7 +1812,8 @@ const ALL_TOOLS: ToolDefinition[] = [
       type: 'object',
       properties: {
         region: { description: 'Region id (integer) or name (string) from listRegions().' },
-        expectedTriangleCount: { description: 'Exact integer or {min?, max?} object.' },
+        expectedTriangleCount: { type: 'integer', minimum: 0, description: 'Exact triangle count to expect. For a range use expectedTriangleRange.' },
+        expectedTriangleRange: { type: 'object', description: 'Inclusive range {min?, max?} of triangles to expect.', properties: { min: { type: 'integer', minimum: 0 }, max: { type: 'integer', minimum: 0 } } },
         expectedBoundingBox: {
           type: 'object',
           description: 'Object with any subset of axis keys {x?, y?, z?} each [min, max].',
@@ -1820,6 +1881,9 @@ const ALL_TOOLS: ToolDefinition[] = [
           },
           required: ['axis', 'angleDeg'],
         },
+        smooth: { type: 'boolean', description: 'Smooth the painted edge along the analytic cylinder by refining boundary triangles. Default true; false = fast, follows the existing triangles.' },
+        resolution: { type: 'number', description: 'Smooth-edge density: model bbox diagonal / resolution. Default 256.' },
+        maxEdge: { type: 'number', description: 'Explicit max boundary edge length in mesh units; overrides resolution.' },
         topOnly: { type: 'boolean', description: 'Shortcut: only upward-facing triangles (normal within 30° of +Z).' },
         coverageMode: {
           type: 'string',
@@ -2020,6 +2084,7 @@ Plus preserveColor (default true — bake path only; on the code path paint re-r
           type: 'object',
           description: "That id's options (see the per-id list in the tool description) plus preserveColor. Omit for size-relative defaults.",
         },
+        optsJson: { type: 'string', description: 'Alternative to opts: the same options as a JSON string, e.g. "{\\"depth\\":0.4}". Use it if you cannot fill the opts object. Used only when opts is absent or empty.' },
         mode: {
           type: 'string',
           enum: ['auto', 'code', 'bake'],
@@ -2057,7 +2122,7 @@ Plus preserveColor (default true — bake path only; on the code path paint re-r
         cellSize: { type: 'number', description: 'Approximate spacing between cells in world units. Default ~16% of diagonal.' },
         wallThickness: { type: 'number', description: 'Shell wall thickness in world units (strut thickness through the wall). Default ~3% of diagonal.' },
         strutWidth: { type: 'number', description: 'Kept edge-network width as a fraction of cellSize [0.05–0.6]. Default 0.3. Smaller = thinner struts, larger windows.', minimum: 0.05, maximum: 0.6 },
-        resolution: { type: 'integer', description: 'Field/voxel resolution along the longest axis [16–256]. Higher = crisper struts, slower. Default 110.', minimum: 16, maximum: 256 },
+        resolution: { type: 'integer', description: 'Field/voxel resolution along the longest axis [16–256]. Higher = crisper struts, slower. Default 140.', minimum: 16, maximum: 256 },
         jitter: { type: 'number', description: 'Cell irregularity [0–1]. 1 = irregular Voronoi (default); 0 = a regular grid.', minimum: 0, maximum: 1 },
         grainAngleDeg: { type: 'number', description: 'Rotate the cell pattern in the XY plane, degrees. Default 0.' },
         seed: { type: 'integer', description: 'Deterministic seed — change to reshuffle the cell layout. Default 1.' },
@@ -2149,6 +2214,8 @@ Returns { ok, stats, metrics, version } or { error }.`,
         quality: { type: 'string', enum: ['draft', 'standard', 'fine'], description: "Speed/smoothness preset. 'draft' ≈ 4× faster, 'fine' ≈ 4× slower and smoothest. Default 'standard'." },
         step: { type: 'number', description: 'Explicit Z-section pitch (world units); overrides the preset. Smaller = more sections.' },
         edge: { type: 'number', description: 'Explicit levelSet edge length (world units); smaller = finer surface + slower build.' },
+        dpTol: { type: 'number', description: 'Explicit Douglas-Peucker tolerance (world units) for simplifying each section outline; larger = fewer points, coarser outline.' },
+        samples: { type: 'integer', minimum: 100, maximum: 200000, description: 'Surface sample count for the fit metrics (chamfer / hausdorff). Default 4000.' },
       },
     },
   },
@@ -2262,6 +2329,7 @@ Returns { ok, stats, metrics, version } or { error }.`,
         from: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Current colour [r,g,b] 0..1 (from listRegions / getModelColors).' },
         to: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'New colour [r,g,b] 0..1.' },
         tolerance: { type: 'number', minimum: 0, description: 'Max RGB distance counted as a match. Default 0.01.' },
+        withinPart: { type: 'string', description: 'Optional part (label) name: replace the colour only inside that part (adds a part-scoped colour-match region instead of recolouring whole regions).' },
       },
       required: ['from', 'to'],
     },
@@ -2314,6 +2382,7 @@ Returns { ok, stats, metrics, version } or { error }.`,
         objects: { type: 'array', items: { type: 'string' }, description: 'Optional object names or ids to bundle into one file. Default: the current object (\'3mf-objects\': every object).' },
         filename: { type: 'string', description: 'Optional download filename (the extension is added if missing).' },
         split: { type: 'object', description: 'Optional: object name or id → "pieces" | "parts" | "whole". Not for step / vox.' },
+        splitJson: { type: 'string', description: 'Alternative to split: the same map as a JSON string, e.g. "{\\"Chess set\\":\\"pieces\\"}". Use it if you cannot fill the split object. Used only when split is absent or empty.' },
         exclude: { type: 'array', items: { type: 'string' }, description: 'Optional: split items to leave out, by name ("<object> · <item>", e.g. "Chess set · Brim tab").' },
       },
       required: ['format'],
@@ -2642,6 +2711,7 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   'getCode', 'setCode', 'runCode', 'runAndSave', 'runAndAssert', 'runAndExplain',
   'getParams', 'setParams', 'getGeometryData', 'getMeshSummary', 'getFeatureCentroids',
   'listVersions', 'loadVersion', 'saveVersion', 'forkVersion', 'copyColorsFromVersion',
+  'getModelDrift', 'resolveModelDrift',
   'modifyAndTest', 'query', 'findFaces', 'listComponents', 'listLabels', 'getModelColors',
   'listRegions', 'probePixel', 'probePixels', 'probeRay', 'paintPreview', 'paintExplain',
   'getPartTriangles', 'partBoundary', 'paintAlongBoundary',
@@ -2686,6 +2756,7 @@ const LEGACY_SCOPE_TOOLS = new Set<string>([
 
 const ALWAYS_AVAILABLE = new Set([
   ASK_USER_TOOL,
+  'getModelDrift',
   'listPartDetectors',
   'getPartDraft',
   'getActiveLanguage',
@@ -2728,7 +2799,6 @@ const ALWAYS_AVAILABLE = new Set([
   'previewSeeds',
   'paintPreview',
   'paintExplain',
-  'forkVersion',
   'runAndAssert',
   'runAndExplain',
   'query',
@@ -2955,7 +3025,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams', 'setCurvatureQuality']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts', 'partAction', 'undoPartEdit']);
+const SAVE_GATED = new Set(['runAndSave', 'forkVersion', 'loadVersion', 'saveVersion', 'resolveModelDrift', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts', 'partAction', 'undoPartEdit']);
 /** SAVE_GATED tools that touch version history WITHOUT executing new code, so
  *  they only need the saveVersions scope (not runCode). */
 const SAVE_NON_RUNNING = new Set(['loadVersion', 'saveVersion', 'renameVersion', 'deleteVersion', 'saveAllObjects']);
@@ -3258,7 +3328,10 @@ function matchObjectRow(objects: ObjectRow[], target: string | number): ObjectRo
     if (!Number.isInteger(target) || target < 0) return undefined;
     return [...objects].sort((a, b) => a.order - b.order)[target];
   }
-  return objects.find(p => p.id === target) ?? objects.find(p => p.name === target);
+  // A digit string is an index that arrived as a string (Gemini types an
+  // untyped param as string) — but only once no object carries it as a name.
+  return objects.find(p => p.id === target) ?? objects.find(p => p.name === target)
+    ?? (/^\d+$/.test(target) ? matchObjectRow(objects, Number(target)) : undefined);
 }
 
 /** Switch focus to the object an object-scoped tool named via its `object`
@@ -3693,6 +3766,24 @@ function parseImageDataUrl(dataUrl: string): { data: string; mediaType: ImageSou
   return { data: match[2], mediaType: safeMedia };
 }
 
+/** A free-form object param, or its `<key>Json` string fallback for providers
+ *  that can't fill an untyped object (Gemini). The object wins when non-empty. */
+function objectOrJson(obj: unknown, json: unknown, tool: string, key: string): { value: Record<string, unknown> } | { error: string } {
+  const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+  if (isObj(obj) && Object.keys(obj).length > 0) return { value: obj };
+  if (typeof json === 'string' && json.trim() !== '') {
+    let parsed: unknown;
+    try { parsed = JSON.parse(json); } catch (e) {
+      return { error: `${tool}: ${key}Json is not valid JSON (${e instanceof Error ? e.message : String(e)})` };
+    }
+    if (!isObj(parsed)) return { error: `${tool}: ${key}Json must encode a JSON object` };
+    return { value: parsed };
+  }
+  if (obj === undefined && json === undefined) return { error: `${tool}: ${key} is required (or pass ${key}Json)` };
+  if (obj !== undefined && !isObj(obj)) return { error: `${tool}: ${key} must be an object` };
+  return { value: (obj ?? {}) as Record<string, unknown> };
+}
+
 async function dispatch(api: PartwrightAPI, name: string, input: Record<string, unknown>): Promise<unknown> {
   switch (name) {
     case 'getActiveLanguage':
@@ -3711,8 +3802,11 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.runAndSave(input.code as string, input.label as string | undefined, input.assertions as Record<string, unknown> | undefined, { preserveCamera: true });
     case 'getParams':
       return api.getParams();
-    case 'setParams':
-      return api.setParams(input.values as Record<string, unknown>);
+    case 'setParams': {
+      const values = objectOrJson(input.values, input.valuesJson, 'setParams', 'values');
+      if ('error' in values) return values;
+      return api.setParams(values.value);
+    }
     case 'getGeometryData':
       return api.getGeometryData();
     case 'getMeshSummary':
@@ -3725,6 +3819,13 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.loadVersion({ index: input.index as number });
     case 'saveVersion':
       return api.saveVersion(input.label as string | undefined);
+    case 'getModelDrift':
+      return api.getModelDrift();
+    case 'resolveModelDrift':
+      if (input.choice === 'restore') return api.restoreSavedModel();
+      if (input.choice === 'keep') return api.keepRebuiltModel();
+      if (input.choice === 'ignore') return api.dismissModelDrift();
+      return { error: `resolveModelDrift: choice must be "restore", "keep" or "ignore" (got ${JSON.stringify(input.choice)})` };
     case 'addSessionNote':
       return api.addSessionNote(input.text as string);
     case 'listSessionNotes':
@@ -4147,8 +4248,16 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.listDeleted();
     case 'restoreObject':
       return api.restoreObject(input.object);
-    case 'assertPaint':
-      return api.assertPaint(input);
+    case 'assertPaint': {
+      // The tool splits the API's `number | {min, max}` into two typed params
+      // (a union can't be typed for Gemini); fold the range back in.
+      const { expectedTriangleRange, ...rest } = input;
+      if (expectedTriangleRange !== undefined) {
+        if (rest.expectedTriangleCount !== undefined) return { error: 'assertPaint: pass expectedTriangleCount OR expectedTriangleRange, not both' };
+        rest.expectedTriangleCount = expectedTriangleRange;
+      }
+      return api.assertPaint(rest as Parameters<PartwrightAPI['assertPaint']>[0]);
+    }
     case 'paintInCylinder':
       return api.paintInCylinder(input);
     case 'checkPrintability':
@@ -4165,12 +4274,17 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.getReliefSwapGuide();
     case 'setReliefPreviewMode':
       return api.setReliefPreviewMode(input.mode);
-    case 'applySurfaceTexture':
+    case 'applySurfaceTexture': {
+      const opts = input.opts === undefined && input.optsJson === undefined
+        ? { value: undefined }
+        : objectOrJson(input.opts, input.optsJson, 'applySurfaceTexture', 'opts');
+      if ('error' in opts) return opts;
       return api.applySurfaceTexture(
         input.id as 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'smooth',
-        input.opts as Record<string, number | boolean | string> | undefined,
+        opts.value as Record<string, number | boolean | string> | undefined,
         input.mode as 'auto' | 'code' | 'bake' | undefined,
       );
+    }
     case 'applyVoronoiLamp':
       return api.applyVoronoiLamp(input);
     case 'engraveModel':
@@ -4411,11 +4525,21 @@ const EXPORT_FORMAT_LABEL: Record<ExportFormat, string> = {
   '3mf-objects': 'a Bambu Studio / OrcaSlicer 3MF project', step: 'a STEP file', vox: 'a MagicaVoxel .vox file',
 };
 
+/** exportModel's `split` map, or its `splitJson` string fallback (Gemini can't
+ *  fill a free-form object). undefined when neither is given; the raw value
+ *  when malformed, so exportInputError reports it. */
+function exportSplit(input: Record<string, unknown>): unknown {
+  const split = input.split;
+  const filled = split != null && typeof split === 'object' && !Array.isArray(split) && Object.keys(split).length > 0;
+  if (filled || typeof input.splitJson !== 'string' || input.splitJson.trim() === '') return split ?? undefined;
+  try { return JSON.parse(input.splitJson); } catch { return input.splitJson; }
+}
+
 /** Shape errors in an exportModel call, checked before the confirm prompt and
  *  again at dispatch. Null when the input is well-formed. */
 function exportInputError(input: Record<string, unknown>): string | null {
-  const unknown = Object.keys(input).filter(k => !['format', 'objects', 'filename', 'split', 'exclude'].includes(k));
-  if (unknown.length > 0) return `exportModel: unknown key(s) ${unknown.map(k => JSON.stringify(k)).join(', ')}. Allowed: format, objects, filename, split, exclude.`;
+  const unknown = Object.keys(input).filter(k => !['format', 'objects', 'filename', 'split', 'splitJson', 'exclude'].includes(k));
+  if (unknown.length > 0) return `exportModel: unknown key(s) ${unknown.map(k => JSON.stringify(k)).join(', ')}. Allowed: format, objects, filename, split, splitJson, exclude.`;
   if (typeof input.format !== 'string' || !(EXPORT_FORMATS as readonly string[]).includes(input.format)) {
     return `exportModel: format must be one of ${EXPORT_FORMATS.join(', ')}.`;
   }
@@ -4430,16 +4554,17 @@ function exportInputError(input: Record<string, unknown>): string | null {
       return `exportModel: ${input.format.toUpperCase()} exports only the current object — omit objects (switch objects with changeObject first).`;
     }
   }
-  if (input.split != null) {
-    if (typeof input.split !== 'object' || Array.isArray(input.split)) return 'exportModel: split must be an object of object name or id → "pieces" | "parts" | "whole".';
-    for (const [k, v] of Object.entries(input.split as Record<string, unknown>)) {
+  const split = exportSplit(input);
+  if (split != null) {
+    if (typeof split !== 'object' || Array.isArray(split)) return 'exportModel: split must be an object (or splitJson a JSON object) of object name or id → "pieces" | "parts" | "whole".';
+    for (const [k, v] of Object.entries(split as Record<string, unknown>)) {
       if (v !== 'pieces' && v !== 'parts' && v !== 'whole') return `exportModel: split["${k}"] must be "pieces", "parts" or "whole".`;
     }
   }
   if (input.exclude != null && (!Array.isArray(input.exclude) || input.exclude.some(x => typeof x !== 'string' || x === ''))) {
     return 'exportModel: exclude must be an array of item names ("<object> · <item>").';
   }
-  if ((input.split != null || input.exclude != null) && (input.format === 'step' || input.format === 'vox')) {
+  if ((split != null || input.exclude != null) && (input.format === 'step' || input.format === 'vox')) {
     return `exportModel: ${input.format.toUpperCase()} can't split objects — omit split / exclude.`;
   }
   return null;
@@ -4508,7 +4633,7 @@ async function executeExportModel(api: PartwrightAPI, input: Record<string, unkn
   }
   // Splitting goes through the multi-object exports; with no `objects` it
   // applies to the current object.
-  const split = input.split as Record<string, string> | undefined;
+  const split = exportSplit(input) as Record<string, string> | undefined;
   const exclude = input.exclude as string[] | undefined;
   const splitOpts = split || exclude ? { ...(split ? { split } : {}), ...(exclude ? { exclude } : {}) } : undefined;
   if (splitOpts && !ids && format !== '3mf-objects') {

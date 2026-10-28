@@ -88,7 +88,7 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Round/chamfer all sharp edges of a solid | `Curves.fillet(solid, {angle: 60})` (mesh-smoothing) | BOSL2 `cuboid(rounding=...)`, `round3d(...)` | **`.fillet(radius)` / `.chamfer(distance)` -> `/ai/replicad.md` (exact, BREP-true)** |
 | Round/chamfer ONLY specific edges (e.g. top rim only) | (not available) | BOSL2 `edge_profile()` (rough) | **`.fillet(r, {minZ, maxZ, nearPoint+withinDist, parallelToPlane, inDirection})` — selective, BREP-only. See `/ai/replicad.md` for the full EdgeFilter.** |
 | STEP export | (not available) | (not available) | **`partwright.exportSTEP()` after a BREP-language run -> `/ai/replicad.md`** |
-| STEP import (read a `.step` / `.stp` file as a CAD shape) | (use partwright.importFile UI, choose manifold-js — tessellates) | (not available) | **partwright.importFile UI, choose BREP — preserves exact surfaces. `api.imports[0]` in the replicad sandbox is the BrepShape.** |
+| STEP import (read a `.step` / `.stp` file as a CAD shape) | (`importStepData(b64, name, {mode:'mesh'})` — tessellates) | (not available) | **`importStepData(b64, name)` (default BREP) — exact surfaces. `api.imports[0]` in the replicad sandbox is the BrepShape.** |
 | Ring/linear/mirror copies | `api.circularPattern / linearPattern / mirrorCopy` (or `Curves.ringCopy / linearCopy / mirrorCopy`) | BOSL2 `ring_copies()`, `xcopies()`, `mirror_copy()` | (use manifold-js helpers) |
 | Place A on top of B (no mental trig) | `api.placeOn(a, b, {gap?, at?})` | BOSL2 attachments: `attach(TOP, BOTTOM)` | (use manifold-js — convert BREP→Manifold first) |
 | Align A's edge/face to B (per axis) | `api.alignTo(a, b, {x?, y?, z?})` (min/max/center) | BOSL2 `position()`/`anchor()` | (use manifold-js — convert BREP→Manifold first) |
@@ -345,7 +345,7 @@ await partwright.exportGLBObjects(objectIds?, filename?, {split?, exclude?})  //
 // ...each has a *Data twin (export{3MF,OBJ,STL,GLB}ObjectsData) that RETURNS the bytes instead of downloading.
 // Results carry {objects: N}. The pre-rename export*Parts / export*PartsData names still work (deprecated aliases).
 await partwright.exportSessionData()    // -> {filename, mimeType, data, sizeBytes} (parsed JSON)
-await partwright.exportSession(sessionId?, {includeThumbnails?, includeAnnotations?, includeNotes?, includeColorRegions?}) // -> the ExportedSession object itself (default: current; thumbnails off by default), null if none, or {error}
+await partwright.exportSession(sessionId?, {includeThumbnails?, includeAnnotations?, includeNotes?, includeColorRegions?, includeChat?, includeLatestMeshes?}) // -> the ExportedSession object (default: current), null if none, or {error}
 partwright.exportCodeData()             // -> {filename, mimeType, language, text, sizeBytes}
 await partwright.importSessionData(parsedJson)         // -> {sessionId} or {error}
 await partwright.importSession(exportedSession)        // Import a parsed session object (regenerates thumbnails) and open it -> {id, name, warning?} or {error}
@@ -445,6 +445,7 @@ partwright.getCharacterSpec()                         // Read the spec from the 
 partwright.listCharacterPresets()               // Character Creator starting characters -> [{id, label, description, spec}]; pass .spec (optionally tweaked) to buildCharacter.
 await partwright.randomCharacter({seed?, save?, label?}) // Random, coherent humanoid (the panel's 🎲 Random) -> {seed, spec, code, ...}. Same seed = same character.
 await partwright.saveVersion(label?)     // Save current state as version
+partwright.getModelDrift() / restoreSavedModel() / keepRebuiltModel() / dismissModelDrift() // a version whose code now builds a different model than saved -- /ai/file-io.md#built-differently-than-saved
 await partwright.commitWithColors({code?, label?, assertions?}) // Routes for you: new code -> runAndSave; same/omitted code -> saveVersion snapshot -> {routed:'run'|'snapshot', ...} or {error}
 await partwright.saveAllObjects()        // Save every object with unsaved changes (visits each, restores the active object) -> {saved, failed} or {error}
 await partwright.listVersions()          // -> [{id, index, label, timestamp, status}]
@@ -577,9 +578,7 @@ partwright.setPaletteCapacity(n) / setPaletteConstrained(on)
 partwright.getBucketTolerance() / setBucketTolerance(t)                   // UI bucket tool config
 partwright.getBrushSize() / setBrushSize(r)                               // UI brush tool config
 partwright.getBrushSmooth() / setBrushSmooth(on) / setBrushSmoothDivisor(2..1024) // UI smooth-brush config (detail = radius ÷ divisor)
-partwright.getBrushSurface() / setBrushSurface('geodesic'|'slab'|'sphere') / setBrushDepth(d) // UI brush volume + slab depth (0 = auto)
-partwright.getBrushAlign() / setBrushAlign('view'|'surface'|'area')           // UI brush direction: view (default) = camera ray, surface = triangle normal, area = averaged normal
-partwright.getBrushFrontFacesOnly() / setBrushFrontFacesOnly(bool)           // UI brush: only paint triangles facing the camera (default on)
+partwright.get/setBrushSurface, setBrushDepth, get/setBrushAlign, get/setBrushFrontFacesOnly // UI brush settings -- /ai/colors.md#ui-brush-settings
 partwright.getBrushWrapAngle() / setBrushWrapAngle(0..180)                 // UI brush wrap tolerance (max edge bend paint crosses)
 partwright.getLabelNames()                                                // -> string[] label names from the current run (lighter than listLabels)
 await partwright.waitForPaint()                                           // resolve when no paint subdivision is in flight (only for pointer-driven brush tests)
@@ -881,7 +880,7 @@ return part;
 
 #### Surface textures in code — `api.surface.*`
 
-Just like paint, **surface textures** can live in the code instead of being baked: `api.surface.fuzzy / .knit / .cable / .waffle / .fur / .woven / .knurl / .voronoi / .smooth` (or the generic `api.surface.apply('knit', {…})`). Each call records a texture op applied to the **final returned mesh**, in order — a parametric, non-baking counterpart of the `applyFuzzySkin` / `applyKnitTexture` / … tools (same options; size-relative defaults fill in omissions).
+Just like paint, **surface textures** can live in the code instead of being baked: `api.surface.fuzzy / .knit / .cable / .waffle / .fur / .woven / .knurl / .voronoi / .smooth` (or the generic `api.surface.apply('knit', {…})`). Each call records a texture op applied to the **final returned mesh**, in order — a parametric, non-baking counterpart of the `applyFuzzySkin` / `applyKnitTexture` / … tools (same options minus bake-only `preserveColor`; size-relative defaults fill in omissions).
 
 ```js
 const { Manifold } = api;
@@ -891,7 +890,7 @@ return Manifold.sphere(10, 64);
 
 Textures are **memoized on the base mesh content**: any run producing the same geometry (whitespace/comment edits included) reuses the cached result. **Every run applies the chain** — `partwright.run` / `runAndSave`, the Run button, version loads, and live typing alike (computed in a Worker behind an "Applying texture… Xs" status + Cancel), so what you render is already textured. Cancelling parks the chain behind a "⟳ Re-apply" pill (recover with `ensureSurfaceTexturesApplied()` or any re-run). manifold-js-only. `partwright.applySurfaceTextureAsCode(id, opts?)` writes/updates the call in the code for you (insert before the final `return`, or edit the existing call), re-runs, and saves a version. `partwright.applySurfaceTexture(id, opts?, mode?)` is the auto-routing wrapper: 'auto' (default) takes this in-code path on manifold-js and falls back to the bake tools elsewhere — returns `path: 'code' | 'bake'`. See [textures](/ai/textures.md#textures-as-code--apisurface-non-baking-in-a-manifold-js-session).
 
-**Scope a texture to part of the model** with one extra option: `api.surface.knurl({ label: 'grip' })` textures only an `api.label(…)` region (so you can texture one shape of a union), and `api.surface.fuzzy({ region: { point: [x,y,z], radius } })` textures only the triangles near a world-space point. The label's color carries onto the textured region. (Scope keys are manifold-js-code only; ignored on the bake path.)
+**Scope a texture to part of the model** with one extra option: `api.surface.knurl({ label: 'grip' })` textures only an `api.label(…)` region (so you can texture one shape of a union), and `api.surface.fuzzy({ region: { point: [x,y,z], radius } })` textures only the triangles near a world-space point. The label's color carries onto the textured region. (Scope keys are manifold-js-code only; the bake path rejects them.)
 
 ### Primitive origins and orientations
 
@@ -1297,7 +1296,7 @@ const r = partwright.query({
   decompose: true,             // component breakdown
   boundingBox: true,           // bounding box
 });
-// r.slices     = { z5: {area, contours, ...}, z10: {...}, ... }
+// r.slices     = { z5: {area, polygons, svg, boundingBox}, ... }
 // r.components = [{ index, volume, centroid, boundingBox }, ...]
 // r.boundingBox = { min: [...], max: [...] }
 // r.stats      = current geometry-data stats

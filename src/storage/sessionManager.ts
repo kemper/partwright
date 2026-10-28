@@ -69,6 +69,8 @@ import {
 import { setActiveImports, type ImportedMesh, type ImportedMeshParts } from '../import/importedMesh';
 import { normalizeImportParts } from '../import/importParts';
 import type { PersistedSurfaceTexture } from '../surface/surfaceOpSpec';
+import { parseModelFingerprint, type ModelFingerprint } from '../geometry/modelFingerprint';
+import { isMeshBackedVersion, parseSavedMesh, type SavedMesh, type VersionSnapshot } from './versionMesh';
 import { setCompanionFiles, companionFilesEqual } from '../import/companionFiles';
 import { getActiveLanguage } from '../geometry/engine';
 import { isStarterCode } from '../editor/starters';
@@ -217,8 +219,17 @@ import { isQuotaError } from './quota';
  *           import carry it verbatim. Pre-1.21 builds don't know the kind; this
  *           build resolves any unknown kind to an empty region instead of
  *           failing, so a later kind degrades the same way.
+ *  - `1.22` — per-version model snapshot. `versions[].fingerprint` (always
+ *           written when present; ~100 bytes) records the geometry the code
+ *           built when the version was saved, so a later open can notice the
+ *           code now builds a different model. `versions[].latestMesh`
+ *           (buffers base64-encoded, same layout as `surfaceTexture` minus the
+ *           key) is the mesh each object's NEWEST version displayed, colours
+ *           included — written only with the export's `includeLatestMeshes`
+ *           option. Both restore on import; malformed ones are dropped. Older
+ *           readers ignore them.
  */
-export const SCHEMA_VERSION = '1.21';
+export const SCHEMA_VERSION = '1.22';
 
 const CURRENT_MAJOR = 1;
 
@@ -353,6 +364,18 @@ export interface ExportedSession {
      * @since 1.15
      */
     appVersion?: string;
+    /**
+     * Geometry fingerprint of what this version's code built when it was saved
+     * (`ModelFingerprint`, plain JSON). Absent on older saves.
+     * @since 1.22
+     */
+    fingerprint?: ModelFingerprint;
+    /**
+     * The mesh this (newest) version displayed when saved, colours included,
+     * buffers base64-encoded. Only with the `includeLatestMeshes` export option.
+     * @since 1.22
+     */
+    latestMesh?: ExportedMesh;
   }[];
   notes?: { text: string; timestamp: number }[];
   /**
@@ -407,6 +430,19 @@ export interface ExportedImportedMeshParts {
 /** A {@link PersistedSurfaceTexture} with its typed-array buffers
  *  base64-encoded so it can be embedded in JSON.
  *  @since 1.14 */
+/** A mesh in an exported file, buffers base64-encoded. */
+export interface ExportedMesh {
+  numVert: number;
+  numTri: number;
+  numProp: number;
+  /** base64 of the Float32Array vertex-property buffer. */
+  vertProperties: string;
+  /** base64 of the Uint32Array triangle-index buffer. */
+  triVerts: string;
+  /** base64 of the optional Uint8Array per-triangle RGB buffer. */
+  triColors?: string;
+}
+
 export interface ExportedSurfaceTexture {
   /** Full-chain memo key the mesh was computed under (see surfaceOps.ts). */
   key: string;
@@ -516,6 +552,61 @@ function deserializeSurfaceTexture(tex: ExportedSurfaceTexture | undefined): Per
   } catch {
     return undefined;
   }
+}
+
+function serializeSavedMesh(raw: unknown): ExportedMesh | undefined {
+  const m = parseSavedMesh(raw);
+  if (!m) return undefined;
+  return {
+    numVert: m.numVert,
+    numTri: m.numTri,
+    numProp: m.numProp,
+    vertProperties: typedArrayToBase64(m.vertProperties),
+    triVerts: typedArrayToBase64(m.triVerts),
+    ...(m.triColors ? { triColors: typedArrayToBase64(m.triColors) } : {}),
+  };
+}
+
+/** Validating decode of an exported mesh; undefined (the version just has no
+ *  stored mesh) when the field is malformed. */
+function deserializeSavedMesh(raw: ExportedMesh | undefined): SavedMesh | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  if (typeof raw.vertProperties !== 'string' || typeof raw.triVerts !== 'string') return undefined;
+  // The same cap a local save applies (a file can claim anything).
+  if (typeof raw.numTri !== 'number' || raw.numTri > getConfig().renderer.versionMeshMaxTriangles) return undefined;
+  try {
+    return parseSavedMesh({
+      numVert: raw.numVert,
+      numTri: raw.numTri,
+      numProp: raw.numProp,
+      vertProperties: new Float32Array(base64ToArrayBuffer(raw.vertProperties)),
+      triVerts: new Uint32Array(base64ToArrayBuffer(raw.triVerts)),
+      ...(typeof raw.triColors === 'string' ? { triColors: new Uint8Array(base64ToArrayBuffer(raw.triColors)) } : {}),
+    }) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The model snapshot an exported version restores into its stored version:
+ *  `{ fingerprint?, latestMesh? }`, each dropped when malformed, and the mesh
+ *  dropped for a mesh-backed version (its imports / texture already hold it). */
+function importedSnapshot(
+  v: ExportedSession['versions'][number],
+  importedMeshes: ImportedMesh[] | undefined,
+): { fingerprint?: ModelFingerprint; latestMesh?: SavedMesh } {
+  const fingerprint = parseModelFingerprint(v.fingerprint) ?? undefined;
+  const meshBacked = isMeshBackedVersion({
+    code: typeof v.code === 'string' ? v.code : '',
+    language: v.language,
+    importedMeshes,
+    surfaceTexture: v.surfaceTexture,
+  });
+  const latestMesh = meshBacked ? undefined : deserializeSavedMesh(v.latestMesh);
+  return {
+    ...(fingerprint ? { fingerprint } : {}),
+    ...(latestMesh ? { latestMesh } : {}),
+  };
 }
 
 function deserializeImportedMeshes(meshes: ExportedImportedMesh[] | undefined): ImportedMesh[] | undefined {
@@ -1493,6 +1584,20 @@ export function currentPartIsDirty(
   return !versionMatchesCurrent(code, serializeAnnotations(), geometryData, opts?.paramValues, nextCompanions);
 }
 
+/** Supplies the model snapshot a save records (fingerprint + displayed mesh)
+ *  for `code` saved with `paramValues`, or null when the live model wasn't
+ *  built from exactly that code and those values. Registered by main.ts, which
+ *  owns the live mesh; saves made before registration record no snapshot. */
+type VersionSnapshotProvider = (
+  code: string,
+  paramValues: Record<string, number | boolean | string> | undefined,
+) => VersionSnapshot | null;
+let versionSnapshotProvider: VersionSnapshotProvider | null = null;
+
+export function setVersionSnapshotProvider(fn: VersionSnapshotProvider | null): void {
+  versionSnapshotProvider = fn;
+}
+
 export async function saveVersion(
   code: string,
   geometryData: Record<string, unknown> | null,
@@ -1543,6 +1648,19 @@ export async function saveVersion(
     return null;
   }
 
+  // Record what this save's code built: always the fingerprint, and the
+  // displayed mesh unless the model is already stored mesh data.
+  const language = getActiveLanguage();
+  let snapshot: VersionSnapshot | null = null;
+  try {
+    // An import-backed model is stored mesh data already: no fingerprint or
+    // mesh (and no hashing a multi-million-triangle import on every save).
+    if (nextImports.length === 0) snapshot = versionSnapshotProvider?.(code, paramValues) ?? null;
+  } catch (e) {
+    console.warn('[partwright] model snapshot failed; saving without it', e);
+  }
+  const meshBacked = isMeshBackedVersion({ code, language, importedMeshes: nextImports, surfaceTexture: options?.surfaceTexture });
+
   const version = await dbSaveVersion(
     currentState.currentPart.id,
     currentState.session.id,
@@ -1557,7 +1675,7 @@ export async function saveVersion(
       // Snapshot the engine language at save time. Versions remember the
       // language they were authored in, so navigating between them swaps the
       // engine independently of the session's default.
-      language: getActiveLanguage(),
+      language,
       paramValues,
       companionFiles: Object.keys(nextCompanions).length > 0 ? nextCompanions : undefined,
       parentVersionId: options?.parentVersionId ?? null,
@@ -1566,6 +1684,8 @@ export async function saveVersion(
       // Stamp the app version that authored this snapshot — its "last known
       // good" version (undefined in dev where it's 'unknown').
       appVersion: stampedAppVersion,
+      fingerprint: snapshot?.fingerprint,
+      latestMesh: snapshot?.mesh && !meshBacked ? snapshot.mesh : undefined,
     }
   );
 
@@ -1716,7 +1836,17 @@ export async function deleteVersion(versionId: string): Promise<DeleteVersionRes
  */
 export async function restoreVersion(version: Version, makeCurrent: boolean): Promise<void> {
   if (!currentState.session || !currentState.currentPart || version.partId !== currentState.currentPart.id) return;
-  await dbPutVersion(version);
+  // Only the newest version keeps a stored mesh: if a newer one was saved
+  // since the delete, the restored version comes back without its mesh.
+  let toPut = version;
+  if (version.latestMesh !== undefined) {
+    const others = await dbListVersions(currentState.currentPart.id);
+    if (others.some(v => v.index > version.index)) {
+      const { latestMesh: _superseded, ...rest } = version;
+      toPut = rest;
+    }
+  }
+  await dbPutVersion(toPut);
   const versions = await dbListVersions(currentState.currentPart.id);
   currentState = {
     ...currentState,
@@ -2091,6 +2221,10 @@ export interface ExportOptions {
   includeNotes?: boolean;
   includeColorRegions?: boolean;
   includeChat?: boolean;
+  /** Embed each object's newest mesh (its newest version's stored
+   *  `latestMesh`, colours included) so the file carries the model as built,
+   *  not just the code that builds it. Off by default: it can add megabytes. */
+  includeLatestMeshes?: boolean;
   /** Restrict the export to versions whose `index` is in this list. Undefined
    *  (the default) exports every version. Lets the caller prune history into the
    *  exported file without deleting anything from storage. */
@@ -2107,7 +2241,16 @@ const DEFAULT_EXPORT_OPTIONS: Required<Omit<ExportOptions, 'versionIndices' | 'o
   includeNotes: true,
   includeColorRegions: true,
   includeChat: true,
+  includeLatestMeshes: false,
 };
+
+/** The mesh to embed for an object's newest version with includeLatestMeshes:
+ *  its stored `latestMesh` (absent on versions saved before meshes were
+ *  stored, and on mesh-backed versions, whose imports or surface texture
+ *  already carry the mesh). */
+function latestMeshForExport(v: Version): SavedMesh | null {
+  return parseSavedMesh(v.latestMesh);
+}
 
 /** Read a Blob as a base64 data URL (e.g. "data:image/png;base64,..."). */
 function blobToDataURL(blob: Blob): Promise<string> {
@@ -2178,8 +2321,16 @@ export async function exportSession(
   // part. Other parts are always exported in full; filtering them by a different
   // part's index set would silently drop versions.
   const flat: { v: Version; partOrder: number }[] = [];
+  // includeLatestMeshes: each part's NEWEST version (by index, whether or not
+  // the prune picker kept it) → the mesh to embed on it.
+  const latestMeshes = new Map<string, SavedMesh>();
   for (const part of parts) {
     let versions = await dbListVersions(part.id);
+    const newest = versions[versions.length - 1];
+    if (opts.includeLatestMeshes && newest) {
+      const mesh = latestMeshForExport(newest);
+      if (mesh) latestMeshes.set(newest.id, mesh);
+    }
     if (options?.versionIndices && part.id === currentPartId) {
       versions = versions.filter(v => options.versionIndices!.includes(v.index));
     }
@@ -2213,6 +2364,8 @@ export async function exportSession(
       const thumbDataUrl = thumbnailDataUrls[i];
       const importedMeshes = serializeImportedMeshes(v.importedMeshes as ImportedMesh[] | undefined);
       const surfaceTexture = serializeSurfaceTexture(v.surfaceTexture as PersistedSurfaceTexture | undefined);
+      const fingerprint = parseModelFingerprint(v.fingerprint);
+      const latestMesh = latestMeshes.has(v.id) ? serializeSavedMesh(latestMeshes.get(v.id)) : undefined;
       return {
         index: v.index,
         code: v.code,
@@ -2230,6 +2383,8 @@ export async function exportSession(
         ...(v.paramValues && Object.keys(v.paramValues).length > 0 ? { paramValues: v.paramValues } : {}),
         ...(v.companionFiles && Object.keys(v.companionFiles).length > 0 ? { companionFiles: v.companionFiles } : {}),
         ...(v.appVersion ? { appVersion: v.appVersion } : {}),
+        ...(fingerprint ? { fingerprint } : {}),
+        ...(latestMesh ? { latestMesh } : {}),
       };
     }),
     ...(notes.length > 0 ? { notes: notes.map(n => ({ text: n.text, timestamp: n.timestamp })) } : {}),
@@ -2406,6 +2561,9 @@ export async function importSession(
           // "last known good" version follows the geometry, so it is NOT
           // re-stamped to the importing build.
           appVersion: typeof v.appVersion === 'string' ? v.appVersion : undefined,
+          // Model snapshot (schema 1.22+): the fingerprint always, the newest
+          // mesh when the file carries one (never for a mesh-backed version).
+          ...importedSnapshot(v, importedMeshes),
         }
       );
     }
@@ -2608,12 +2766,17 @@ export async function importSessionPartsIntoActive(
           importedMeshes,
           language: asLanguage(v.language),
           paramValues: v.paramValues && typeof v.paramValues === 'object' ? v.paramValues : undefined,
+          // Companion SCAD files (schema 1.10+), as importSession carries them —
+          // without them a merged SCAD object's `include <…>` can't resolve.
+          companionFiles: v.companionFiles && typeof v.companionFiles === 'object' ? v.companionFiles as Record<string, string> : undefined,
           parentVersionId: null,
           operation: null,
           // Persisted surface texture (schema 1.14+); absent ⇒ recompute on load.
           surfaceTexture: deserializeSurfaceTexture(v.surfaceTexture),
           // App-version provenance (schema 1.15+) — preserved, not re-stamped.
           appVersion: typeof v.appVersion === 'string' ? v.appVersion : undefined,
+          // Model snapshot (schema 1.22+).
+          ...importedSnapshot(v, importedMeshes),
         }
       );
       copiedVersions++;

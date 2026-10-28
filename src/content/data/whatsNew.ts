@@ -27,6 +27,34 @@ export const WHATS_NEW_INTRO =
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
     range: 'October 28, 2026',
+    headline: 'Partwright 1.12.1 — parts survive bakes, plus API fixes',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.12.1',
+            body: 'A backward-compatible patch release — existing sessions and exported files all keep working.',
+          },
+        ],
+      },
+      {
+        label: 'Fixes',
+        items: [
+          {
+            title: 'Parts are kept through bakes',
+            body: 'Applying surface textures, scaling, rotating or placing a model no longer loses its named parts.',
+          },
+          {
+            title: 'API reliability fixes',
+            body: 'A round of fixes to argument validation and edge cases in the scripting API, improving results for AI agents and console users.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    range: 'October 28, 2026',
     headline: 'Partwright 1.12 — parts you can arrange, split on export, and import into',
     groups: [
       {
