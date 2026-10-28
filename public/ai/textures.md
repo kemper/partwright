@@ -45,7 +45,9 @@ apply→save→verify workflow:
 ## Textures as code — `api.surface.*` (non-baking, in a manifold-js session)
 
 The tool calls above (`applyFuzzySkin`, …) **bake** the textured mesh into
-`api.imports[0]` and replace the editor code. As an alternative, in a
+`api.imports[0]` and replace the editor code (the model's parts — `api.label`
+regions and detected import parts — come along as import parts, loaded with
+`api.importWithParts(0)`). As an alternative, in a
 **manifold-js** session you can declare the same textures **in the model code**
 so they stay parametric — edit a number, re-render, no lost source:
 
