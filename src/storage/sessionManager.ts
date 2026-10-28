@@ -2766,6 +2766,9 @@ export async function importSessionPartsIntoActive(
           importedMeshes,
           language: asLanguage(v.language),
           paramValues: v.paramValues && typeof v.paramValues === 'object' ? v.paramValues : undefined,
+          // Companion SCAD files (schema 1.10+), as importSession carries them —
+          // without them a merged SCAD object's `include <…>` can't resolve.
+          companionFiles: v.companionFiles && typeof v.companionFiles === 'object' ? v.companionFiles as Record<string, string> : undefined,
           parentVersionId: null,
           operation: null,
           // Persisted surface texture (schema 1.14+); absent ⇒ recompute on load.

@@ -88,7 +88,7 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Round/chamfer all sharp edges of a solid | `Curves.fillet(solid, {angle: 60})` (mesh-smoothing) | BOSL2 `cuboid(rounding=...)`, `round3d(...)` | **`.fillet(radius)` / `.chamfer(distance)` -> `/ai/replicad.md` (exact, BREP-true)** |
 | Round/chamfer ONLY specific edges (e.g. top rim only) | (not available) | BOSL2 `edge_profile()` (rough) | **`.fillet(r, {minZ, maxZ, nearPoint+withinDist, parallelToPlane, inDirection})` — selective, BREP-only. See `/ai/replicad.md` for the full EdgeFilter.** |
 | STEP export | (not available) | (not available) | **`partwright.exportSTEP()` after a BREP-language run -> `/ai/replicad.md`** |
-| STEP import (read a `.step` / `.stp` file as a CAD shape) | (use partwright.importFile UI, choose manifold-js — tessellates) | (not available) | **partwright.importFile UI, choose BREP — preserves exact surfaces. `api.imports[0]` in the replicad sandbox is the BrepShape.** |
+| STEP import (read a `.step` / `.stp` file as a CAD shape) | (`importStepData(b64, name, {mode:'mesh'})` — tessellates) | (not available) | **`importStepData(b64, name)` (default BREP) — exact surfaces. `api.imports[0]` in the replicad sandbox is the BrepShape.** |
 | Ring/linear/mirror copies | `api.circularPattern / linearPattern / mirrorCopy` (or `Curves.ringCopy / linearCopy / mirrorCopy`) | BOSL2 `ring_copies()`, `xcopies()`, `mirror_copy()` | (use manifold-js helpers) |
 | Place A on top of B (no mental trig) | `api.placeOn(a, b, {gap?, at?})` | BOSL2 attachments: `attach(TOP, BOTTOM)` | (use manifold-js — convert BREP→Manifold first) |
 | Align A's edge/face to B (per axis) | `api.alignTo(a, b, {x?, y?, z?})` (min/max/center) | BOSL2 `position()`/`anchor()` | (use manifold-js — convert BREP→Manifold first) |
@@ -164,7 +164,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `voxel` | Before writing voxel-language code or importing an image as voxels. Covers the `api.voxels()` grid API, colors, coordinate system, and image import. |
 | `mechanisms` | Before modeling a print-in-place / multi-part assembly that **moves** — a screw, spinner, hinge, captive ball, or slider. Covers clearance gaps, `componentCount` verification, twist-extrude threads/spirals, matched-taper nesting, and cutaway checks. |
 | `print-safety` | Before exporting STL/3MF for FDM printing — minimum wall thickness, taper traps, sub-extrusion-width layer detection. |
-| `printing` | The print-readiness toolkit — `checkPrintability` (overhangs, walls, bed fit, tip-over), `thicknessMap` (exact wall thickness everywhere: the thin spots and a heatmap) and `get/setPrinterSettings`. The same check also runs automatically on STL / OBJ / 3MF / GLB export. Read before declaring a model print-ready, then steer the user to the dedicated Resize and Split tools if it doesn't fit. |
+| `printing` | The print-readiness toolkit — `checkPrintability` (overhangs, walls, bed fit, tip-over), `thicknessMap` (exact wall thickness everywhere: the thin spots and a heatmap) and `get/setPrinterSettings`. Read before declaring a model print-ready; if it doesn't fit, point the user to Resize and Split. |
 | `fasteners` | Before building parts that mate with real hardware — `api.fasteners.*` screw holes, tap/pilot holes, heat-set insert bosses, captive-nut pockets, the M2–M8 metric table, clearance presets, and a calibration coupon. |
 | `joints` | Before connecting printed parts to each other — `api.joints.*` alignment pins, sliding dovetails, snap-fits, print-in-place barrel hinges, articulating ball joints (friction / clamp / snap retention), and annular snap rims for press-on lids. |
 | `gears` | Before modeling an involute spur gear, a meshing gear pair, or a rack — `api.gears.spur/pair/rack(...)`, module/teeth/pressure-angle, centre distance, ratio, bores and hubs. |
@@ -406,7 +406,7 @@ partwright.measureMode(on?) / partwright.getMeasurement() // Interactive two-cli
 partwright.getPrinterSettings()          // -> {bed:[x,y,z], nozzleWidth, overhangAngleDeg, clearance} (mm)
 partwright.setPrinterSettings({bed?, nozzleWidth?, overhangAngleDeg?, clearance?}) // update any subset -> merged settings or {error}
 partwright.checkPrintability({bed?, nozzleWidth?, overhangAngleDeg?}?) // bed fit / overhang / thin wall / small feature / tip-over / watertight report, or {error}
-await partwright.thicknessMap({threshold?, limit?, render?, views?, size?}?) // EXACT wall thickness under every triangle -> {minThickness, thinnest, medianThickness, thinArea, thinFraction, spots[] (connected thin areas, thinnest first: center, thinnest, thickness, area), image? (heatmap)} — find WHERE walls are thin; see /ai/printing.md#thicknessmapopts
+await partwright.thicknessMap({threshold?, limit?, render?, views?, size?}?) // EXACT wall thickness per triangle -> {minThickness, medianThickness, thinFraction, spots[] (thin areas, thinnest first), image? (heatmap)} — find WHERE walls are thin; see /ai/printing.md#thicknessmapopts
 partwright.isRunning()                   // -> boolean (is code executing?)
 
 // Spending mode (AI budget) -- respect what the user set; see #spending-mode
@@ -655,7 +655,7 @@ On error: `{"status":"error","error":"...","executionTimeMs":2,"codeHash":"..."}
 
 Code runs in a sandbox via `new Function('api', code)`. All transforms return new immutable Manifold instances -- chaining works.
 
-**Locked-down environment:** model code runs in a Hardened JavaScript (SES) compartment inside a geometry Worker that has no network, storage, DOM or GPU access. It can name only `api` (below), the standard JavaScript built-ins (`Math` incl. `Math.random`, `Date` incl. `Date.now()`, `JSON`, `Array`/`Map`/`Set`/…, every typed array incl. `Float32Array`/`Float64Array`, `TextEncoder`/`TextDecoder`), `console` and `performance.now()`. There is **no** `self`/`window`/`globalThis` Worker scope, `navigator`, `setTimeout`/timers, `fetch`, `WebAssembly`, `crypto`, `URL`, `structuredClone` or `Intl`. Built-ins and the `api` objects are **frozen**: you can't patch `Array.prototype`, `Math` or `api.Manifold.prototype` (assigning throws a TypeError) — write a helper function instead. Each run gets a fresh compartment, so nothing you put on `globalThis` survives into the next run. Reading or assigning an undeclared name throws `ReferenceError: X is not defined` (with the line) as in normal strict JavaScript, and `typeof X` is still `'undefined'` — one difference: a name declared *somewhere* in the code but read outside its scope reads as `undefined` instead of throwing. The text `import(` and `eval(` in **code** is refused (the error names the line); in comments and strings it's fine. If you see `fetch is not a function`, `X is not defined`, `Cannot read properties of undefined (reading 'open')`, or `… is disabled in the geometry sandbox`, the code reached for a blocked browser API. That's deliberate, not a bug to work around. Pass external data in through imports (`api.imports`), `api.params`, or the console API instead.
+**Locked-down environment:** model code runs in a Hardened JavaScript (SES) compartment inside a geometry Worker that has no network, storage, DOM or GPU access. It can name only `api` (below), the standard JavaScript built-ins (`Math` incl. `Math.random`, `Date` incl. `Date.now()`, `JSON`, `Array`/`Map`/`Set`/…, every typed array incl. `Float32Array`/`Float64Array`, `TextEncoder`/`TextDecoder`), `console` and `performance.now()`. There is **no** `self`/`window`/`globalThis` Worker scope, `navigator`, `setTimeout`/timers, `fetch`, `WebAssembly`, `crypto`, `URL`, `structuredClone` or `Intl`. Built-ins and `api` objects are **frozen** (patching `Array.prototype`, `Math`, `api.Manifold.prototype` throws) — write a helper instead. Each run gets a fresh compartment, so nothing persists between runs. Reading or assigning an undeclared name throws `ReferenceError: X is not defined` (with the line) as in normal strict JavaScript, and `typeof X` is still `'undefined'`. `import(` and `eval(` in **code** are refused (fine in comments/strings). Errors like `fetch is not a function`, `X is not defined` or `… is disabled in the geometry sandbox` mean the code reached for a blocked API. Pass external data via `api.imports`/`api.params`.
 
 ```js
 const { Manifold, CrossSection, Curves, setCircularSegments } = api;
@@ -677,7 +677,14 @@ const { Manifold, CrossSection, Curves, setCircularSegments } = api;
 - `knurl` -- functional grips: `diamond`/`straight`/`ribs` knurled cylinders for knobs, thumbscrews, and handles (distinct from decorative `surface` textures). See **[/ai/knurl.md](/ai/knurl.md)**.
 - `setCircularSegments`, `setMinCircularAngle`, `setMinCircularEdgeLength` -- global curve resolution defaults.
 
-**Debug with `console.log` — its output comes back to you** as `logs` on `run`/`runAndSave`/`runIsolated` and in `getGeometryData()`, even when the code throws. Details: [/ai/iteration-workflow.md#debugging-model-code-with-consolelog](/ai/iteration-workflow.md#debugging-model-code-with-consolelog).
+**Debug with `console.log` — its output comes back to you.** Whatever model code prints with `console.log` / `info` / `warn` / `error` (in manifold-js, voxel and BREP sessions) is returned as `logs: string[]` by `run`, `runAndSave`, `setParams`, `runIsolated`, `runAndAssert` and `runAndExplain` (and the `runCode` / `runAndSave` chat tools), and `getGeometryData()` carries the last run's `logs` whoever started it (the user's Run button or an auto-run included), **including when the code throws** — so print intermediate values instead of throwing `JSON.stringify(...)` in an Error. Objects print as compact JSON, a Manifold prints as `Manifold{tris, bbox}`, and `warn`/`error` lines are prefixed. Output is capped per run (200 lines / 20,000 characters by default — Advanced Settings), so log summaries, not every loop iteration.:
+
+```js
+const head = Manifold.ofMesh(api.imports[0]);
+console.log('head', head);                       // → head Manifold{tris: 946240, bbox: [[-71, -96, -98], [71, 97, 99]]}
+const shell = api.shell(head, { thickness: 2.5 });
+console.log({ volume: shell.volume(), pieces: shell.decompose().length });
+```
 
 Standard JavaScript globals (`Math`, `Array`, `Object`, `JSON`, `Date`, `console`, etc.) are available. There is no DOM access, no `fetch`/network, no `require`/`import`, and no file I/O. Do not attempt to load external libraries or make HTTP requests in model code.
 
@@ -873,7 +880,7 @@ return part;
 
 #### Surface textures in code — `api.surface.*`
 
-Just like paint, **surface textures** can live in the code instead of being baked: `api.surface.fuzzy / .knit / .cable / .waffle / .fur / .woven / .knurl / .voronoi / .smooth` (or the generic `api.surface.apply('knit', {…})`). Each call records a texture op applied to the **final returned mesh**, in order — a parametric, non-baking counterpart of the `applyFuzzySkin` / `applyKnitTexture` / … tools (same options; size-relative defaults fill in omissions).
+Just like paint, **surface textures** can live in the code instead of being baked: `api.surface.fuzzy / .knit / .cable / .waffle / .fur / .woven / .knurl / .voronoi / .smooth` (or the generic `api.surface.apply('knit', {…})`). Each call records a texture op applied to the **final returned mesh**, in order — a parametric, non-baking counterpart of the `applyFuzzySkin` / `applyKnitTexture` / … tools (same options minus bake-only `preserveColor`; size-relative defaults fill in omissions).
 
 ```js
 const { Manifold } = api;
@@ -881,9 +888,9 @@ api.surface.knit({ stitchWidth: 1.2, amplitude: 0.6 });
 return Manifold.sphere(10, 64);
 ```
 
-Textures are expensive, so they're **memoized on the base mesh content**: any run that produces the same geometry (whitespace/comment/refactor edits included) renders the cached result instantly. **Every run applies the chain** — `partwright.run` / `runAndSave`, the Run button, version loads, and live typing alike — computing in a dedicated Worker behind an inline "Applying texture… Xs" status + Cancel, so the result you render/inspect is already textured with no extra step. Cancelling parks the chain behind a "⟳ Re-apply" pill (recover via the pill, `ensureSurfaceTexturesApplied()`, or any re-run). manifold-js-only. `partwright.applySurfaceTextureAsCode(id, opts?)` writes/updates the call in the code for you (insert before the final `return`, or edit the existing call), re-runs, and saves a version — the same path the Surface panel's "Apply as code" button takes. `partwright.applySurfaceTexture(id, opts?, mode?)` is the auto-routing wrapper: 'auto' (default) takes this in-code path on manifold-js and falls back to the bake tools elsewhere — returns `path: 'code' | 'bake'`. See [textures](/ai/textures.md#textures-as-code--apisurface-non-baking-in-a-manifold-js-session).
+Textures are **memoized on the base mesh content**: any run producing the same geometry (whitespace/comment edits included) reuses the cached result. **Every run applies the chain** — `partwright.run` / `runAndSave`, the Run button, version loads, and live typing alike (computed in a Worker behind an "Applying texture… Xs" status + Cancel), so what you render is already textured. Cancelling parks the chain behind a "⟳ Re-apply" pill (recover with `ensureSurfaceTexturesApplied()` or any re-run). manifold-js-only. `partwright.applySurfaceTextureAsCode(id, opts?)` writes/updates the call in the code for you (insert before the final `return`, or edit the existing call), re-runs, and saves a version. `partwright.applySurfaceTexture(id, opts?, mode?)` is the auto-routing wrapper: 'auto' (default) takes this in-code path on manifold-js and falls back to the bake tools elsewhere — returns `path: 'code' | 'bake'`. See [textures](/ai/textures.md#textures-as-code--apisurface-non-baking-in-a-manifold-js-session).
 
-**Scope a texture to part of the model** with one extra option: `api.surface.knurl({ label: 'grip' })` textures only an `api.label(…)` region (so you can texture one shape of a union), and `api.surface.fuzzy({ region: { point: [x,y,z], radius } })` textures only the triangles near a world-space point. The label's color carries onto the textured region. (Scope keys are manifold-js-code only; ignored on the bake path.)
+**Scope a texture to part of the model** with one extra option: `api.surface.knurl({ label: 'grip' })` textures only an `api.label(…)` region (so you can texture one shape of a union), and `api.surface.fuzzy({ region: { point: [x,y,z], radius } })` textures only the triangles near a world-space point. The label's color carries onto the textured region. (Scope keys are manifold-js-code only; the bake path rejects them.)
 
 ### Primitive origins and orientations
 
@@ -1289,7 +1296,7 @@ const r = partwright.query({
   decompose: true,             // component breakdown
   boundingBox: true,           // bounding box
 });
-// r.slices     = { z5: {area, contours, ...}, z10: {...}, ... }
+// r.slices     = { z5: {area, polygons, svg, boundingBox}, ... }
 // r.components = [{ index, volume, centroid, boundingBox }, ...]
 // r.boundingBox = { min: [...], max: [...] }
 // r.stats      = current geometry-data stats

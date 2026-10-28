@@ -158,7 +158,7 @@ const r = partwright.query({
   decompose: true,             // component breakdown
   boundingBox: true,           // bounding box
 });
-// r.slices     = { z5: {area, contours, ...}, z10: {...}, ... }
+// r.slices     = { z5: {area, polygons, svg, boundingBox}, z10: {...}, ... }  (polygons.length = contour count)
 // r.components = [{ index, volume, centroid, boundingBox }, ...]
 // r.boundingBox = { min: [...], max: [...] }
 // r.stats      = current geometry-data stats
@@ -323,17 +323,6 @@ Every Advanced Settings (⚙) field is readable and settable, validated exactly 
 (same type, min/max, integer); keys without a field are not settable. Values persist in this
 browser and apply immediately, except rendering settings that need a reload. The in-app assistant
 may only change a short allow-list of result-affecting settings, and the user confirms each change.
-
-## Debugging model code with `console.log`
-
-**Debug with `console.log` — its output comes back to you.** Whatever model code prints with `console.log` / `info` / `warn` / `error` (in manifold-js, voxel and BREP sessions) is returned as `logs: string[]` by `run`, `runAndSave`, `setParams`, `runIsolated`, `runAndAssert` and `runAndExplain` (and the `runCode` / `runAndSave` chat tools), and `getGeometryData()` carries the last run's `logs` whoever started it (the user's Run button or an auto-run included), **including when the code throws** — so print intermediate values instead of throwing `JSON.stringify(...)` in an Error. Objects print as compact JSON, a Manifold prints as `Manifold{tris, bbox}`, and `warn`/`error` lines are prefixed. Output is capped per run (200 lines / 20,000 characters by default — Advanced Settings), so log summaries, not every loop iteration.:
-
-```js
-const head = Manifold.ofMesh(api.imports[0]);
-console.log('head', head);                       // → head Manifold{tris: 946240, bbox: [[-71, -96, -98], [71, 97, 99]]}
-const shell = api.shell(head, { thickness: 2.5 });
-console.log({ volume: shell.volume(), pieces: shell.decompose().length });
-```
 
 ## Debugging with the Diagnostic Log
 

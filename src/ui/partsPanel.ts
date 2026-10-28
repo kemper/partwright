@@ -367,8 +367,9 @@ function render(): void {
         const line = el('div', 'text-[10px] text-zinc-500 tabular-nums leading-snug');
         line.dataset.partInfo = '';
         const bits = [`${fmt(info.size[0])} × ${fmt(info.size[1])} × ${fmt(info.size[2])}`, `area ${fmt(info.area)}`];
-        if (info.pieces.length > 1) bits.push(`spans pieces ${info.pieces.join(', ')}`);
-        else if (info.pieces.length === 1 && view.pieces.length > 1 && !single.startsWith('piece:')) bits.push(`piece ${info.pieces[0]}`);
+        // info.pieces are 0-based indices (as the API returns); show them 1-based like the rows.
+        if (info.pieces.length > 1) bits.push(`spans pieces ${info.pieces.map(p => p + 1).join(', ')}`);
+        else if (info.pieces.length === 1 && view.pieces.length > 1 && !single.startsWith('piece:')) bits.push(`piece ${info.pieces[0] + 1}`);
         line.textContent = bits.join(' · ');
         line.title = 'Bounding-box size, surface area and the separate solids this touches';
         sel.appendChild(line);

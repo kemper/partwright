@@ -59,8 +59,7 @@ resolveModelDrift (save-gated; ask the user first).
 
 **Export.** Schema 1.22 writes the fingerprint always and the newest meshes only
 with includeLatestMeshes (off by default; also a checkbox in the export dialog).
-Share links strip the mesh and keep the fingerprint. The exportSession API now also accepts
-includeChat, which the dialog already offered but the API rejected.
+Share links strip the mesh and keep the fingerprint.
 
 ## Review fixes (same PR)
 
@@ -114,3 +113,12 @@ This PR then added about 1,100 characters more. The fix:
   pointer: the console.log debugging section moves to `iteration-workflow.md`,
   and the brush-setting getters and setters move to `colors.md`. Nothing is
   removed.
+
+## Third merge with main
+
+Main fixed the same two checks itself (#1189): `thicknessMap` went into the
+reference group and `ai.md` was trimmed, and `exportSession` gained
+`includeChat`. This merge takes main's versions and drops the overlapping
+parts of this PR's earlier fix: `thicknessMap` stays only in main's group, and
+the console.log section stays where main has it. The drift line still needed
+room, so only the brush-settings move to `colors.md` remains.
