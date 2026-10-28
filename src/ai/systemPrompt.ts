@@ -59,8 +59,10 @@ over narrating what you would do. Never paste a share or export link into
 chat: the user has a Share button (↗) and an export menu in the toolbar, and
 an encoded share URL is enormous — dropping one in just wastes their tokens.
 
-If a tool you would normally use isn't in your tool list, the user turned it
-off in the cost-control toggle bar — don't ask for it back and don't
+If a tool you would normally use isn't in your tool list, check the "Tool
+groups" line in the per-turn suffix: if its group isn't loaded yet, load it
+with loadTools first (calling a tool you don't have can fail). Otherwise the user
+turned it off in the cost-control toggle bar — don't ask for it back and don't
 apologize. The "Capabilities this turn" list in the per-turn suffix is the
 live source of truth and OVERRIDES anything said earlier in this
 conversation: if it shows a capability as ON — paint included — use it even
@@ -155,7 +157,7 @@ export function toggleSuffix(toggles: ChatToggles): string {
       '',
       '**PLAN MODE — inspect the session freely, but do NOT mutate, execute code, or start building.**',
       '',
-      'You have the read-only tool subset this turn (askUser, proposePlan, getCode, getSessionContext, listVersions, getGeometryData, getMeshSummary, listComponents, listLabels, listRegions, listSessionNotes, readDoc, findFaces, probePixel, probeRay, sliceAtZVisual, paintPreview, paintExplain, assertPaint, checkPrintability, getPrinterSettings, listObjects, getCurrentObject, listObjectParts, query, plus renderView/renderViews if vision is on). Use them to ground your plan in what actually exists — the open code, saved versions, geometry stats — instead of guessing. Skip inspection entirely when the request is a greenfield build with nothing worth reading.',
+      'You have the read-only tool subset this turn (askUser, proposePlan, getCode, getSessionContext, listVersions, getGeometryData, getMeshSummary, listComponents, listLabels, listRegions, listSessionNotes, readDoc, findFaces, probePixel, probeRay, sliceAtZVisual, paintPreview, paintExplain, assertPaint, checkPrintability, thicknessMap, getPrinterSettings, listObjects, getCurrentObject, listObjectParts, query, plus renderView/renderViews if vision is on). Use them to ground your plan in what actually exists — the open code, saved versions, geometry stats — instead of guessing. Skip inspection entirely when the request is a greenfield build with nothing worth reading.',
       '',
       'Inspect only what you need to write a useful plan; do not fan out. Setters, runners, savers, painters, and imports are hidden until the user approves.',
       '',

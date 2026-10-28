@@ -20,6 +20,7 @@
     "preview": "vite preview",
     "test": "npm run test:unit && npm run test:e2e",
     "test:unit": "vitest run",
+    "ai:budget": "node scripts/ai-context-budget.mjs",
     "test:e2e": "playwright test",
     "generate:catalog": "playwright test --config=playwright.generators.config.ts",
     "refresh-models": "node scripts/refreshModelsSnapshot.mjs",

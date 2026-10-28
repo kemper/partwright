@@ -127,6 +127,10 @@ export interface AppConfig {
      *  results, and large inputs of failed calls. Stored history and the
      *  transcript are untouched. */
     pruneStaleToolPayloads: boolean;
+    /** Send hosted models a core tool set and let them load the rest in named
+     *  groups (loadTools / readDoc / calling a tool), instead of every tool
+     *  schema from turn 0. Off sends all of them. See src/ai/toolGroups.ts. */
+    onDemandToolGroups: boolean;
     /** How many of the newest code bodies (runAndSave / setCode / runCode …
      *  `code` arguments, and getCode results) stay verbatim in the request;
      *  older ones become a one-line stub. */
@@ -198,6 +202,12 @@ export interface AppConfig {
      *  edge-adjacency pass on the main thread — ~2.5 s at 500k triangles —
      *  and on a mesh that dense the creases are noise at thumbnail size. */
     creaseEdgeMaxTriangles: number;
+    /** Largest step, as a fraction of the model's bounding-box diagonal,
+     *  whose walls the crease-edge overlay leaves out: two parallel faces
+     *  offset by less than this read as one surface. Hides the sub-voxel
+     *  seam a scoped round / smoothWeld leaves (#1112); real steps and
+     *  engraved walls are deeper. 0 = draw every crease. */
+    creaseMinStep: number;
     /** Triangle count from which a manifold-js run's volume / genus /
      *  component stats are computed in the engine Worker, and the main
      *  thread's own Manifold (for slicing, booleans, decompose) is rebuilt
@@ -220,6 +230,10 @@ export interface AppConfig {
     modelLogMaxLines: number;
     /** Most characters of model-code console output kept per run. */
     modelLogMaxChars: number;
+    /** Most triangles `thicknessMap` measures — it casts one ray per triangle
+     *  on the main thread (≈1.5 s per 250k), so a bigger mesh is refused with
+     *  a pointer to simplifyModel instead of freezing the tab. */
+    thicknessMapMaxTriangles: number;
     /** Ground grid footprint as a multiple of the model's largest dimension, so
      *  the grid scales with the model (spans the studio "room") instead of being
      *  a fixed-size patch. Re-derived from the model size on each auto-frame. */
@@ -470,6 +484,11 @@ export interface AppConfig {
     /** How long (ms) to wait for that Worker before building the graph on the
      *  main thread instead (a Worker killed for memory may never answer). */
     paintAdjacencyWorkerTimeoutMs: number;
+    /** Projection paintbrush (smooth edges off): triangles thinner than this
+     *  many screen pixels next to the painted area are painted too, so slivers
+     *  that fall between pixel centres don't leave an unpaintable hairline
+     *  along a seam. 0 = off. */
+    paintBrushSliverPx: number;
     /** Shift-drag box select in the viewport: most triangle centres sampled
      *  per part when testing which parts the box touches (a part counts once
      *  one sample lands inside). Higher catches thin slivers of huge parts. */
@@ -746,6 +765,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     customParamDescriptionChars: 80,
     customContextProbeTimeoutMs: 3000,
     pruneStaleToolPayloads: true,
+    onDemandToolGroups: true,
     keepRecentCodeBodies: 1,
     codeBodyTrimBatch: 3,
     failedCallInputTurns: 3,
@@ -770,11 +790,13 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     interactionRenderScale: 0.6,
     isolateGhostOpacity: 0.1,
     creaseEdgeMaxTriangles: 200_000,
+    creaseMinStep: 0.004,
     lazyManifoldMinTriangles: 250_000,
     thumbnailMaxTriangles: 600_000,
     containmentSamples: 12,
     modelLogMaxLines: 200,
     modelLogMaxChars: 20_000,
+    thicknessMapMaxTriangles: 1_000_000,
     gridRoomFactor: 8,
     gridDivisions: 40,
     gizmoSizePx: 128,
@@ -850,6 +872,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     toolDialogOpenWaitMs: 4000,
     paintAdjacencyWorkerMinTriangles: 300_000,
     paintAdjacencyWorkerTimeoutMs: 60_000,
+    paintBrushSliverPx: 1.5,
     partBoxSelectSamples: 4000,
     partArrangeGapRatio: 0.2,
     partSnapStep: 5,
