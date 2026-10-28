@@ -8,6 +8,7 @@ import { presetIndex } from '../storage/db';
 import type { SessionAttachment, AttachedImage } from '../storage/attachment';
 import { CREASE_ANGLE_DEG, resolveEdgeMode, type EdgeMode } from './edgeMode';
 import { getConfig } from '../config/appConfig';
+import { getReferenceMesh } from './referenceMesh';
 export { EDGE_MODES, type EdgeMode } from './edgeMode';
 
 /** Composite-render angle sets accepted by `partwright.renderViews`.
@@ -374,6 +375,36 @@ export function buildViewCamera(meshData: MeshData, options: {
   return camera;
 }
 
+/** Add the reference ("ghost") geometry to an offscreen scene, drawn like the
+ *  viewport's: translucent, depth-tested (so it hides where it passes behind
+ *  the model and shows where it pokes through), plus its crease edges so the
+ *  outline reads on a white background. Returns false when there is none. */
+function addReferenceGhost(scene: THREE.Scene): boolean {
+  const ref = getReferenceMesh();
+  if (!ref) return false;
+  const color = ref.style.color ?? 0x00ff88;
+  const opacity = ref.style.opacity ?? 0.25;
+  const geometry = indexedGeometry(ref.mesh);
+  if (ref.style.wireframe) {
+    scene.add(new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: Math.max(opacity, 0.35), wireframe: true })));
+    return true;
+  }
+  const solid = new THREE.Mesh(geometry, new THREE.MeshPhongMaterial({
+    color, transparent: true, opacity, side: THREE.DoubleSide, depthWrite: false,
+  }));
+  solid.renderOrder = 1; // after the opaque model
+  scene.add(solid);
+  if (triangleCount(geometry) <= getConfig().renderer.creaseEdgeMaxTriangles) {
+    const edges = new THREE.LineSegments(
+      new THREE.EdgesGeometry(geometry, CREASE_ANGLE_DEG),
+      new THREE.LineBasicMaterial({ color, transparent: true, opacity: Math.min(1, opacity * 2.5) }),
+    );
+    edges.renderOrder = 2;
+    scene.add(edges);
+  }
+  return true;
+}
+
 export function renderSingleViewCanvas(meshData: MeshData, options: {
   elevation?: number;
   azimuth?: number;
@@ -385,11 +416,15 @@ export function renderSingleViewCanvas(meshData: MeshData, options: {
    *  proxy (see previewProxy.ts). For version thumbnails only — renders an
    *  agent or the user inspects (renderViews, highlights, parts) stay exact. */
   thumbnail?: boolean;
+  /** Draw the reference ("ghost") geometry from setReferenceGeometry, when
+   *  one is set. The camera still frames the model. */
+  reference?: boolean;
 } = {}): HTMLCanvasElement {
   const viewSize = options.size ?? 500;
 
   const geometry = meshDataToGeometry(options.thumbnail ? previewProxy(meshData, getConfig().renderer.thumbnailMaxTriangles) : meshData);
   const scene = createElevationScene(geometry, 0xffffff, options.edges);
+  if (options.reference) addReferenceGhost(scene);
   const camera = buildViewCamera(meshData, options);
   const renderer = getOffscreenRenderer(viewSize);
 
@@ -496,6 +531,7 @@ export function renderSingleView(meshData: MeshData, options: {
   ortho?: boolean;
   size?: number;
   edges?: EdgeMode;
+  reference?: boolean;
 } = {}): string {
   return renderSingleViewCanvas(meshData, options).toDataURL('image/png');
 }

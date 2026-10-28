@@ -506,6 +506,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         ortho: { type: 'boolean', description: 'true = orthographic (technical drawing), false = perspective. Default false.' },
         size: { type: 'integer', description: 'Pixel size of the rendered square. Default 320. Larger costs more tokens.' },
         edges: { type: 'string', enum: [...EDGE_MODES], description: 'Edge overlay style. "crease" (default for uncolored models) draws only feature edges — corners and the silhouette — so the shape reads cleanly without facet noise on curves. "none" is a plain shaded surface (best when reading painted colors; the default for painted models). "wireframe" draws every triangle edge — use only to inspect tessellation or debug a failed boolean.' },
+        reference: { type: 'boolean', description: 'Draw the setReferenceGeometry ghost (translucent, depth-tested: it shows where it pokes through the model). Default true when a reference is set; false hides it.' },
       },
     },
   },
@@ -519,6 +520,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         angles: { type: 'array', description: 'Explicit list of camera angles; overrides `views`. Same angle semantics as renderView. Use to put specific suspect angles side-by-side in one composite.', items: { type: 'object', properties: { elevation: { type: 'number', description: '0 = side, 90 = top, -90 = bottom.' }, azimuth: { type: 'number', description: '0 = front, 90 = right, 180 = back, 270 = left.' }, ortho: { type: 'boolean', description: 'true = orthographic. Default false.' }, label: { type: 'string', description: 'Optional caption for the cell.' } }, required: ['elevation', 'azimuth'] } },
         size: { type: 'integer', description: 'Pixel size per cell. Default 320. Raise to 512-768 for a high-resolution final check; larger costs more tokens.' },
         edges: { type: 'string', enum: [...EDGE_MODES], description: 'Edge overlay applied to every tile. "crease" (default for uncolored models) draws only feature edges — corners and silhouette — so shape reads cleanly without facet noise on curves. "none" is a plain shaded surface (best for reading painted colors; default for painted models). "wireframe" draws every triangle edge — use only to inspect tessellation or debug a failed boolean.' },
+        reference: { type: 'boolean', description: 'Draw the setReferenceGeometry ghost (translucent, depth-tested: it shows where it pokes through the model). Default true when a reference is set; false hides it.' },
       },
     },
   },
@@ -2268,7 +2270,7 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: 'setReferenceGeometry',
-    description: "Show a translucent REFERENCE (ghost) shape in the user's viewport, overlaid on their model — for fitment: \"will a 30 mm bolt clear this hole?\", a phone outline inside a case. `code` is manifold-js code returning a Manifold (run in isolation, never saved, never exported, never merged into the model). Replaces any previous ghost. Optional color \"#rrggbb\", opacity 0..1, wireframe. Returns { success, boundingBox, volume } or { success: false, error }. Clear it with clearReferenceGeometry when done.",
+    description: "Show a translucent REFERENCE (ghost) shape in the user's viewport, overlaid on their model — for fitment: \"will a 30 mm bolt clear this hole?\", a phone outline inside a case. `code` is manifold-js code returning a Manifold (run in isolation, never saved, never exported, never merged into the model). Replaces any previous ghost. Optional color \"#rrggbb\", opacity 0..1, wireframe. Returns { success, boundingBox, volume } or { success: false, error }. The ghost also appears in renderView / renderViews images (pass reference: false to hide it) and as a dashed outline in renderSection, so you can check the fit visually. Clear it with clearReferenceGeometry when done.",
     input_schema: {
       type: 'object',
       properties: {

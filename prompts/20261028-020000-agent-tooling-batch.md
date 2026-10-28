@@ -36,3 +36,22 @@ bottom-left edge:
 - zinc classes, so the light theme's remap covers it
 - 44 px touch targets on mobile
 The collapsed state is a per-viewer localStorage convenience.
+
+## Assistant
+
+## Reference geometry in renders
+
+- **Leaf data store**: `renderer/referenceMesh.ts` holds the ghost's mesh
+  and style. `phantomGeometry.setPhantom`/`clearPhantom` keep it in step, and
+  `multiview.ts` reads it. `phantomGeometry` imports the viewport, so
+  importing it from `multiview` would invert the renderer layering.
+- **Drawn like the viewport ghost, depth-tested**: translucent, rendered
+  after the opaque model, plus crease edges so the outline reads on white.
+  Anything poking through the model (a nose through a mask) shows, which is
+  the point.
+- **Default on when a reference is set**: `renderView`/`renderViews` take
+  `reference` (default `hasPhantom()`), and `false` hides it. Version
+  thumbnails (`renderCompositeCanvas`, thumbnail renders) never draw it.
+- **Camera still frames the model**: `buildViewCamera` must stay identical
+  for `probePixel`, so the reference may be cropped where it extends past
+  the model's frame.
