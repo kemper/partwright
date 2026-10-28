@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { viewBoxHalfSpaces, type ViewBox } from './viewFocus';
 import { createWhiteMaterial, createBlackWireframeMaterial, createCreaseEdgeMaterial } from './materials';
 import type { MeshData } from '../geometry/types';
 import { meshDataToGeometry as indexedGeometry, triColoredGeometry } from './meshGeometry';
@@ -347,6 +348,8 @@ export function buildViewCamera(meshData: MeshData, options: {
     if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
   }
   const meshDim = Math.max(maxX - minX, maxY - minY, maxZ - minZ);
+  const meshCenter = [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2];
+  const meshRadius = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ) / 2;
   if (options.frame) {
     [minX, minY, minZ] = options.frame.min;
     [maxX, maxY, maxZ] = options.frame.max;
@@ -354,7 +357,22 @@ export function buildViewCamera(meshData: MeshData, options: {
   const center = new THREE.Vector3((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
   const bsize = new THREE.Vector3(maxX - minX, maxY - minY, maxZ - minZ);
   const maxDim = Math.max(bsize.x, bsize.y, bsize.z) || meshDim || 1;
-  const dist = maxDim * 2;
+  let dist = maxDim * 2;
+  let fov = 40;
+  let near: number, far: number;
+  if (options.frame) {
+    // Zoom by narrowing the view from OUTSIDE the whole mesh rather than by
+    // moving the camera in: two box-widths from a 2 mm tooth is inside the
+    // jaw around it. Same framing as an unzoomed view (the box fills the
+    // frame as the model would); anything in front of it still occludes.
+    const reach = Math.hypot(center.x - meshCenter[0], center.y - meshCenter[1], center.z - meshCenter[2]) + meshRadius;
+    dist = Math.max(dist, reach * 1.05);
+    fov = 2 * Math.atan(Math.tan((20 * Math.PI) / 180) * (maxDim * 2) / dist) * 180 / Math.PI;
+    near = Math.max(dist - reach, dist * 1e-4) * 0.9;
+    far = dist + reach * 1.1;
+  } else {
+    ({ near, far } = clipPlanes(maxDim));
+  }
 
   // Spherical to cartesian (Z-up)
   const cx = dist * Math.cos(elevation) * Math.sin(azimuth);
@@ -368,9 +386,6 @@ export function buildViewCamera(meshData: MeshData, options: {
   // matching the standard slicer/CAD build-plate orientation.
   const isPolar = Math.abs(Math.sin(elevation)) > 0.999;
   const [upX, upY, upZ] = isPolar ? [0, 1, 0] : [0, 0, 1];
-  const { near } = clipPlanes(maxDim);
-  // A framed (zoomed) view still has the whole mesh behind the focus box.
-  const { far } = clipPlanes(Math.max(maxDim, meshDim));
 
   let camera: THREE.Camera;
   if (options.ortho) {
@@ -383,7 +398,7 @@ export function buildViewCamera(meshData: MeshData, options: {
     orthoCamera.updateMatrixWorld();
     camera = orthoCamera;
   } else {
-    const perspCamera = new THREE.PerspectiveCamera(40, 1, near, far);
+    const perspCamera = new THREE.PerspectiveCamera(fov, 1, near, far);
     perspCamera.position.set(center.x + cx, center.y + cy, center.z + cz);
     perspCamera.up.set(upX, upY, upZ);
     perspCamera.lookAt(center);
@@ -424,6 +439,19 @@ function addReferenceGhost(scene: THREE.Scene): boolean {
   return true;
 }
 
+/** Clip every mesh/line already in `scene` to `box` (three.js local
+ *  clipping planes; the caller enables `localClippingEnabled` for the render).
+ *  Returns true so the caller can flag the render as clipped. */
+function clipSceneToBox(scene: THREE.Scene, box: ViewBox): boolean {
+  const planes = viewBoxHalfSpaces(box).map(h => new THREE.Plane(new THREE.Vector3(...h.normal), h.constant));
+  scene.traverse((obj) => {
+    const mat = (obj as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
+    if (!mat) return;
+    for (const m of Array.isArray(mat) ? mat : [mat]) m.clippingPlanes = planes;
+  });
+  return true;
+}
+
 export function renderSingleViewCanvas(meshData: MeshData, options: {
   elevation?: number;
   azimuth?: number;
@@ -431,6 +459,9 @@ export function renderSingleViewCanvas(meshData: MeshData, options: {
   size?: number;
   edges?: EdgeMode;
   frame?: { min: [number, number, number]; max: [number, number, number] };
+  /** Hide everything outside `frame` (cut by its six faces), so geometry in
+   *  front of a small feature can't block the view. Ignored without a frame. */
+  clip?: boolean;
   /** Draw a mesh over `renderer.thumbnailMaxTriangles` from a simplified
    *  proxy (see previewProxy.ts). For version thumbnails only — renders an
    *  agent or the user inspects (renderViews, highlights, parts) stay exact. */
@@ -447,13 +478,18 @@ export function renderSingleViewCanvas(meshData: MeshData, options: {
   const geometry = meshDataToGeometry(options.thumbnail ? previewProxy(meshData, getConfig().renderer.thumbnailMaxTriangles) : meshData);
   const scene = createElevationScene(geometry, 0xffffff, options.edges);
   if (options.reference) addReferenceGhost(scene);
+  const clip = options.clip && options.frame ? clipSceneToBox(scene, options.frame) : false;
   const camera = buildViewCamera(meshData, options);
   const renderer = getOffscreenRenderer(viewSize);
 
+  // Added after the clip so annotation overlays stay whole.
   const annotations = options.annotations === false ? null : buildOffscreenOverlay(viewSize);
   if (annotations) scene.add(annotations);
 
+  // The offscreen renderer is shared — only this render clips.
+  renderer.localClippingEnabled = clip;
   renderer.render(scene, camera);
+  renderer.localClippingEnabled = false;
 
   const canvas = document.createElement('canvas');
   canvas.width = viewSize;
@@ -554,6 +590,8 @@ export function renderSingleView(meshData: MeshData, options: {
   size?: number;
   edges?: EdgeMode;
   reference?: boolean;
+  frame?: ViewBox;
+  clip?: boolean;
 } = {}): string {
   return renderSingleViewCanvas(meshData, options).toDataURL('image/png');
 }

@@ -135,6 +135,37 @@ test.describe('AI object addressing', () => {
     expect(out.schemaKeys).not.toContain('part');
   });
 
+  test('a read-only tool on another object returns focus and keeps unsaved edits (#1197)', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+    await setupTwoParts(page);                       // Object 1 current
+
+    const out = await page.evaluate(async ({ edit }) => {
+      interface PartsAPI {
+        setCode: (code: string) => unknown;
+        getCode: () => string;
+        listObjects: () => { name: string; isCurrent: boolean }[];
+        listVersions: () => Promise<unknown[]>;
+      }
+      const pw = (window as unknown as { partwright: PartsAPI }).partwright;
+      const { executeTool } = await import('/src/ai/tools.ts');
+      pw.setCode(edit);                              // the user's unsaved typing
+      const render = await executeTool('renderView', { object: 'Lid', size: 64 });
+      const lidCode = await executeTool('getCode', { object: 'Lid' });
+      const current = pw.listObjects().find(o => o.isCurrent)?.name;
+      return {
+        renderErr: render.isError, lidCode: lidCode.content, current,
+        code: pw.getCode(), versions: (await pw.listVersions()).length,
+      };
+    }, { edit: cube(9, 'USEREDIT') });
+
+    expect(out.renderErr).toBe(false);
+    expect(out.lidCode).toContain('LIDCODE');        // the read happened on Lid
+    expect(out.current).toBe('Object 1');            // ...and focus came back
+    expect(out.code).toContain('USEREDIT');          // the unsaved edit survived the round trip
+    expect(out.versions).toBe(1);                    // without an auto-saved version
+  });
+
   test('runAndSave with an object target commits to that object only', async ({ page }) => {
     await page.goto('/editor');
     await waitForEngine(page);
@@ -150,6 +181,8 @@ test.describe('AI object addressing', () => {
       const { executeTool } = await import('/src/ai/tools.ts');
       // Commit a new version to Lid while Object 1 is the current selection.
       const exec = await executeTool('runAndSave', { object: 'Lid', code: newLid, label: 'b2' });
+      // A model-changing tool leaves the object it changed focused.
+      const focusedAfter = (pw as unknown as { listObjects: () => { name: string; isCurrent: boolean }[] }).listObjects().find(o => o.isCurrent)?.name;
       // Lid gained a version...
       await pw.changeObject('Lid');
       const lidVersions = (await pw.listVersions()).length;
@@ -158,10 +191,11 @@ test.describe('AI object addressing', () => {
       await pw.changeObject('Object 1');
       const part1Versions = (await pw.listVersions()).length;
       const part1Code = pw.getCode();
-      return { execErr: exec.isError, lidVersions, lidCode, part1Versions, part1Code };
+      return { execErr: exec.isError, focusedAfter, lidVersions, lidCode, part1Versions, part1Code };
     }, { newLid: cube(7, 'LIDV2') });
 
     expect(out.execErr).toBe(false);
+    expect(out.focusedAfter).toBe('Lid');
     expect(out.lidVersions).toBe(2);                 // Lid: a1-equivalent + new
     expect(out.lidCode).toContain('LIDV2');
     expect(out.part1Versions).toBe(1);              // Object 1 untouched

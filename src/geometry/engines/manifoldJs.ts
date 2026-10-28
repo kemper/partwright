@@ -949,6 +949,8 @@ export const manifoldJsEngine: Engine = {
       intersects: meshOpsNamespace.intersects,
       contains: meshOpsNamespace.contains,
       pointInside: meshOpsNamespace.pointInside,
+      raycast: meshOpsNamespace.raycast,
+      closestPoint: meshOpsNamespace.closestPoint,
       bbox: meshOpsNamespace.bbox,
       componentBounds: meshOpsNamespace.componentBounds,
       volumeDelta: meshOpsNamespace.volumeDelta,

@@ -13,6 +13,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   ALL_TOOL_NAMES,
   CONFIRM_REQUIRED_TOOLS,
+  FOCUS_RETURNING_TOOLS,
   OBJECT_TARGETABLE_TOOLS,
   RETRY_SAFE_TOOLS,
   buildToolList,
@@ -628,5 +629,51 @@ describe('AI tool dispatch', () => {
     // A non-current target: listVersions() reads the current object, so the label is omitted.
     expect(await confirmToolLabel('deleteVersion', { index: 3, object: 'Lid' })).toBe('permanently delete version 3 of object Lid');
     expect(await confirmToolLabel('importImageAsRelief', {})).toBe('import an image as a 3D relief');
+  });
+});
+
+describe('object focus returns after a read-only targeted tool (#1197)', () => {
+  test('the focus-returning set is read-only and object-targetable', () => {
+    for (const name of FOCUS_RETURNING_TOOLS) {
+      expect(OBJECT_TARGETABLE_TOOLS.has(name), name).toBe(true);
+      expect(isModelChangingTool(name), name).toBe(false);
+    }
+  });
+
+  /** A two-object session whose focus moves with changeObject. */
+  function stubObjects(start: string) {
+    let current = start;
+    const calls = stubApi({
+      listObjects: () => ['A', 'B'].map((id, order) => ({ id, name: `Obj ${id}`, order, isCurrent: id === current })),
+      changeObject: (t) => { current = t === 'Obj B' || t === 'B' || t === 1 ? 'B' : 'A'; return { id: current }; },
+      getCode: () => `code of ${current}`,
+      runAndSave: () => ({ ok: true, savedTo: current }),
+    });
+    return { calls, current: () => current, move: (id: string) => { current = id; } };
+  }
+
+  test('a read-only tool on another object runs there, then switches back', async () => {
+    const s = stubObjects('A');
+    const r = await executeTool('getCode', { object: 'Obj B' });
+    expect(r.content).toContain('code of B');
+    expect(s.current()).toBe('A');
+  });
+
+  test('a model-changing tool leaves the targeted object focused', async () => {
+    const s = stubObjects('A');
+    await executeTool('runAndSave', { object: 'Obj B', code: 'return 1;' });
+    expect(s.current()).toBe('B');
+  });
+
+  test('no switch back when focus moved during the call', async () => {
+    const s = stubObjects('A');
+    // The user (or a parallel call) moves focus while getCode runs.
+    stubApi({
+      listObjects: () => ['A', 'B', 'C'].map((id, order) => ({ id, name: `Obj ${id}`, order, isCurrent: id === s.current() })),
+      changeObject: (t) => { s.move(t === 'Obj B' ? 'B' : String(t)); return {}; },
+      getCode: () => { s.move('C'); return 'x'; },
+    });
+    await executeTool('getCode', { object: 'Obj B' });
+    expect(s.current()).toBe('C');
   });
 });

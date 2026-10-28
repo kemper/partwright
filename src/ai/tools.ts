@@ -124,6 +124,16 @@ const normalConeSchema = (description: string) => ({
   required: ['axis', 'angleDeg'],
 });
 const AXIS_SCHEMA = { type: 'string', enum: ['x', 'y', 'z'] };
+/** renderView/renderViews zoom keys; probePixel views repeat them to match. */
+const VIEW_FOCUS_PROPS = {
+  focus: {
+    type: 'object',
+    description: 'Zoom onto a small feature instead of framing the whole model: {part:"name"} (a labelled part — listObjectParts), {piece:i}, or a world box {min:[x,y,z], max:[x,y,z]}.',
+    properties: { part: { type: 'string' }, piece: { type: 'integer' }, min: VEC3_SCHEMA, max: VEC3_SCHEMA },
+  },
+  padding: { type: 'number', description: 'Margin around focus as a fraction of its largest side (default 0.15).' },
+  clip: { type: 'boolean', description: 'With focus: hide everything outside the focus box, so nearer geometry (a lip, a mask) cannot block the view. Use to look into sockets and slots.' },
+};
 
 const ALL_TOOLS: ToolDefinition[] = [
   {
@@ -424,12 +434,13 @@ const ALL_TOOLS: ToolDefinition[] = [
         pixel: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2, description: '[x, y] pixel position. (0, 0) is top-left.' },
         view: {
           type: 'object',
-          description: 'Camera spec. MUST match the renderView call that produced the image — same elevation, azimuth, ortho, size.',
+          description: 'Camera spec. MUST match the renderView call that produced the image — same elevation, azimuth, ortho, size, and focus/padding/clip if used.',
           properties: {
             elevation: { type: 'number' },
             azimuth: { type: 'number' },
             ortho: { type: 'boolean' },
             size: { type: 'integer', description: 'Image size in px. Omit only if the renderView call omitted it too (both then use your render budget size).' },
+            ...VIEW_FOCUS_PROPS,
           },
         },
       },
@@ -445,12 +456,13 @@ const ALL_TOOLS: ToolDefinition[] = [
         pixels: { type: 'array', items: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 }, description: '[[x, y], ...] pixel positions. (0, 0) is top-left.' },
         view: {
           type: 'object',
-          description: 'Camera spec. MUST match the renderView call that produced the image — same elevation, azimuth, ortho, size.',
+          description: 'Camera spec. MUST match the renderView call that produced the image — same elevation, azimuth, ortho, size, and focus/padding/clip if used.',
           properties: {
             elevation: { type: 'number' },
             azimuth: { type: 'number' },
             ortho: { type: 'boolean' },
             size: { type: 'integer', description: 'Image size in px. Omit only if the renderView call omitted it too (both then use your render budget size).' },
+            ...VIEW_FOCUS_PROPS,
           },
         },
       },
@@ -525,6 +537,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         size: { type: 'integer', description: 'Pixel size of the rendered square. Default: your render budget (256 / 384 / 512 px by spending mode); the result label states the size used — pass that same size to probePixel. Larger costs more tokens.' },
         edges: { type: 'string', enum: [...EDGE_MODES], description: 'Edge overlay style. "crease" (default for uncolored models) draws only feature edges — corners and the silhouette — so the shape reads cleanly without facet noise on curves. "none" is a plain shaded surface (best when reading painted colors; the default for painted models). "wireframe" draws every triangle edge — use only to inspect tessellation or debug a failed boolean.' },
         reference: { type: 'boolean', description: 'Draw the setReferenceGeometry ghost (translucent, depth-tested: it shows where it pokes through the model). Default true when a reference is set; false hides it.' },
+        ...VIEW_FOCUS_PROPS,
       },
     },
   },
@@ -539,6 +552,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         size: { type: 'integer', description: 'Pixel size per cell. Default: your render budget (256 / 384 / 512 px by spending mode). Raise to 512-768 for a high-resolution final check; larger costs more tokens.' },
         edges: { type: 'string', enum: [...EDGE_MODES], description: 'Edge overlay applied to every tile. "crease" (default for uncolored models) draws only feature edges — corners and silhouette — so shape reads cleanly without facet noise on curves. "none" is a plain shaded surface (best for reading painted colors; default for painted models). "wireframe" draws every triangle edge — use only to inspect tessellation or debug a failed boolean.' },
         reference: { type: 'boolean', description: 'Draw the setReferenceGeometry ghost (translucent, depth-tested: it shows where it pokes through the model). Default true when a reference is set; false hides it.' },
+        ...VIEW_FOCUS_PROPS,
       },
     },
   },
@@ -1153,7 +1167,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'modifyAndTest',
-    description: 'Apply string substitution(s) to the current editor code, run the result, and return stats — WITHOUT saving a version or changing the editor. Use to test a tweak before committing. Provide either a single `find`/`replace` pair or a `patches` array for multiple simultaneous substitutions; each `find` must match exactly once or the call errors (no silent no-op). Returns {modifiedCode, codeDiff: {changed, added, removed, diff}, stats, passed?, failures?} — check codeDiff.changed to confirm the tweak actually altered the code.',
+    description: 'Apply string substitution(s) to the current editor code, run the result, and return stats — WITHOUT saving a version or changing the editor. Use to test a tweak before committing. Provide either a single `find`/`replace` pair or a `patches` array for multiple simultaneous substitutions; each `find` must match exactly once or the call errors (no silent no-op). Returns {modifiedCode, codeDiff: {changed, added, removed, diff}, stats, passed?, failures?, logs?} — check codeDiff.changed to confirm the tweak actually altered the code; logs is the patched code\'s console output.',
     input_schema: {
       type: 'object',
       properties: {
@@ -2732,11 +2746,23 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   'extractObjectPiece', 'extractObjectParts', 'reassignPaint', 'partAction', 'undoPartEdit',
 ]);
 
+/** The read-only object-targetable tools. When one targets an object other
+ *  than the open one, focus returns to the user's object afterwards, so an
+ *  agent inspecting a sibling doesn't leave the user looking at it (#1197).
+ *  Tools that change an object leave it focused so the user sees the change. */
+export const FOCUS_RETURNING_TOOLS = new Set<string>([
+  'getActiveLanguage', 'getCode', 'getParams', 'getGeometryData', 'getMeshSummary', 'getFeatureCentroids',
+  'listVersions', 'getModelDrift', 'diffVersions', 'modifyAndTest', 'query', 'findFaces', 'listComponents',
+  'listLabels', 'getModelColors', 'listRegions', 'probePixel', 'probePixels', 'probeRay', 'paintExplain',
+  'getPartTriangles', 'partBoundary', 'assertPaint', 'getObjectPartInfo', 'sliceAtZVisual', 'renderSection',
+  'checkPrintability', 'thicknessMap', 'renderView', 'renderViews',
+]);
+
 // The shared `object` target schema, injected into every targetable tool so the
 // description stays in one place. Typeless on purpose — it accepts a name/id
 // string OR a 0-based index number (resolvePartTarget in main.ts handles both).
 const OBJECT_TARGET_PROP = {
-  description: 'Optional. The OBJECT to act on — addressed by its name, its id (from listObjects), or its 0-based index. Defaults to the current object. Pass this to target a specific object directly instead of relying on the current selection; it also makes a separate changeObject call unnecessary. Switching focus to the object is visible to the user.',
+  description: 'Optional. The OBJECT to act on — its name, id (from listObjects), or 0-based index. Defaults to the current object. Pass it instead of relying on the current selection or a separate changeObject call. Read-only tools (renders, queries) switch back to the user\'s object afterwards; tools that change the object leave it focused.',
 };
 for (const tool of ALL_TOOLS) {
   if (OBJECT_TARGETABLE_TOOLS.has(tool.name) && !('object' in tool.input_schema.properties)) {
@@ -3432,6 +3458,9 @@ export async function executeTool(name: string, rawInput: Record<string, unknown
       delete input.scope;
     }
     const api = getApi();
+    // Set when a read-only tool switched focus to another object: the object
+    // to switch back to, and the one it switched to.
+    let returnFocus: { to: string; from: string } | null = null;
     // Object addressing: an object-scoped tool may name an `object` target (name,
     // id, or 0-based index; `part` is the pre-rename spelling, still accepted).
     // Switch focus to it before running so the op acts on the addressed object —
@@ -3445,40 +3474,63 @@ export async function executeTool(name: string, rawInput: Record<string, unknown
       delete input.object;
       if (!ownsPart) delete input.part;
       if (target != null) {
+        const before = currentObjectId(api);
         const focusErr = await focusTargetObject(api, target);
         if (focusErr) return { content: focusErr, isError: true };
+        const after = currentObjectId(api);
+        if (FOCUS_RETURNING_TOOLS.has(name) && before && after && after !== before) returnFocus = { to: before, from: after };
       }
     }
-    // Tools that ship images back to the model bypass the generic JSON
-    // dispatch — they need the data-URL → multimodal-image wrapping.
-    if (name === 'renderView') return executeRenderView(api, input);
-    if (name === 'renderViews') return await executeRenderViews(api, input);
-    if (name === 'thicknessMap') return await executeThicknessMap(api, input);
-    if (name === 'runIsolated') return await executeRunIsolated(api, input);
-    if (name === 'sliceAtZVisual') return await executeSliceAtZVisual(api, input);
-    if (name === 'getReferenceImages') return await executeGetReferenceImages(api);
-    if (name === 'getAttachments') return executeGetAttachments(api);
-
-    const result = await dispatch(api, name, input);
-    if (result === undefined) return { content: '(ok)', isError: false };
-    if (typeof result === 'string') return { content: result, isError: false };
-    // If a dispatch returned an object that already looks like our
-    // ToolExecResult shape (image-bearing), pass it through. Otherwise
-    // serialize normally.
-    if (result && typeof result === 'object' && 'content' in (result as Record<string, unknown>) && 'isError' in (result as Record<string, unknown>)) {
-      return result as ToolExecResult;
+    try {
+      return await runTool(api, name, input);
+    } finally {
+      // Only when nobody moved focus during the call (the user clicking an
+      // object, or a parallel call) — never yank the user off their choice.
+      if (returnFocus && currentObjectId(api) === returnFocus.from) {
+        try { await api.changeObject(returnFocus.to); } catch { /* best-effort */ }
+      }
     }
-    // A value-returning API method reports failure as `{ error }` instead of
-    // throwing (ai.md#argument-validation): flag it as an error result so the
-    // model and the loop (finishBatchErrored) see a failure, as they did when
-    // the same bad input threw. Auto-retry still only re-runs TRANSIENT failures.
-    const failed = typeof result === 'object' && result !== null && !Array.isArray(result)
-      && typeof (result as { error?: unknown }).error === 'string';
-    return { content: JSON.stringify(result, null, 2), isError: failed };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { content: msg, isError: true };
   }
+}
+
+/** The id of the object open in the editor, or null with no session. */
+function currentObjectId(api: PartwrightAPI): string | null {
+  const objects = api.listObjects() as ObjectRow[] | undefined;
+  return Array.isArray(objects) ? objects.find(o => o.isCurrent)?.id ?? null : null;
+}
+
+/** Run one tool on the focused object (executeTool has already resolved its
+ *  object target). */
+async function runTool(api: PartwrightAPI, name: string, input: Record<string, unknown>): Promise<ToolExecResult> {
+  // Tools that ship images back to the model bypass the generic JSON
+  // dispatch — they need the data-URL → multimodal-image wrapping.
+  if (name === 'renderView') return executeRenderView(api, input);
+  if (name === 'renderViews') return await executeRenderViews(api, input);
+  if (name === 'thicknessMap') return await executeThicknessMap(api, input);
+  if (name === 'runIsolated') return await executeRunIsolated(api, input);
+  if (name === 'sliceAtZVisual') return await executeSliceAtZVisual(api, input);
+  if (name === 'getReferenceImages') return await executeGetReferenceImages(api);
+  if (name === 'getAttachments') return executeGetAttachments(api);
+
+  const result = await dispatch(api, name, input);
+  if (result === undefined) return { content: '(ok)', isError: false };
+  if (typeof result === 'string') return { content: result, isError: false };
+  // If a dispatch returned an object that already looks like our
+  // ToolExecResult shape (image-bearing), pass it through. Otherwise
+  // serialize normally.
+  if (result && typeof result === 'object' && 'content' in (result as Record<string, unknown>) && 'isError' in (result as Record<string, unknown>)) {
+    return result as ToolExecResult;
+  }
+  // A value-returning API method reports failure as `{ error }` instead of
+  // throwing (ai.md#argument-validation): flag it as an error result so the
+  // model and the loop (finishBatchErrored) see a failure, as they did when
+  // the same bad input threw. Auto-retry still only re-runs TRANSIENT failures.
+  const failed = typeof result === 'object' && result !== null && !Array.isArray(result)
+    && typeof (result as { error?: unknown }).error === 'string';
+  return { content: JSON.stringify(result, null, 2), isError: failed };
 }
 
 /** Returns an error message when the supplied code clearly doesn't match
@@ -3660,7 +3712,7 @@ function executeRenderView(api: PartwrightAPI, input: Record<string, unknown>): 
   // Mirror the budget-driven default size applied in window.partwright.renderView
   // so the label reports the size actually rendered.
   const size = (input.size as number | undefined) ?? getRenderBudget().defaultPx;
-  const label = `view: elev=${elevation}°, az=${azimuth}°${ortho ? ', ortho' : ''}, ${size}px`;
+  const label = `view: elev=${elevation}°, az=${azimuth}°${ortho ? ', ortho' : ''}, ${size}px${input.focus ? `, focus ${JSON.stringify(input.focus)}${input.clip ? ' (clipped)' : ''}` : ''}`;
   return wrapImageResult(result, 'renderView', label);
 }
 
