@@ -1788,6 +1788,20 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'thicknessMap',
+    description: 'Wall-thickness map of the current model: EVERY triangle\'s distance straight through the solid to the opposite wall (exact — checkPrintability only samples a few hundred). Returns the thinnest wall and where, the median, how much surface is below `threshold` (default 2 × the printer nozzle width), and the thin SPOTS — connected thin areas, thinnest first, each with { center, thinnest, thickness, area, triangleCount } — so you can thicken exactly those places. render: true adds a heatmap image (red ≤ ½·threshold, yellow at the threshold, grey ≥ 2·threshold).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        threshold: { type: 'number', description: 'Walls thinner than this are "thin". Default 2 × the printer nozzle width.' },
+        limit: { type: 'integer', minimum: 1, maximum: 1000, description: 'Most thin spots to list (thinnest first). Default 10.' },
+        render: { type: 'boolean', description: 'Attach a heatmap image of the thickness. Default false.' },
+        views: { type: 'string', enum: [...RENDER_VIEW_MODES], description: 'Heatmap angles, as renderViews. Default "all".' },
+        size: { type: 'integer', minimum: 16, maximum: 2048, description: 'Heatmap tile size in pixels.' },
+      },
+    },
+  },
+  {
     name: 'checkPrintability',
     description: 'Analyze the current model for 3D-printing problems and return a structured report: bed fit, overhangs that need support, thin walls (a sampled estimate), small features, tip-over stability (centre of mass vs base footprint), and watertightness. Every check carries a level — pass / warn / fail (fail = won\'t print as-is). Reads the build volume + nozzle from printer settings unless you override them. Call this before telling the user a model is print-ready, and again after geometry changes; then fix any fails — thicken walls, re-orient to remove overhangs, use the Resize tool to fit the bed, or use the Split tool when it is simply too big for the bed. The same check runs automatically on STL / OBJ / 3MF / GLB export and warns via a toast.',
     input_schema: {
@@ -2585,7 +2599,7 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   'paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintImage', 'paintInBox', 'paintInOrientedBox',
   'paintSlab', 'paintPattern', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels',
   'paintConnected', 'paintInCylinder', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'editRegion',
-  'clearColors', 'undoClearColors', 'assertPaint', 'sliceAtZVisual', 'checkPrintability',
+  'clearColors', 'undoClearColors', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'thicknessMap',
   'renderView', 'renderViews',
   'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel',
   'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'deleteObjectPart',
@@ -2706,6 +2720,7 @@ const ALWAYS_AVAILABLE = new Set([
   'sliceAtZVisual',
   'paintInCylinder',
   'checkPrintability',
+  'thicknessMap',
   'getPrinterSettings',
   'setPrinterSettings',
   'importImageAsRelief',
@@ -2845,7 +2860,7 @@ const PLAN_MODE_TOOLS = new Set([
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
-  'listObjects', 'getCurrentObject', 'listObjectParts', 'getObjectPartInfo', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
+  'listObjects', 'getCurrentObject', 'listObjectParts', 'getObjectPartInfo', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'thicknessMap', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
   'evalAgainstImport',
@@ -2877,7 +2892,7 @@ export const RETRY_SAFE_TOOLS = new Set([
   'listSessionNotes', 'readDoc', 'findFaces', 'listComponents', 'listLabels',
   'getModelColors',
   'listRegions', 'probePixel', 'paintPreview', 'paintExplain', 'query', 'probeRay',
-  'listObjects', 'getCurrentObject', 'listObjectParts', 'getObjectPartInfo', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
+  'listObjects', 'getCurrentObject', 'listObjectParts', 'getObjectPartInfo', 'listDeleted', 'assertPaint', 'sliceAtZVisual', 'checkPrintability', 'thicknessMap', 'photoMatch', 'getCharacterSpec', 'listCharacterPresets',
   'getPrinterSettings', 'getReliefSwapGuide', 'listPartDetectors', 'getPartDraft', 'partAt',
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
   'evalAgainstImport',
@@ -3302,6 +3317,7 @@ export async function executeTool(name: string, rawInput: Record<string, unknown
     // dispatch — they need the data-URL → multimodal-image wrapping.
     if (name === 'renderView') return executeRenderView(api, input);
     if (name === 'renderViews') return await executeRenderViews(api, input);
+    if (name === 'thicknessMap') return await executeThicknessMap(api, input);
     if (name === 'runIsolated') return await executeRunIsolated(api, input);
     if (name === 'sliceAtZVisual') return await executeSliceAtZVisual(api, input);
     if (name === 'getReferenceImages') return await executeGetReferenceImages(api);
@@ -4416,6 +4432,18 @@ async function executeExportModel(api: PartwrightAPI, input: Record<string, unkn
     return { ok: true, format, ...rest };
   }
   return { ok: true, format };
+}
+
+async function executeThicknessMap(api: PartwrightAPI, input: Record<string, unknown>): Promise<ToolExecResult> {
+  const result = await api.thicknessMap(input) as (Record<string, unknown> & { image?: string; error?: string }) | null;
+  if (!result) return { content: 'thicknessMap: no geometry loaded — run the code first.', isError: true };
+  if (typeof result.error === 'string') return { content: result.error, isError: true };
+  const { image, ...summary } = result;
+  const content = JSON.stringify(summary);
+  const img = typeof image === 'string' ? parseImageDataUrl(image) : null;
+  return img
+    ? { content: `${content}\n\nThickness heatmap attached: red is thinnest, yellow is at the threshold, grey is comfortably thick.`, isError: false, image: { ...img, label: 'thickness heatmap' } }
+    : { content, isError: false };
 }
 
 async function executeRenderSection(api: PartwrightAPI, input: Record<string, unknown>): Promise<ToolExecResult> {

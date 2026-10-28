@@ -77,3 +77,32 @@ The collapsed state is a per-viewer localStorage convenience.
   were painted over.
 - `rasterizeSvg` (the chat-tool path) now keeps the SVG's aspect ratio,
   since annotated sections are taller than wide.
+
+## Assistant
+
+## Thickness map
+
+- **Exact BVH rays, not the voxel field**: `segmentation/thickness.ts`
+  floors walls at one voxel, the opposite of what a thin-wall check needs. So
+  `geometry/thicknessMap.ts` casts one ray per triangle along −normal against
+  the mesh's cached three-mesh-bvh tree (`rayCast.raycastGeometry`, now
+  exported; indirect mode keeps faceIndex = triangle). The distance to the
+  first wall is the local thickness: exact for flat walls, close on curved
+  ones, and the through-diameter of a solid. The field is cached per mesh,
+  so a new threshold or render re-uses it. That costs about 1.4 s per 231k
+  triangles.
+- **Thin spots**: thin triangles are joined by shared corner positions
+  (union-find; position keys, so seam-split vertices still connect) and
+  ranked thinnest-first, each with its centre, thinnest point, thickness and
+  area.
+- **Heatmap**: per-triangle colours on a mesh copy, red at ½ the threshold
+  → yellow at it → grey at 2×, rendered through a `composeViews` helper
+  extracted from `renderViews` so both share the compositing.
+- **Default threshold** is 2 × the nozzle width, matching
+  `checkPrintability`'s warn line.
+- **Known behaviour, documented**: knife edges (a shell cut at an angle) read
+  as thin, which is correct for printing. A face made of a few huge
+  triangles is measured at their centroids.
+- Also a `thicknessMap` chat tool, placed in the same gating lists as
+  `checkPrintability`. It routes through the image-returning early dispatch,
+  so the heatmap comes back as a multimodal image.

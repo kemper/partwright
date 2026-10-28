@@ -164,7 +164,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `voxel` | Before writing voxel-language code or importing an image as voxels. Covers the `api.voxels()` grid API, colors, coordinate system, and image import. |
 | `mechanisms` | Before modeling a print-in-place / multi-part assembly that **moves** — a screw, spinner, hinge, captive ball, or slider. Covers clearance gaps, `componentCount` verification, twist-extrude threads/spirals, matched-taper nesting, and cutaway checks. |
 | `print-safety` | Before exporting STL/3MF for FDM printing — minimum wall thickness, taper traps, sub-extrusion-width layer detection. |
-| `printing` | The print-readiness toolkit — `checkPrintability` (overhangs, walls, bed fit, tip-over) and `get/setPrinterSettings`. The same check also runs automatically on STL / OBJ / 3MF / GLB export. Read before declaring a model print-ready, then steer the user to the dedicated Resize and Split tools if it doesn't fit. |
+| `printing` | The print-readiness toolkit — `checkPrintability` (overhangs, walls, bed fit, tip-over), `thicknessMap` (exact wall thickness everywhere: the thin spots and a heatmap) and `get/setPrinterSettings`. The same check also runs automatically on STL / OBJ / 3MF / GLB export. Read before declaring a model print-ready, then steer the user to the dedicated Resize and Split tools if it doesn't fit. |
 | `fasteners` | Before building parts that mate with real hardware — `api.fasteners.*` screw holes, tap/pilot holes, heat-set insert bosses, captive-nut pockets, the M2–M8 metric table, clearance presets, and a calibration coupon. |
 | `joints` | Before connecting printed parts to each other — `api.joints.*` alignment pins, sliding dovetails, snap-fits, print-in-place barrel hinges, articulating ball joints (friction / clamp / snap retention), and annular snap rims for press-on lids. |
 | `gears` | Before modeling an involute spur gear, a meshing gear pair, or a rack — `api.gears.spur/pair/rack(...)`, module/teeth/pressure-angle, centre distance, ratio, bores and hubs. |
@@ -403,6 +403,7 @@ partwright.measureMode(on?) / partwright.getMeasurement() // Interactive two-cli
 partwright.getPrinterSettings()          // -> {bed:[x,y,z], nozzleWidth, overhangAngleDeg, clearance} (mm)
 partwright.setPrinterSettings({bed?, nozzleWidth?, overhangAngleDeg?, clearance?}) // update any subset -> merged settings or {error}
 partwright.checkPrintability({bed?, nozzleWidth?, overhangAngleDeg?}?) // bed fit / overhang / thin wall / small feature / tip-over / watertight report, or {error}
+await partwright.thicknessMap({threshold?, limit?, render?, views?, size?}?) // EXACT wall thickness under every triangle -> {minThickness, thinnest, medianThickness, thinArea, thinFraction, spots[] (connected thin areas, thinnest first: center, thinnest, thickness, area), image? (heatmap)} — find WHERE walls are thin; see /ai/printing.md#thicknessmapopts
 partwright.isRunning()                   // -> boolean (is code executing?)
 
 // Spending mode (AI budget) -- respect what the user set; see #spending-mode

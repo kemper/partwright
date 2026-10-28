@@ -23,6 +23,7 @@ import './style.css';
 import { errorLog } from './diagnostics/errorLog';
 import { selectTriangles, type LabelLookup } from './geometry/selector';
 import { meshDiff, deviationColors } from './geometry/meshDiff';
+import { thicknessField, summarizeThickness, thicknessColors } from './geometry/thicknessMap';
 import { assetPath, appPath, appRoute } from './deployment';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
 import { initEngine, executeCodeAsync, runVoxelGridInWorker, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language, type MeshOpFacts } from './geometry/engine';
@@ -15333,30 +15334,7 @@ async function main() {
           }))
         : chooseRenderAngles(which);
 
-      const labelHeight = 24;
-      const cellHeight = tileSize + labelHeight;
-      const cols = angles.length <= 1 ? 1 : angles.length <= 4 ? 2 : 3;
-      const rows = Math.ceil(angles.length / cols);
-      const composite = document.createElement('canvas');
-      composite.width = tileSize * cols;
-      composite.height = cellHeight * rows;
-      const ctx = composite.getContext('2d');
-      if (!ctx) return null;
-      ctx.fillStyle = '#f4f4f5';
-      ctx.fillRect(0, 0, composite.width, composite.height);
-
-      // Render each angle to a data URL via renderSingleView (each call
-      // reuses the same offscreen WebGLRenderer), decode each to an
-      // HTMLImageElement, then stamp into the composite grid.
-      for (let i = 0; i < angles.length; i++) {
-        const { label, opts } = angles[i];
-        const dataUrl = renderSingleView(colored, { ...opts, size: tileSize, edges: options?.edges, reference });
-        if (!dataUrl) continue;
-        const img = await loadImageFromDataUrl(dataUrl);
-        if (!img) continue;
-        drawCell(ctx, img, i, tileSize, cellHeight, label, cols);
-      }
-      return composite.toDataURL('image/png');
+      return composeViews(colored, angles, tileSize, { edges: options?.edges, reference });
     },
 
     /** Pin the thumbnail camera angle for the active session so captured
@@ -17650,6 +17628,42 @@ async function main() {
         isManifold: stats.isManifold === true,
         renderOnly: stats.manifoldStatus === 'render-only (not manifold)',
       });
+    },
+
+    /** Wall-thickness map of the current model: every triangle's distance
+     *  straight through the solid to the opposite wall (exact, via the mesh's
+     *  BVH — not checkPrintability's sampled estimate). Returns the thinnest
+     *  wall and where, the area-weighted median, how much surface is below
+     *  `threshold` (default 2 × the printer's nozzle width), and the thin
+     *  SPOTS — connected thin areas, thinnest first, each with its centre,
+     *  thinnest point, thickness and area. `render: true` adds a heatmap image
+     *  (red ≤ ½·threshold → yellow at threshold → grey ≥ 2·threshold). */
+    async thicknessMap(opts?: { threshold?: number; limit?: number; render?: boolean; views?: RenderViewMode; size?: number }) {
+      const bad = argError(() => {
+        if (opts !== undefined) {
+          const o = assertObject(opts, 'thicknessMap(opts)')!;
+          assertNoUnknownKeys(o, ['threshold', 'limit', 'render', 'views', 'size'], 'thicknessMap(opts)');
+          assertNumber(o.threshold, 'thicknessMap(opts).threshold', { optional: true, min: 0 });
+          assertNumber(o.limit, 'thicknessMap(opts).limit', { optional: true, min: 1, max: 1000, integer: true });
+          assertBoolean(o.render, 'thicknessMap(opts).render', { optional: true });
+          if (o.views !== undefined) assertEnum(o.views, RENDER_VIEW_MODES, 'thicknessMap(opts).views');
+          assertNumber(o.size, 'thicknessMap(opts).size', { optional: true, min: 16, max: 2048, integer: true });
+        }
+      });
+      if (bad) return bad;
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      const mesh = currentMeshData;
+      const threshold = opts?.threshold ?? loadPrinterSettings().nozzleWidth * 2;
+      const t0 = performance.now();
+      const field = thicknessField(mesh);
+      const summary = summarizeThickness(mesh, field, threshold, opts?.limit ?? 10);
+      const ms = Math.round(performance.now() - t0);
+      let image: string | null = null;
+      if (opts?.render) {
+        const colored = { ...mesh, triColors: thicknessColors(field, threshold) };
+        image = await composeViews(colored, chooseRenderAngles(opts.views ?? 'all'), opts.size ?? getRenderBudget().defaultPx, { edges: 'none' });
+      }
+      return { ...summary, ms, ...(image ? { image } : {}) };
     },
 
 
@@ -22261,6 +22275,7 @@ async function main() {
         'getPrinterSettings': { signature: 'getPrinterSettings() -- Printer / build-volume settings -> {bed: [x,y,z], nozzleWidth, overhangAngleDeg, clearance} (mm)', docs: '/ai/printing.md#printer-settings' },
         'setPrinterSettings': { signature: 'setPrinterSettings({bed?: [x,y,z], nozzleWidth? >= 0.05, overhangAngleDeg? 1..89, clearance? >= 0}) -- Update any subset -> merged settings or {error}', docs: '/ai/printing.md#printer-settings' },
         'checkPrintability': { signature: 'checkPrintability({bed?, nozzleWidth?, overhangAngleDeg?}?) -- Bed fit, overhangs, thin walls, small features, tip-over and watertight report, pass/warn/fail per check (defaults from printer settings) -> report or {error}', docs: '/ai/printing.md#checkprintabilityopts' },
+        'thicknessMap':    { signature: 'await thicknessMap({threshold?, limit?, render?, views?, size?}?) -- Exact wall thickness under every triangle -> {minThickness, thinnest, medianThickness, thinArea, thinFraction, spots[{center, thinnest, thickness, area, triangleCount}], spotCount, image?} (threshold default 2 × nozzle; render adds a red→grey heatmap)', docs: '/ai/printing.md#thicknessmapopts' },
         // Annotations
         'listAnnotations':    { signature: 'listAnnotations() -- List freehand strokes -> [{id, color, width, points}]', docs: '/ai/annotations.md' },
         'listTextAnnotations':{ signature: 'listTextAnnotations() -- List pinned text labels -> [{id, text, color, fontSizePx, anchor}]', docs: '/ai/annotations.md' },
@@ -22386,6 +22401,38 @@ async function main() {
    *  the rendered tile occupies the top of the cell, with a labelled
    *  footer band beneath it identifying the angle. `cols` controls
    *  whether cellIndex wraps after 1 or 2 columns. */
+  /** Render `angles` of `mesh` into one labelled composite PNG data URL
+   *  (renderViews, the thickness heatmap). Each angle renders through
+   *  renderSingleView (one shared offscreen WebGLRenderer), is decoded, then
+   *  stamped into the grid. */
+  async function composeViews(
+    mesh: MeshData,
+    angles: { label: string; opts: { elevation: number; azimuth: number; ortho: boolean } }[],
+    tileSize: number,
+    render: { edges?: EdgeMode; reference?: boolean },
+  ): Promise<string | null> {
+    const labelHeight = 24;
+    const cellHeight = tileSize + labelHeight;
+    const cols = angles.length <= 1 ? 1 : angles.length <= 4 ? 2 : 3;
+    const rows = Math.ceil(angles.length / cols);
+    const composite = document.createElement('canvas');
+    composite.width = tileSize * cols;
+    composite.height = cellHeight * rows;
+    const ctx = composite.getContext('2d');
+    if (!ctx) return null;
+    ctx.fillStyle = '#f4f4f5';
+    ctx.fillRect(0, 0, composite.width, composite.height);
+    for (let i = 0; i < angles.length; i++) {
+      const { label, opts } = angles[i];
+      const dataUrl = renderSingleView(mesh, { ...opts, size: tileSize, ...render });
+      if (!dataUrl) continue;
+      const img = await loadImageFromDataUrl(dataUrl);
+      if (!img) continue;
+      drawCell(ctx, img, i, tileSize, cellHeight, label, cols);
+    }
+    return composite.toDataURL('image/png');
+  }
+
   function drawCell(
     ctx: CanvasRenderingContext2D,
     src: CanvasImageSource,
