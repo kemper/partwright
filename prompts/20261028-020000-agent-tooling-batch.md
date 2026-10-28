@@ -123,3 +123,7 @@ The collapsed state is a per-viewer localStorage convenience.
   live Manifold and returns null for render-only meshes. The docs now say to
   re-export a watertight mesh, and the missing in-app repair is filed as
   kemper/partwright#1181.
+
+## Assistant
+
+Added a 4-Ls retro (retros/inbox/20261028-030000-agent-tooling-batch.md).
