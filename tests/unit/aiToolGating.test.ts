@@ -645,7 +645,11 @@ describe('object focus returns after a read-only targeted tool (#1197)', () => {
     let current = start;
     const calls = stubApi({
       listObjects: () => ['A', 'B'].map((id, order) => ({ id, name: `Obj ${id}`, order, isCurrent: id === current })),
-      changeObject: (t) => { current = t === 'Obj B' || t === 'B' || t === 1 ? 'B' : 'A'; return { id: current }; },
+      changeObject: (t) => {
+        const previous = { id: current, version: 3 };
+        current = t === 'Obj B' || t === 'B' || t === 1 ? 'B' : 'A';
+        return { id: current, name: `Obj ${current}`, previous };
+      },
       getCode: () => `code of ${current}`,
       runAndSave: () => ({ ok: true, savedTo: current }),
     });
@@ -657,6 +661,34 @@ describe('object focus returns after a read-only targeted tool (#1197)', () => {
     const r = await executeTool('getCode', { object: 'Obj B' });
     expect(r.content).toContain('code of B');
     expect(s.current()).toBe('A');
+    // Back to the exact version the user had open, and the result says so.
+    const back = s.calls.filter(c => c.method === 'changeObject').at(-1);
+    expect(back?.args).toEqual(['A', { version: 3 }]);
+    expect(r.content).toMatch(/Focus went back to the user's object "Obj A"\. Pass object: "Obj B"/);
+  });
+
+  test('a newer tool call stops a late switch-back', async () => {
+    let current = 'A';
+    let release!: () => void;
+    stubApi({
+      listObjects: () => ['A', 'B'].map((id, order) => ({ id, name: `Obj ${id}`, order, isCurrent: id === current })),
+      changeObject: (t) => { const previous = { id: current, version: 1 }; current = t === 'Obj B' || t === 'B' ? 'B' : 'A'; return { id: current, name: `Obj ${current}`, previous }; },
+      // A read that outlives the agent's tool timeout.
+      getCode: () => new Promise(r => { release = () => r('x'); }),
+      runAndSave: () => ({ ok: true }),
+    });
+    const slow = executeTool('getCode', { object: 'Obj B' });
+    await new Promise(r => setTimeout(r, 0));
+    await executeTool('runAndSave', { object: 'Obj B', code: 'return 1;' });
+    release();
+    await slow;
+    expect(current).toBe('B');
+  });
+
+  test('id-returning reads keep the target focused for the follow-up call', async () => {
+    const s = stubObjects('A');
+    await executeTool('findFaces', { object: 'Obj B', normal: [0, 0, 1] });
+    expect(s.current()).toBe('B');
   });
 
   test('a model-changing tool leaves the targeted object focused', async () => {

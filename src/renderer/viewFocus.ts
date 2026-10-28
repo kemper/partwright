@@ -23,9 +23,16 @@ export function padViewBox(box: ViewBox, padding: number, minExtent = 1): ViewBo
   };
 }
 
-/** True when `p` lies inside `box` (inclusive, with a tiny tolerance so a hit
- *  exactly on a clip face isn't rejected by rounding). */
-export function pointInViewBox(p: ArrayLike<number>, box: ViewBox, eps = 1e-6): boolean {
+/** How far a clip reaches past `box` (relative to its size), so geometry
+ *  lying exactly on a clip face — a box-shaped part focused with padding 0 —
+ *  isn't speckled away by rounding. Clipped renders and clipped probes both
+ *  use it, so they agree on what was cut. */
+export function clipTolerance(box: ViewBox): number {
+  return 1e-6 * Math.max(1, box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2]);
+}
+
+/** True when `p` lies inside `box` grown by `eps` on every side. */
+export function pointInViewBox(p: ArrayLike<number>, box: ViewBox, eps = clipTolerance(box)): boolean {
   for (let a = 0; a < 3; a++) {
     if (p[a] < box.min[a] - eps || p[a] > box.max[a] + eps) return false;
   }
@@ -35,13 +42,13 @@ export function pointInViewBox(p: ArrayLike<number>, box: ViewBox, eps = 1e-6): 
 /** The six half-spaces `n·p + d >= 0` whose intersection is `box` — the
  *  form three.js clipping planes take (a fragment with a negative distance to
  *  any plane is discarded). */
-export function viewBoxHalfSpaces(box: ViewBox): { normal: Vec3; constant: number }[] {
+export function viewBoxHalfSpaces(box: ViewBox, eps = clipTolerance(box)): { normal: Vec3; constant: number }[] {
   return [
-    { normal: [1, 0, 0], constant: -box.min[0] },
-    { normal: [-1, 0, 0], constant: box.max[0] },
-    { normal: [0, 1, 0], constant: -box.min[1] },
-    { normal: [0, -1, 0], constant: box.max[1] },
-    { normal: [0, 0, 1], constant: -box.min[2] },
-    { normal: [0, 0, -1], constant: box.max[2] },
+    { normal: [1, 0, 0], constant: -box.min[0] + eps },
+    { normal: [-1, 0, 0], constant: box.max[0] + eps },
+    { normal: [0, 1, 0], constant: -box.min[1] + eps },
+    { normal: [0, -1, 0], constant: box.max[1] + eps },
+    { normal: [0, 0, 1], constant: -box.min[2] + eps },
+    { normal: [0, 0, -1], constant: box.max[2] + eps },
   ];
 }

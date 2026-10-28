@@ -131,7 +131,7 @@ const VIEW_FOCUS_PROPS = {
     description: 'Zoom onto a small feature instead of framing the whole model: {part:"name"} (a labelled part — listObjectParts), {piece:i}, or a world box {min:[x,y,z], max:[x,y,z]}.',
     properties: { part: { type: 'string' }, piece: { type: 'integer' }, min: VEC3_SCHEMA, max: VEC3_SCHEMA },
   },
-  padding: { type: 'number', description: 'Margin around focus as a fraction of its largest side (default 0.15).' },
+  padding: { type: 'number', description: 'Margin around focus as a fraction of its largest side (default 0.15, an Advanced Setting).' },
   clip: { type: 'boolean', description: 'With focus: hide everything outside the focus box, so nearer geometry (a lip, a mask) cannot block the view. Use to look into sockets and slots.' },
 };
 
@@ -1249,7 +1249,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'changeObject',
-    description: "Switch the active object — i.e. change what the USER sees in the editor/viewport. Address it by name, id (from listObjects), or 0-based index. Loads that object's latest version. You usually do NOT need this just to work on a different object: every object-scoped tool (getCode, runCode, runAndSave, paint*, getGeometryData, …) takes an optional `object` target that addresses an object directly. Use changeObject only when you want to move the user's focus, or to reset the editor to an object's latest saved version.",
+    description: "Switch the active object — i.e. change what the USER sees in the editor/viewport. Address it by name, id (from listObjects), or 0-based index. Like the user clicking it: unsaved edits on the open object are saved first, and the target opens at its latest version plus any unsaved draft. You usually do NOT need this just to work on a different object: every object-scoped tool (getCode, runCode, runAndSave, paint*, getGeometryData, …) takes an optional `object` target that addresses an object directly. Use changeObject only to move the user's focus; to go back to a saved version use loadVersion.",
     input_schema: {
       type: 'object',
       properties: {
@@ -2746,17 +2746,26 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   'extractObjectPiece', 'extractObjectParts', 'reassignPaint', 'partAction', 'undoPartEdit',
 ]);
 
-/** The read-only object-targetable tools. When one targets an object other
- *  than the open one, focus returns to the user's object afterwards, so an
- *  agent inspecting a sibling doesn't leave the user looking at it (#1197).
- *  Tools that change an object leave it focused so the user sees the change. */
+/** Read-only object-targetable tools. When one targets an object other than
+ *  the open one, focus returns to the user's object (and version) afterwards,
+ *  so an agent inspecting a sibling doesn't leave the user looking at it
+ *  (#1197). Left out on purpose: tools that change an object (the user should
+ *  see the change), and reads whose answer feeds a follow-up call on the same
+ *  object — triangle ids (findFaces, getPartTriangles), region ids
+ *  (listRegions, paintExplain), piece indices (getObjectPartInfo), surface
+ *  points (probe*, partBoundary) — so an untargeted paint right after still
+ *  lands on the object those ids belong to. */
 export const FOCUS_RETURNING_TOOLS = new Set<string>([
   'getActiveLanguage', 'getCode', 'getParams', 'getGeometryData', 'getMeshSummary', 'getFeatureCentroids',
-  'listVersions', 'getModelDrift', 'diffVersions', 'modifyAndTest', 'query', 'findFaces', 'listComponents',
-  'listLabels', 'getModelColors', 'listRegions', 'probePixel', 'probePixels', 'probeRay', 'paintExplain',
-  'getPartTriangles', 'partBoundary', 'assertPaint', 'getObjectPartInfo', 'sliceAtZVisual', 'renderSection',
+  'listVersions', 'getModelDrift', 'diffVersions', 'modifyAndTest', 'query', 'listComponents',
+  'listLabels', 'getModelColors', 'assertPaint', 'sliceAtZVisual', 'renderSection',
   'checkPrintability', 'thicknessMap', 'renderView', 'renderViews',
 ]);
+
+/** Bumped on every executeTool call, so a focus return that finishes late (its
+ *  read outlived the agent's tool timeout) can tell a newer call has started
+ *  and must not be switched away from under it. */
+let toolCallGeneration = 0;
 
 // The shared `object` target schema, injected into every targetable tool so the
 // description stays in one place. Typeless on purpose — it accepts a name/id
@@ -3365,24 +3374,25 @@ function matchObjectRow(objects: ObjectRow[], target: string | number): ObjectRo
  *  last selected in the object list. `target` is an object name, id, or 0-based
  *  index (mirrors resolvePartTarget on the API side). No-op when the target is
  *  already current — which avoids reloading the object and clobbering any
- *  in-progress editor draft on it. Returns an error string on a bad target, or
- *  null on success. */
-async function focusTargetObject(api: PartwrightAPI, target: string | number): Promise<string | null> {
+ *  in-progress editor draft on it. Returns `{ error }` on a bad target, else
+ *  where focus was before (`previous`, null when nothing switched). */
+type FocusSpot = { id: string; version: number | null };
+async function focusTargetObject(api: PartwrightAPI, target: string | number): Promise<{ error: string } | { previous: FocusSpot | null }> {
   const objects = api.listObjects() as ObjectRow[] | undefined;
   if (!Array.isArray(objects) || objects.length === 0) {
-    return `Cannot target object ${JSON.stringify(target)}: no active session with objects. Open a session first.`;
+    return { error: `Cannot target object ${JSON.stringify(target)}: no active session with objects. Open a session first.` };
   }
   if (typeof target === 'number' && (!Number.isInteger(target) || target < 0)) {
-    return `Cannot target object: index must be a non-negative integer (got ${JSON.stringify(target)}).`;
+    return { error: `Cannot target object: index must be a non-negative integer (got ${JSON.stringify(target)}).` };
   }
   const match = matchObjectRow(objects, target);
-  if (!match) return `Cannot target object ${JSON.stringify(target)}: no matching object (by name, id, or index). Call listObjects() to see what's available.`;
-  if (match.isCurrent) return null; // already focused — don't reload and clobber an in-progress edit
-  const switched = await api.changeObject(match.id) as { error?: string } | undefined;
+  if (!match) return { error: `Cannot target object ${JSON.stringify(target)}: no matching object (by name, id, or index). Call listObjects() to see what's available.` };
+  if (match.isCurrent) return { previous: null }; // already focused — don't reload and clobber an in-progress edit
+  const switched = await api.changeObject(match.id) as { error?: string; previous?: FocusSpot | null } | undefined;
   if (switched && typeof switched === 'object' && 'error' in switched && switched.error) {
-    return `Cannot target object ${JSON.stringify(target)}: ${switched.error}`;
+    return { error: `Cannot target object ${JSON.stringify(target)}: ${switched.error}` };
   }
-  return null;
+  return { previous: switched?.previous ?? null };
 }
 
 /** Dispatches a tool call to window.partwright and stringifies the result.
@@ -3458,9 +3468,10 @@ export async function executeTool(name: string, rawInput: Record<string, unknown
       delete input.scope;
     }
     const api = getApi();
-    // Set when a read-only tool switched focus to another object: the object
-    // to switch back to, and the one it switched to.
-    let returnFocus: { to: string; from: string } | null = null;
+    const generation = ++toolCallGeneration;
+    // Set when a read-only tool switched focus to another object: where to
+    // switch back to, and the object it switched to.
+    let returnFocus: { to: FocusSpot; from: string } | null = null;
     // Object addressing: an object-scoped tool may name an `object` target (name,
     // id, or 0-based index; `part` is the pre-rename spelling, still accepted).
     // Switch focus to it before running so the op acts on the addressed object —
@@ -3474,22 +3485,31 @@ export async function executeTool(name: string, rawInput: Record<string, unknown
       delete input.object;
       if (!ownsPart) delete input.part;
       if (target != null) {
-        const before = currentObjectId(api);
-        const focusErr = await focusTargetObject(api, target);
-        if (focusErr) return { content: focusErr, isError: true };
+        const focus = await focusTargetObject(api, target);
+        if ('error' in focus) return { content: focus.error, isError: true };
         const after = currentObjectId(api);
-        if (FOCUS_RETURNING_TOOLS.has(name) && before && after && after !== before) returnFocus = { to: before, from: after };
+        if (FOCUS_RETURNING_TOOLS.has(name) && focus.previous && after && after !== focus.previous.id) {
+          returnFocus = { to: focus.previous, from: after };
+        }
       }
     }
+    let result: ToolExecResult;
     try {
-      return await runTool(api, name, input);
-    } finally {
-      // Only when nobody moved focus during the call (the user clicking an
-      // object, or a parallel call) — never yank the user off their choice.
-      if (returnFocus && currentObjectId(api) === returnFocus.from) {
-        try { await api.changeObject(returnFocus.to); } catch { /* best-effort */ }
+      result = await runTool(api, name, input);
+    } catch (err) {
+      result = { content: err instanceof Error ? err.message : String(err), isError: true };
+    }
+    // Switch back only when nothing moved focus meanwhile (the user clicking
+    // an object) and no newer tool call has started — never yank the user,
+    // or a later call, off the object they're on.
+    if (returnFocus && generation === toolCallGeneration && currentObjectId(api) === returnFocus.from) {
+      const back = await api.changeObject(returnFocus.to.id, returnFocus.to.version != null ? { version: returnFocus.to.version } : undefined) as { error?: string; name?: string } | undefined;
+      if (back && !back.error) {
+        const fromName = (api.listObjects() as ObjectRow[]).find(o => o.id === returnFocus!.from)?.name ?? returnFocus.from;
+        result.content += `\n\n(Focus went back to the user's object "${back.name}". Pass object: ${JSON.stringify(fromName)} again on follow-up calls about ${JSON.stringify(fromName)}.)`;
       }
     }
+    return result;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { content: msg, isError: true };
@@ -3726,7 +3746,8 @@ async function executeRenderViews(api: PartwrightAPI, input: Record<string, unkn
   const label = angles && angles.length > 0
     ? `views: ${angles.length} custom angles (${size}px per cell)`
     : `views: ${views} composite (${size}px per cell)`;
-  return wrapImageResult(result, 'renderViews', label);
+  const focus = input.focus ? `, focus ${JSON.stringify(input.focus)}${input.clip ? ' (clipped)' : ''}` : '';
+  return wrapImageResult(result, 'renderViews', label + focus);
 }
 
 async function executeRunIsolated(api: PartwrightAPI, input: Record<string, unknown>): Promise<ToolExecResult> {

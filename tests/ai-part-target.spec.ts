@@ -146,6 +146,8 @@ test.describe('AI object addressing', () => {
         getCode: () => string;
         listObjects: () => { name: string; isCurrent: boolean }[];
         listVersions: () => Promise<unknown[]>;
+        loadVersion: (t: { index: number }) => Promise<unknown>;
+        changeObject: (t: string) => Promise<unknown>;
       }
       const pw = (window as unknown as { partwright: PartsAPI }).partwright;
       const { executeTool } = await import('/src/ai/tools.ts');
@@ -153,9 +155,16 @@ test.describe('AI object addressing', () => {
       const render = await executeTool('renderView', { object: 'Lid', size: 64 });
       const lidCode = await executeTool('getCode', { object: 'Lid' });
       const current = pw.listObjects().find(o => o.isCurrent)?.name;
+      const code = pw.getCode();
+      const versions = (await pw.listVersions()).length;
+      // Viewing an older version: the round trip comes back to that version,
+      // not the latest.
+      await pw.loadVersion({ index: 1 });
+      await executeTool('getCode', { object: 'Lid' });
+      const back = await pw.changeObject('Object 1') as { currentVersion: { index: number } | null; previous: unknown };
       return {
-        renderErr: render.isError, lidCode: lidCode.content, current,
-        code: pw.getCode(), versions: (await pw.listVersions()).length,
+        renderErr: render.isError, renderNote: render.content, lidCode: lidCode.content, current, code, versions,
+        backVersion: back.currentVersion?.index, backCode: pw.getCode(), noSwitch: back.previous,
       };
     }, { edit: cube(9, 'USEREDIT') });
 
@@ -164,6 +173,39 @@ test.describe('AI object addressing', () => {
     expect(out.current).toBe('Object 1');            // ...and focus came back
     expect(out.code).toContain('USEREDIT');          // the unsaved edit survived the round trip
     expect(out.versions).toBe(1);                    // without an auto-saved version
+    expect(out.renderNote).toMatch(/Focus went back to the user's object "Object 1"/);
+    expect(out.backVersion).toBe(1);                 // back on the version that was open
+    expect(out.backCode).toContain('PARTONE');
+    expect(out.noSwitch).toBeNull();                 // changeObject to the open object is a no-op
+  });
+
+  test('an unsaved slider override survives an agent peek at another object (#1197)', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+    await setupTwoParts(page);                       // Object 1 current
+
+    const out = await page.evaluate(async () => {
+      interface PartsAPI {
+        runAndSave: (code: string, label?: string) => Promise<unknown>;
+        setParams: (v: Record<string, unknown>) => Promise<unknown>;
+        getParams: () => { values: Record<string, unknown> };
+        listObjects: () => { name: string; isCurrent: boolean }[];
+        listVersions: () => Promise<unknown[]>;
+      }
+      const pw = (window as unknown as { partwright: PartsAPI }).partwright;
+      const { executeTool } = await import('/src/ai/tools.ts');
+      await pw.runAndSave("const p = api.params({ width: { type: 'number', default: 20, min: 5, max: 60 } });\nreturn api.Manifold.cube([p.width, 10, 10], true);", 'params');
+      await pw.setParams({ width: 42 });             // the user's unsaved slider tweak
+      await executeTool('renderView', { object: 'Lid', size: 64 });
+      return {
+        current: pw.listObjects().find(o => o.isCurrent)?.name,
+        width: pw.getParams().values.width,
+        versions: (await pw.listVersions()).length,
+      };
+    });
+    expect(out.current).toBe('Object 1');
+    expect(out.width).toBe(42);
+    expect(out.versions).toBe(2);                    // a1 + the params save, nothing auto-saved
   });
 
   test('runAndSave with an object target commits to that object only', async ({ page }) => {

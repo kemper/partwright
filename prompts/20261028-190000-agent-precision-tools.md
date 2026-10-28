@@ -66,3 +66,35 @@ dropped them. Returned now on success, assertion and error paths.
 **Context budget**: the system prompt was ~550 chars over its ceiling, so the
 ray-query docs live in the `manifold-api` subdoc, with a one-line pointer in
 ai.md; the zoom examples live in `visual-verification.md`.
+
+## Human
+
+(Review follow-up, no new human input: an independent review subagent's
+findings on the first push.)
+
+## Assistant
+
+## Key decisions
+
+**Id-returning reads keep focus on their object.** findFaces,
+getPartTriangles, listRegions, paintExplain, getObjectPartInfo, partBoundary
+and probe* left FOCUS_RETURNING_TOOLS: their answers feed a follow-up call
+(paintFaces, probePixel) that would otherwise land on the user's object.
+When focus does go back, the tool result says so and names the object to
+pass on follow-ups.
+
+**Return to the exact view, without auto-saving.** First tried making agent
+switches save like a rail click, which would also keep slider overrides and
+annotations. The e2e test showed the dirty check flags objects right after an
+API save and old versions on switch-away, adding duplicate versions on every
+peek. Instead `selectPart(…, { saveEdits: false })` stashes the outgoing
+view in memory (version, code, params, annotations), and
+`changeObject(id, { version })` restores it on the way back. The stash
+lives at module scope because of the main.ts TDZ trap.
+
+**A late switch-back can't hit a newer call.** executeTool bumps a
+generation counter, and the switch-back only runs while it is unchanged.
+
+Kept as-is (noted in the PR): the near plane ignores a reference ghost
+outside the mesh sphere (ghosts are fit checks, so near the model), and
+renderParts has no `clip` option yet.

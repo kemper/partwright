@@ -481,7 +481,7 @@ partwright.listObjects()                 // -> [{id, name, order, group?, isCurr
 partwright.showObjectsOverview()         // Open the all-objects thumbnail overview (contact sheet; click a tile to switch)
 partwright.getCurrentObject()            // -> {id, name, order, group?} or null
 await partwright.createObject(name?)     // New empty object + switch to it -> {id, name, order}
-await partwright.changeObject(name|id|index)   // Switch active object (loads its latest version)
+await partwright.changeObject(name|id|index)   // Switch active object, like clicking it in the list
 await partwright.renameObject(name|id|index, newName)  // Rename an object
 await partwright.setObjectGroup(target|target[], group|null)  // Thread objects under a collapsible group header in the object list (null/'' ungroups) -> {grouped, group}
 await partwright.deleteObject(name|id|index)   // Delete an object + its versions -- moved to Recover deleted, not erased (the last one resets to a blank "Object 1")

@@ -280,8 +280,17 @@ const PARITY_DIR: Vec3 = [0.5773502691896258 + 0.0123, 0.5773502691896258 - 0.02
 
 /** Whether `p` is inside the closed mesh (ray parity). */
 export function meshContains(bvh: MeshBvh, p: Vec3): boolean {
-  // raycastAll already merges coincident crossings on a shared edge.
-  return raycastAll(bvh, p, PARITY_DIR).length % 2 === 1;
+  // Count net crossings per group of coincident hits: a ray grazing a vertex
+  // can enter and leave there at one distance, which is no crossing at all.
+  const hits = raycastAll(bvh, p, PARITY_DIR);
+  let crossings = 0;
+  for (let i = 0; i < hits.length;) {
+    let net = 0, j = i;
+    for (; j < hits.length && hits[j].distance - hits[i].distance <= 1e-9 * (1 + hits[i].distance); j++) net += hits[j].entering ? 1 : -1;
+    if (net !== 0) crossings++;
+    i = j;
+  }
+  return crossings % 2 === 1;
 }
 
 /** The nearest surface point to `p`, or null for an empty mesh. */
