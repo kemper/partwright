@@ -2229,9 +2229,13 @@ export interface ExportOptions {
    *  (the default) exports every version. Lets the caller prune history into the
    *  exported file without deleting anything from storage. */
   versionIndices?: number[];
+  /** Export only the active session's current object (as the payload's sole
+   *  object), not every object. For the share link, which carries one object.
+   *  Ignored when exporting a session other than the active one. */
+  onlyCurrentPart?: boolean;
 }
 
-const DEFAULT_EXPORT_OPTIONS: Required<Omit<ExportOptions, 'versionIndices'>> = {
+const DEFAULT_EXPORT_OPTIONS: Required<Omit<ExportOptions, 'versionIndices' | 'onlyCurrentPart'>> = {
   includeThumbnails: false,
   includeAnnotations: true,
   includeNotes: true,
@@ -2299,9 +2303,15 @@ export async function exportSession(
   const session = await getSession(id);
   if (!session) return null;
 
-  const opts: Required<Omit<ExportOptions, 'versionIndices'>> = { ...DEFAULT_EXPORT_OPTIONS, ...options };
+  const opts: Required<Omit<ExportOptions, 'versionIndices' | 'onlyCurrentPart'>> = { ...DEFAULT_EXPORT_OPTIONS, ...options };
 
-  const parts = await dbListParts(id);
+  const allParts = await dbListParts(id);
+  const currentPartId = currentState.currentPart?.id;
+  const onlyPart = options?.onlyCurrentPart && id === currentState.session?.id
+    ? allParts.find(p => p.id === currentPartId)
+    : undefined;
+  // A one-object export re-tags that object as the payload's first (order 0).
+  const parts = onlyPart ? [{ ...onlyPart, order: 0 }] : allParts;
   // Flatten all parts' versions into one list, tagging each with its part's
   // `order`. Grouped by part (then version index) so that pre-1.7 readers, which
   // ignore the `part` tag and import the flat list, still get a sensible order.
@@ -2310,7 +2320,6 @@ export async function exportSession(
   // part's versions, and indices are per-part — so only apply it to the current
   // part. Other parts are always exported in full; filtering them by a different
   // part's index set would silently drop versions.
-  const currentPartId = currentState.currentPart?.id;
   const flat: { v: Version; partOrder: number }[] = [];
   // includeLatestMeshes: each part's NEWEST version (by index, whether or not
   // the prune picker kept it) → the mesh to embed on it.
