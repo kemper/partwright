@@ -127,6 +127,10 @@ export interface AppConfig {
      *  results, and large inputs of failed calls. Stored history and the
      *  transcript are untouched. */
     pruneStaleToolPayloads: boolean;
+    /** Send hosted models a core tool set and let them load the rest in named
+     *  groups (loadTools / readDoc / calling a tool), instead of every tool
+     *  schema from turn 0. Off sends all of them. See src/ai/toolGroups.ts. */
+    onDemandToolGroups: boolean;
     /** How many of the newest code bodies (runAndSave / setCode / runCode …
      *  `code` arguments, and getCode results) stay verbatim in the request;
      *  older ones become a one-line stub. */
@@ -198,6 +202,12 @@ export interface AppConfig {
      *  edge-adjacency pass on the main thread — ~2.5 s at 500k triangles —
      *  and on a mesh that dense the creases are noise at thumbnail size. */
     creaseEdgeMaxTriangles: number;
+    /** Largest step, as a fraction of the model's bounding-box diagonal,
+     *  whose walls the crease-edge overlay leaves out: two parallel faces
+     *  offset by less than this read as one surface. Hides the sub-voxel
+     *  seam a scoped round / smoothWeld leaves (#1112); real steps and
+     *  engraved walls are deeper. 0 = draw every crease. */
+    creaseMinStep: number;
     /** Triangle count from which a manifold-js run's volume / genus /
      *  component stats are computed in the engine Worker, and the main
      *  thread's own Manifold (for slicing, booleans, decompose) is rebuilt
@@ -752,6 +762,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     customParamDescriptionChars: 80,
     customContextProbeTimeoutMs: 3000,
     pruneStaleToolPayloads: true,
+    onDemandToolGroups: true,
     keepRecentCodeBodies: 1,
     codeBodyTrimBatch: 3,
     failedCallInputTurns: 3,
@@ -776,6 +787,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     interactionRenderScale: 0.6,
     isolateGhostOpacity: 0.1,
     creaseEdgeMaxTriangles: 200_000,
+    creaseMinStep: 0.004,
     lazyManifoldMinTriangles: 250_000,
     thumbnailMaxTriangles: 600_000,
     containmentSamples: 12,
