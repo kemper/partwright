@@ -15,6 +15,7 @@ import { confirmDialog, promptDialog } from './dialogs';
 import { openPartsOverview } from './partsOverview';
 import { registerCommands } from './commandPalette';
 import { buildObjectPartsSection, type ObjectPartsActions } from './objectPartsPanel';
+import { refreshPartsPanel } from './partsPanel';
 
 export type { ObjectPartsView } from './objectPartsPanel';
 
@@ -480,6 +481,7 @@ export function refreshObjectParts(): void {
     const focusedKey = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('#object-parts [data-object-part]')?.dataset.objectPart;
     const next = buildObjectPartsSectionForRail();
     existing.replaceWith(next);
+    refreshPartsPanel();
     if (focusedKey) next.querySelector<HTMLElement>(`[data-object-part="${CSS.escape(focusedKey)}"]`)?.focus();
   });
 }

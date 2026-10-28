@@ -507,6 +507,8 @@ partwright.highlightObjectPart(name | {piece} | {unlabeled:true} | null) // Tran
 partwright.setObjectPartHidden(name | {piece} | [..], hidden = true)  // Hide/show a part/piece (or a list) in the viewport only (code, versions, exports keep it) -> {ok, hidden}
 await partwright.deleteObjectPart(name | {piece} | [..])  // Delete a part/piece of the current JS object: adds api.removePart / api.removePiece to the code, re-runs, saves -> {ok, removed, call, version?}; a list = one run + one version -> {ok, removed: [], calls: []}
 await partwright.restoreObjectPart(name | call | {object, part|call})  // Undo it: removes that line, re-runs, saves -> {ok, restored, object, version?, note?}
+await partwright.partAction(action, {parts?, axis?, mode?, gap?, step?, offset?, degrees?, factor?, count?, cols?, rows?, name?, pattern?})  // Arrange / copy / group parts as api.movePart-style code lines (grid, pack, bed, align, distribute, drop, center, snap, move, rotate, layFlat, mirror, scale, duplicate, array, gridArray, group, ungroup, rename, cut); runs + saves -> {ok, message, parts, version?} -- see #arranging-copying-and-grouping-parts
+await partwright.undoPartEdit()          // Undo the last partAction in this object -> {ok, undone}
 // Editing parts from the Objects list -- see #editing-parts-from-the-objects-list
 partwright.selectObjectPart(name | {piece} | {unlabeled:true} | null)    // Select like clicking it in the rail (tint; scopes the user's paint tools) -> {ok, selected, triangles}
 partwright.selectObjectPart([name, ...] | [{piece}, ...])  // Select several parts (or several pieces) like Shift-click -- no paint scope -> {ok, selected: [keys], triangles}
@@ -784,8 +786,43 @@ The rail is a **selector, not a second editor**: selecting a part makes it the *
 - **Rename.** `renameObjectPart(from, to)` rewrites every string literal naming the part (its `api.label` / SCAD `label` / `BREP.label`, `api.paint.label`, surface `label:` scopes) **and re-keys the paint tied to it**, then saves. Prefer it over hand-editing a label name.
 - **Unmatched paint.** Paint keyed to a part (`byLabel`, or any `withinPart`) whose label disappears from the code is never silently dropped: it stays saved but paints nothing, and is flagged — `runAndSave` / `saveVersion` return `unmatchedPaint: [{regionId, name, label, hint?}]`, and the rail shows **Unmatched paint (N)** with *Reassign to… / Keep / Delete*. When one label vanished as another appeared in the same place, `hint` / `renameSuggestions` names the likely successor — fix with `reassignPaint(regionId, newName)`. `emptyPaint` lists geometric regions (slab, box…) that now cover nothing.
 - **Pieces.** `extractObjectPiece(i)` moves a piece into a new object; `exportObjectPiece(i)` downloads it as STL; to drop a stray one use `deleteObjectPart({ piece: i })` (below). Extract wraps the object's code in a *piece filter* (`// Partwright piece filter …` — the original code runs untouched inside, and the piece is matched by bounding box, so small edits keep tracking it). manifold-js only; fixing the geometry that made a stray piece is still better when you can.
-- **Several at once.** The user can Shift/Ctrl/⌘-click rows in the rail (or Shift-double-click in the viewport) to select several parts — or several pieces, never a mix — and then **Move to new** (all into one new object), **Split** (one new object each), Isolate, Hide or Delete them together. Their chat message then arrives prefixed with `[Selected in the Objects list: parts "a", "b" …]`. A multi-selection does *not* set the paint scope. Do the same with `selectObjectPart([...])`, `extractObjectParts([...], { separate })`, `isolateObjectPart([...])`, `setObjectPartHidden([...])` and `deleteObjectPart([...])` (one run, one version). `extractObjectParts` moves whole separate solids with piece filters (as above); parts fused to other geometry move with `api.removePart` lines instead — the original drops them and each new object drops every other part, so a part that only *cuts* (e.g. a labelled cavity) fills its cut where it's removed. It refuses when unlabeled geometry would be copied along, or when nothing would be left in the original.
+- **Several at once.** The user can Shift-click (a range) or Ctrl/⌘-click (one more) rows in the rail, Shift-click or Shift-drag a box in the viewport, or press ⌘/Ctrl-A, to select several parts — or several pieces, never a mix — and then, in the **Parts panel**, **Move to new** (all into one new object), **Split** (one new object each), Isolate, Hide or Delete them together. Their chat message then arrives prefixed with `[Selected in the Objects list: parts "a", "b" …]`. A multi-selection does *not* set the paint scope. Do the same with `selectObjectPart([...])`, `extractObjectParts([...], { separate })`, `isolateObjectPart([...])`, `setObjectPartHidden([...])` and `deleteObjectPart([...])` (one run, one version). `extractObjectParts` moves whole separate solids with piece filters (as above); parts fused to other geometry move with `api.removePart` lines instead — the original drops them and each new object drops every other part, so a part that only *cuts* (e.g. a labelled cavity) fills its cut where it's removed. It refuses when unlabeled geometry would be copied along, or when nothing would be left in the original.
 - **Look.** `isolateObjectPart(name)` ghosts everything else; `getObjectPartInfo(name)` gives size, area and the pieces it touches; `goToObjectPart(name)` shows the user its label in the code.
+
+### Arranging, copying and grouping parts
+<a id="arranging-copying-and-grouping-parts"></a>
+
+The **Parts panel** (Tools → ▦ Parts; it opens when the user selects parts) lays out, copies and groups the open object's named parts. Every edit is a **line of code** near the top of a JavaScript object, applied after the code runs by moving the part's own triangles — so it works for `api.label` parts and for parts of an import (`api.importWithParts`) alike, and stays visible and editable:
+
+```js
+api.movePart('leg 1', [10, 0, 0]);          // translate
+api.rotatePart('leg 1', [0, 0, 90]);        // Euler degrees, x first, about the part's bbox centre
+api.scalePart('leg 1', 1.5);                // number or [x, y, z], about its base (centre x/y, min z)
+api.mirrorPart('leg 1', 'x');               // about its centre
+api.copyPart('leg 1', 'leg 2', [20, 0, 0]); // a new part "leg 2", offset from the source
+api.groupParts(['seat', 'back'], 'chair');  // several parts → one part named "chair"
+api.cutWithPart('hole');                    // subtract part "hole" from everything else
+```
+
+They run in order, so a line can act on a copy or group an earlier line made. **Only separate solids can move**: a part fused to other geometry throws a clear error — move it in the code that builds it instead. An edit of a part removed with `api.removePart` (or of a copy / group made from one) is skipped.
+
+Drive it with `partwright.partAction(action, opts)` (in chat: the `partAction` tool) — it writes the lines (folding repeated moves of one part into one line), runs, and saves a version; `undoPartEdit()` puts the previous code back (refused once the code has changed since — use the version history then). It acts on `opts.parts`, else on **every part** — pass the user's selection (`getSelectedObjectPart()`, or the `[Selected in the Objects list …]` chat prefix) when they mean it:
+
+| action | opts | does |
+|---|---|---|
+| `grid` / `pack` | `gap?` | lay the parts out on the plate in a grid / packed tightly (biggest first) |
+| `bed` | `gap?` | pack onto the printer bed (Print settings); what doesn't fit goes onto extra plates beside it, a part that only fits turned 90° is turned |
+| `align` | `axis`, `mode` (`min`/`center`/`max`) | line up 2+ parts |
+| `distribute` | `axis` | equal gaps between 3+ parts (the end ones stay) |
+| `drop` / `center` / `snap` | `step?` for snap | onto z = 0 / centred together on the origin / corners onto a grid |
+| `move` / `rotate` / `scale` / `mirror` | `offset` / `degrees` / `factor` / `axis` | as the lines above |
+| `layFlat` | | turn each part onto its largest flat face and set it on the plate |
+| `duplicate` / `array` / `gridArray` | `offset?` / `count`, `step?` / `cols`, `rows`, `step?` | copies named "leg 2", "leg 3"… |
+| `group` / `ungroup` | `name?` | join 2+ parts into one / split a group back |
+| `rename` | `pattern` (`'leg {n}'`) | batch rename (code labels, edit lines, import part names, paint) |
+| `cut` | (one part) | subtract it from the rest |
+
+Deleting a copy (`deleteObjectPart('leg 2')`) removes it; deleting a group removes its members. The panel also nudges the selection with the arrow keys (PageUp/PageDown for Z, Shift ×10).
 
 Arrange-mode inserts (the Insert palette) are labelled automatically with their variable name, so shapes added there appear as parts too.
 
