@@ -49,7 +49,7 @@ import { createLayout, type TabName } from './ui/layout';
 import { bindSliderEntry, type SliderEntry } from './ui/sliderEntry';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState, setRunState } from './ui/toolbar';
 import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
-import { registerCommands, listCommands, runCommandById } from './ui/commandPalette';
+import { registerCommands, listCommands, runCommandById, isCommandPaletteOpen } from './ui/commandPalette';
 import { listTools, getTool, getOpenTool, registerTool, openTool as openRegisteredTool, notifyToolApplied, type ToolSpec } from './ui/toolRegistry';
 import { registerHostTools } from './ui/hostTools';
 import { getActiveMode } from './ui/modeExclusion';
@@ -83,7 +83,7 @@ import { summarizeObjectParts, triangleSetStats, extractSubMesh, computeMeshPiec
 import { findLabelSource, renameLabelInCode, upsertPaintLabelInCode, parsePieceFilter, type PieceBox } from './geometry/objectPartCode';
 import { planObjectPartsMove, checkMoveExpectation } from './geometry/objectPartMove';
 import { getSelectedPartKey, getSelectedPartKeys, getSelectedPartName, setSelectedPartKeys, onPartSelectionChange, describePartKey, describePartKeys, extendPartSelection, partSelectionSignature } from './ui/partSelection';
-import type { PartInfo } from './ui/objectPartsPanel';
+import type { ObjectPartsActions, PartInfo } from './ui/objectPartsPanel';
 import { showTriangleHighlight, clearTriangleHighlight, isTriangleHighlightActive, showIsolation, clearIsolation, isIsolationActive } from './renderer/triangleHighlight';
 import { applyHiddenTriangles } from './renderer/hiddenTriangles';
 import { openAssemblyView, closeAssemblyView, isAssemblyViewOpen, getAssemblySnapshot } from './assembly/assemblyView';
@@ -107,8 +107,9 @@ import { export3MF, build3MF } from './export/threemf';
 import { collectExportColors, suggestColorMerges, applyColorRemap, normalizeColorRemap, composeColorRemaps, countRemappedColors, type ColorRemap } from './export/exportColors';
 import { showExportColorsModal } from './ui/exportColorsModal';
 import { buildZip, type ZipEntry } from './export/zip';
-import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT, BAMBU_NOZZLES, DEFAULT_BAMBU_NOZZLE, BAMBU_PLATE_LAYOUTS, PACK_STRATEGIES, isBambuPrinter, isBambuNozzle, isBambuFilament, isBambuPlateLayout, isPackStrategy, type BambuPlateLayout, type PackStrategy } from './export/threemfProject';
-import { showExportPartsModal, type ExportPartChoice } from './ui/exportPartsModal';
+import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT, BAMBU_NOZZLES, DEFAULT_BAMBU_NOZZLE, BAMBU_PLATE_LAYOUTS, PACK_STRATEGIES, isBambuPrinter, isBambuNozzle, isBambuFilament, isBambuPlateLayout, isPackStrategy, type BambuPlateLayout, type PackStrategy, type PartExport } from './export/threemfProject';
+import { showExportPartsModal, WHOLE_ITEM_KEY, type ExportPartChoice, type ExportObjectSplitInfo } from './ui/exportPartsModal';
+import { analyzeObjectSplit, availableSplitModes, extractItemMesh, isExportSplitMode, splitItemName, splitItems, EXPORT_SPLIT_MODES, type ExportSplitMode, type ObjectSplitAnalysis } from './export/exportSplit';
 import { exportVOX, buildVOX } from './export/vox';
 import { assertFiniteMesh } from './export/meshClean';
 import { exportSessionJSON, exportRawCode, buildSessionJSON, buildRawCode } from './export/session';
@@ -141,7 +142,7 @@ import {
   geometryOnlyRefusalMessage,
 } from './import/urlImport';
 import { fetchRemoteBytes } from './import/remoteFetch';
-import { showImportTargetModal } from './ui/importTargetModal';
+import { showImportTargetModal, pickImportTarget } from './ui/importTargetModal';
 import { showMeshImportModal, type MeshImportDestination } from './ui/meshImportModal';
 import { planImportSplit, extractTriangles, groupTriangles, triangleRange, pieceItems, groupPartLabels, type ImportSplitItem, type ImportSplitMode } from './import/meshImportSplit';
 import { alreadyImportedItems, buildMultiFileSource, layoutMultiFileSource, suggestMultiFileLayout, type ImportSignature, type MultiFileInput, type MultiFileLayout, type MultiFileSource } from './import/multiFileImport';
@@ -158,6 +159,7 @@ import { parse3MF, type ThreeMFParseResult } from './import/parsers/threemf';
 import { looksLikeZip } from './import/zipReader';
 import { parseVox } from './import/parsers/vox';
 import { generateImportCode } from './import/codegen';
+import { besideOffset, composeImportIntoCode, importAsParts, translatedVerts, vertexBox } from './import/composeIntoCode';
 import { imageDataToVoxelGrid, generateVoxelImportCode, type ImageToVoxelOptions } from './import/imageToVoxel';
 import { VoxelGrid } from './geometry/voxel/grid';
 import { greedyMeshGrid } from './geometry/voxel/mesher';
@@ -231,7 +233,13 @@ import { analyzePrintability, type PrintabilityReport } from './geometry/printab
 import { loadPrinterSettings, savePrinterSettings, type PrinterSettings } from './geometry/printerSettings';
 import { updatePaintMesh, setOnRegionPainted, setTriangleToBaseMapper } from './color/paintMode';
 import { baseTriangleOf } from './color/baseRemap';
+import { Vector3 } from 'three';
+import { gridLayout, packLayout, bedLayout, alignLayout, distributeLayout, dropToPlate, centerOnOrigin, snapToGrid, arrayOffsets, gridArrayOffsets, freeOffset, layFlatRotation, rotatedMinZ, xyzPositions, type PartBox } from './insert/partLayout';
+import { addPartOps, findPartOpLines, renamePartInOps, partOpNames, reservedPartNames, ungroupInCode, derivedParts } from './editor/partOpCode';
+import type { PartOp } from './geometry/partOps';
 import { pickFace } from './color/facePicker';
+import { initPartsPanel, openPartsPanel, refreshPartsPanel, isPartsPanelOpen } from './ui/partsPanel';
+import { installPartBoxSelect } from './ui/partBoxSelect';
 import { initAnnotateUI, isAnnotateOpen, closeMenu as closeAnnotateMenu, setAnnotateSubMode, getAnnotateSubMode } from './annotations/annotateUI';
 import { isActive as isSelectActive, getSelectedId as getSelectedAnnotationId } from './annotations/selectMode';
 import {
@@ -1159,6 +1167,53 @@ function currentObjectPartsView(): ObjectPartsView | null {
 function hiddenKeysForCurrentObject(): Set<string> {
   const id = getCurrentPart()?.id;
   return (id && hiddenObjectParts.get(id)) || new Set<string>();
+}
+
+/** The parts (or, for an object without parts, the pieces) with geometry
+ *  inside a client-space rectangle of the viewport — the Shift-drag box
+ *  select. Samples up to `ui.partBoxSelectSamples` triangle centres per part
+ *  and projects them through the camera; hidden parts don't count. */
+function partKeysInScreenRect(rect: { left: number; top: number; right: number; bottom: number }): string[] {
+  const summary = currentObjectPartsSummary();
+  const mesh = objectPartsMesh();
+  if (!summary || !mesh) return [];
+  const canvasRect = getCanvas().getBoundingClientRect();
+  const camera = getCamera();
+  const hidden = hiddenKeysForCurrentObject();
+  const cap = Math.max(1, getConfig().ui.partBoxSelectSamples);
+  const { vertProperties: vp, triVerts: tv, numProp: np } = mesh;
+  const v = new Vector3();
+  const inside = (tris: Iterable<number>, size: number): boolean => {
+    const stride = Math.max(1, Math.floor(size / cap));
+    let i = 0;
+    for (const t of tris) {
+      if (i++ % stride !== 0) continue;
+      let x = 0, y = 0, z = 0;
+      for (let k = 0; k < 3; k++) {
+        const o = tv[t * 3 + k] * np;
+        x += vp[o]; y += vp[o + 1]; z += vp[o + 2];
+      }
+      v.set(x / 3, y / 3, z / 3).project(camera);
+      if (v.z < -1 || v.z > 1) continue;
+      const sx = canvasRect.left + (v.x + 1) / 2 * canvasRect.width;
+      const sy = canvasRect.top + (1 - v.y) / 2 * canvasRect.height;
+      if (sx >= rect.left && sx <= rect.right && sy >= rect.top && sy <= rect.bottom) return true;
+    }
+    return false;
+  };
+  const keys: string[] = [];
+  if (summary.parts.length > 0) {
+    for (const p of summary.parts) {
+      const key = `part:${p.name}`;
+      if (p.triangles.size > 0 && !hidden.has(key) && inside(p.triangles, p.triangles.size)) keys.push(key);
+    }
+  } else if (summary.pieces.length > 1) {
+    for (const p of summary.pieces) {
+      const key = `piece:${p.index}`;
+      if (!hidden.has(key) && inside(p.triangles, p.triangles.length)) keys.push(key);
+    }
+  }
+  return keys;
 }
 
 /** Hide the current object's hidden parts/pieces in the displayed mesh (and
@@ -3318,7 +3373,7 @@ function enrichGeometryDataWithColors(geoData: Record<string, unknown> | null): 
  *  window.partwright.saveVersion() API and the mod+S keyboard shortcut.
  *  Returns `{ id, index, label }` on success, `{ error }` when no session is
  *  active, or `{ skipped }` when nothing changed since the current version. */
-async function saveCurrentVersion(label?: string): Promise<
+async function saveCurrentVersion(label?: string, opts: { importedMeshes?: ImportedMesh[] } = {}): Promise<
   | { error: string }
   | { id: string; index: number; label: string; colorRegions?: ReturnType<typeof colorRegionStats> }
   | { skipped: true; reason: string }
@@ -3333,7 +3388,7 @@ async function saveCurrentVersion(label?: string): Promise<
     return { error: 'This session is open and being edited in another tab. Use "Take over" in the viewer banner to edit here.' };
   }
   const thumbnail = await captureThumbnail();
-  const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, undefined, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave() });
+  const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, undefined, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave(), ...(opts.importedMeshes ? { importedMeshes: opts.importedMeshes } : {}) });
   if (version) cacheCurrentPaintRefine();
   if (version) {
     // Keep the mesh cache valid for the newly-saved version so that switching
@@ -4997,9 +5052,9 @@ async function main() {
       await applyImportWrapper([parsed.mesh], parsed.isManifold);
     } else {
       if (!parsed.isManifold) return { error: `${caller}: a render-only (non-manifold) mesh can't be combined into an existing object — use target 'new-object' or 'new-session'.` };
-      await preserveCurrentEditsIfNeeded();
+      const cur = getState().currentPart;
       // Silent: the API caller gets the failure as an { error } instead of a toast.
-      if (!(await composeMeshIntoCurrentPart(parsed.mesh, undefined, { silent: true }))) {
+      if (!cur || !(await addImportToObject(cur.id, parsed.mesh, sessionName, undefined, { silent: true }))) {
         return { error: `${caller}: couldn't read the current object's geometry to combine.` };
       }
     }
@@ -5474,7 +5529,7 @@ async function main() {
       modes: platesInUse(result) > 1 ? ['object', 'plate', 'none'] : ['object', 'none'],
       baseName: base,
       maxObjects: getConfig().import.maxSplitObjects,
-      ...(protect ? { destinations: { currentObjectName: state.currentPart?.name ?? null, canAddToCurrent: !!state.currentPart, currentIsEmpty: empty } } : {}),
+      ...(protect ? { destinations: { currentObjectName: state.currentPart?.name ?? null, canAddToCurrent: !!state.currentPart, currentIsEmpty: empty, objects: state.parts.map(p => ({ id: p.id, name: p.name })), currentObjectId: state.currentPart?.id } } : {}),
     });
     if (!choice) return false;
     const groups = planImportSplit(items, choice.mode, { selected: choice.selected, plates: result.plates, baseName: base });
@@ -5483,7 +5538,7 @@ async function main() {
     if (!built) return false;
     const { entries, infos } = built;
     if (!(await confirmRenderOnlyObjects(filename, entries))) return false;
-    const ids = await placeImportedObjects(entries, multiImportDestination(protect, empty, choice.destination), base);
+    const ids = await placeImportedObjects(entries, multiImportDestination(protect, empty, choice.destination), base, choice.objectId);
     if (ids.length > 0) {
       const info = ids.length === 1 ? infos[0] : mergeColorInfos(infos);
       showToast(describe3MFImport(filename, result, info, ids.length, entries[0].probe.mesh.numTri), { variant: 'success', source: 'import' });
@@ -5580,6 +5635,8 @@ async function main() {
     layout: MultiFileLayout;
     convert: boolean;
     destination: MeshImportDestination | 'reuse-current';
+    /** destination 'current-object': the object to add to (default: the open one). */
+    objectId?: string;
   }
 
   /** The name for what a multi-file import makes as a whole (its session, or
@@ -5657,7 +5714,7 @@ async function main() {
     if (!built) return null;
     const { entries } = built;
     if (opts.confirmRenderOnly !== false && !(await confirmRenderOnlyObjects('the selected files', entries))) return null;
-    const ids = await placeImportedObjectsAligned(entries, choice.destination, opts.sessionName ?? name);
+    const ids = await placeImportedObjectsAligned(entries, choice.destination, opts.sessionName ?? name, choice.objectId);
     let converted = 0;
     const convertNotes: string[] = [];
     const stopped = ids.some(id => !id);
@@ -5819,7 +5876,7 @@ async function main() {
       offerConvert: true,
       baseName: multiFileImportName(source, source.items.map((_, i) => i)),
       maxObjects: cfg.maxSplitObjects,
-      ...(protect ? { destinations: { currentObjectName: state.currentPart?.name ?? null, canAddToCurrent: !!state.currentPart, currentIsEmpty: empty } } : {}),
+      ...(protect ? { destinations: { currentObjectName: state.currentPart?.name ?? null, canAddToCurrent: !!state.currentPart, currentIsEmpty: empty, objects: state.parts.map(p => ({ id: p.id, name: p.name })), currentObjectId: state.currentPart?.id } } : {}),
     });
     if (!choice) return false;
     const destination = multiImportDestination(protect, empty, choice.destination);
@@ -5829,6 +5886,7 @@ async function main() {
       layout: choice.layout ?? suggested,
       convert: !!choice.convert,
       destination,
+      ...(choice.objectId ? { objectId: choice.objectId } : {}),
     });
     if (!placed) { cancelledMsg(); return false; }
     const made = placed.ids.filter(Boolean).length;
@@ -5903,26 +5961,27 @@ async function main() {
    *  Entries sharing a `group` are threaded under it in the object list, and
    *  the first object is left open. Cancel on the progress modal stops after
    *  the object being built. Returns the ids of the objects written. */
-  async function placeImportedObjects(entries: ImportObjectEntry[], destination: MeshImportDestination | 'reuse-current', sessionName: string): Promise<string[]> {
-    return (await placeImportedObjectsAligned(entries, destination, sessionName)).filter((id): id is string => !!id);
+  async function placeImportedObjects(entries: ImportObjectEntry[], destination: MeshImportDestination | 'reuse-current', sessionName: string, targetObjectId?: string): Promise<string[]> {
+    return (await placeImportedObjectsAligned(entries, destination, sessionName, targetObjectId)).filter((id): id is string => !!id);
   }
 
   /** `placeImportedObjects`, returning one id per entry (null where the
    *  object wasn't made — cancelled, or it failed). */
-  async function placeImportedObjectsAligned(entries: ImportObjectEntry[], destination: MeshImportDestination | 'reuse-current', sessionName: string): Promise<(string | null)[]> {
+  async function placeImportedObjectsAligned(entries: ImportObjectEntry[], destination: MeshImportDestination | 'reuse-current', sessionName: string, targetObjectId?: string): Promise<(string | null)[]> {
     if (entries.length === 0) return [];
-    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
     if (destination === 'current-object') {
       const cur = getState().currentPart;
       if (entries.length === 1 && entries[0].probe.isManifold && cur) {
-        await preserveCurrentEditsIfNeeded();
-        return [(await composeMeshIntoCurrentPart(entries[0].probe.mesh, entries[0].seed)) ? cur.id : null];
+        // Into an existing object (the open one unless one was picked).
+        const id = targetObjectId && getState().parts.some(p => p.id === targetObjectId) ? targetObjectId : cur.id;
+        return [(await addImportToObject(id, entries[0].probe.mesh, entries[0].name, entries[0].seed)) ? id : null];
       }
       if (entries.length === 1 && !entries[0].probe.isManifold) {
         showToast('Render-only meshes can’t be combined into an existing object — added it as a new object instead.', { variant: 'neutral', source: 'import' });
       }
       destination = 'this-session';
     }
+    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
     const ids: (string | null)[] = [];
     let cancelled = false;
     const progressId = entries.length > 1
@@ -6206,9 +6265,15 @@ async function main() {
     partId: string,
     name: string,
     opts: { onStart?: () => void } = {},
-  ): Promise<{ name: string; mesh: MeshData } | null> {
+  ): Promise<{ name: string; mesh: MeshData; labels: Map<string, Set<number>> | null } | null> {
     if (partId === getState().currentPart?.id && currentMeshData) {
-      return { name, mesh: coloredMeshForExport(currentMeshData) };
+      // The label map indexes the run's mesh; a texture / paint subdivision /
+      // simplify pass may have swapped the displayed mesh since, so carry the
+      // labels over to the triangles actually exported.
+      const labels = currentLabelMap && currentLabelMesh && currentLabelMesh !== currentMeshData
+        ? remapTriangleSets(currentLabelMap, currentLabelMesh, currentMeshData)
+        : currentLabelMap;
+      return { name, mesh: coloredMeshForExport(currentMeshData), labels };
     }
     const domain = getEngineTrustDomain(); // this session's code (#1090)
     const version = await getLatestVersion(partId);
@@ -6288,11 +6353,13 @@ async function main() {
     }
 
     const triColors = composeTriColors(mesh.numTri, [modelLayer, manualLayer]);
-    return { name, mesh: triColors ? { ...mesh, triColors } : mesh };
+    return { name, mesh: triColors ? { ...mesh, triColors } : mesh, labels: result.labelMap ?? null };
   }
 
   /** One part slated for a multi-part export bake. */
   interface ExportBakePart { id: string; name: string; group?: string }
+  /** One object's baked, coloured mesh (plus its part labels, for splitting). */
+  interface BakedExportObject { id: string; name: string; mesh: MeshData; labels: Map<string, Set<number>> | null; group?: string }
 
   // Serializes overlapping export bakes. The geometry pool (`enginePool`) is a
   // process-wide singleton and each batch sizes + disposes it, so two concurrent
@@ -6323,7 +6390,7 @@ async function main() {
       onStatus?: (partId: string, status: 'rendering' | 'done' | 'failed') => void;
       cancel?: { cancelled: boolean };
     } = {},
-  ): Promise<{ baked: { name: string; mesh: MeshData; group?: string }[] }> {
+  ): Promise<{ baked: BakedExportObject[] }> {
     // Wait for any in-flight export bake, then claim the pool for this one.
     const prior = exportBakeMutex;
     let release!: () => void;
@@ -6331,9 +6398,10 @@ async function main() {
     await prior.catch(() => { /* a prior bake's failure must not block this one */ });
 
     try {
+      if (opts.cancel?.cancelled) return { baked: [] };
       const desired = Math.min(getConfig().renderer.exportPoolSize, Math.max(1, parts.length));
       setEnginePoolSize(desired);
-      const slots: ({ name: string; mesh: MeshData; group?: string } | null)[] = new Array(parts.length).fill(null);
+      const slots: (BakedExportObject | null)[] = new Array(parts.length).fill(null);
       try {
         await Promise.all(parts.map(async (part, i) => {
           if (opts.cancel?.cancelled) return;
@@ -6343,7 +6411,7 @@ async function main() {
             });
             if (opts.cancel?.cancelled) return;
             if (result) {
-              slots[i] = { ...result, ...(part.group ? { group: part.group } : {}) };
+              slots[i] = { ...result, id: part.id, ...(part.group ? { group: part.group } : {}) };
               opts.onStatus?.(part.id, 'done');
             } else {
               opts.onStatus?.(part.id, 'failed'); // ran, but produced no geometry
@@ -6357,10 +6425,169 @@ async function main() {
       } finally {
         disposeEnginePool('Export bake finished');
       }
-      return { baked: slots.filter((s): s is { name: string; mesh: MeshData; group?: string } => s !== null) };
+      return { baked: slots.filter((s): s is BakedExportObject => s !== null) };
     } finally {
       release();
     }
+  }
+
+  /** Bake + split-analysis cache for one export: the picker measures each
+   *  ticked object through it (to offer Split → Pieces / Parts), and the
+   *  export that follows reuses those bakes instead of building again.
+   *  Requests made close together bake as one pool batch. */
+  function createExportSplitSession() {
+    const pending = new Map<string, Promise<BakedExportObject | null>>();
+    const ready = new Map<string, BakedExportObject>();
+    const analyses = new Map<string, ObjectSplitAnalysis>();
+    let queue: { part: ExportBakePart; resolve: (b: BakedExportObject | null) => void }[] = [];
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    // One batch at a time: requests that arrive while a batch bakes join the
+    // next one, so ticking objects one by one doesn't cold-start a pool each.
+    let running = false;
+    const cancelState = { cancelled: false };
+    const flush = async () => {
+      timer = null;
+      if (running || queue.length === 0) return;
+      running = true;
+      const batch = queue;
+      queue = [];
+      try {
+        const { baked } = await bakePartsParallel(batch.map(b => b.part), { cancel: cancelState });
+        const byId = new Map(baked.map(b => [b.id, b]));
+        for (const b of batch) b.resolve(byId.get(b.part.id) ?? null);
+      } catch {
+        for (const b of batch) b.resolve(null);
+      } finally {
+        running = false;
+        if (queue.length > 0 && !cancelState.cancelled) void flush();
+      }
+    };
+    /** Stop: drop queued bakes (they resolve null) and skip unstarted parts of
+     *  the batch in flight, so a dismissed picker or a cancelled export stops
+     *  holding the export pool. */
+    const cancel = () => {
+      cancelState.cancelled = true;
+      if (timer) { clearTimeout(timer); timer = null; }
+      const dropped = queue;
+      queue = [];
+      for (const b of dropped) b.resolve(null);
+    };
+    const bake = (id: string): Promise<BakedExportObject | null> => {
+      let p = pending.get(id);
+      if (p) return p;
+      const part = getState().parts.find(x => x.id === id);
+      if (!part) return Promise.resolve(null);
+      const bakePart: ExportBakePart = { id: part.id, name: part.name, ...(part.group ? { group: part.group } : {}) };
+      p = id === getState().currentPart?.id && currentMeshData
+        // The open object is already on screen — no pool round-trip.
+        ? bakeColoredMeshForPart(id, part.name).then(r => (r ? { ...r, id, ...(part.group ? { group: part.group } : {}) } : null))
+        : new Promise<BakedExportObject | null>(resolve => {
+          if (cancelState.cancelled) { resolve(null); return; }
+          queue.push({ part: bakePart, resolve });
+          if (!running) timer ??= setTimeout(() => { void flush(); }, 30);
+        });
+      p = p.then(b => { if (b) ready.set(id, b); return b; }, () => null);
+      pending.set(id, p);
+      return p;
+    };
+    const analysisOf = (b: BakedExportObject): ObjectSplitAnalysis => {
+      let a = analyses.get(b.id);
+      if (!a) {
+        a = analyzeObjectSplit(b.mesh, b.labels ?? null, { maxItems: getConfig().renderer.exportMaxSplitItems });
+        analyses.set(b.id, a);
+      }
+      return a;
+    };
+    const analyze = async (id: string): Promise<ExportObjectSplitInfo | null> => {
+      const b = await bake(id);
+      if (!b) return null;
+      const a = analysisOf(b);
+      const info = (items: ReturnType<typeof splitItems>) => items?.map(it => ({ key: it.key, name: it.name, size: it.size, fused: it.fused, labels: it.labels })) ?? null;
+      return { size: a.size, pieceCount: a.pieceCount, pieces: info(a.pieces), parts: info(a.parts) };
+    };
+    const thumbnail = (id: string, mode: ExportSplitMode, key: string): HTMLCanvasElement | null => {
+      const b = ready.get(id);
+      if (!b) return null;
+      const it = splitItems(analysisOf(b), mode)?.find(x => x.key === key);
+      if (!it) return null;
+      return renderSingleViewCanvas(extractItemMesh(b.mesh, it.triangles), {
+        elevation: STANDARD_VIEWS.iso.elevation, azimuth: STANDARD_VIEWS.iso.azimuth,
+        ortho: STANDARD_VIEWS.iso.ortho, size: 64, thumbnail: true, annotations: false,
+      });
+    };
+    return { bake, analyze, thumbnail, analysisOf, cancel, isReady: (id: string) => ready.has(id) };
+  }
+  type ExportSplitSession = ReturnType<typeof createExportSplitSession>;
+
+  /** The picker's split choice (by object id → item key) for buildExportItems. */
+  interface ExportItemChoice {
+    splits?: Record<string, ExportSplitMode>;
+    excluded?: Record<string, string[]>;
+    plates?: Record<string, Record<string, number>>;
+  }
+
+  /** Turn baked objects + a split choice into the items one file holds: a
+   *  whole object stays one item; a split object becomes one item per piece
+   *  or part (named "<object> · <item>"), minus the excluded ones. */
+  function buildExportItems(baked: BakedExportObject[], session: ExportSplitSession, choice: ExportItemChoice): PartExport[] {
+    const out: PartExport[] = [];
+    for (const b of baked) {
+      const mode = choice.splits?.[b.id] ?? 'whole';
+      const items = mode === 'whole' ? null : splitItems(session.analysisOf(b), mode);
+      const plates = choice.plates?.[b.id];
+      if (!items) {
+        const plate = plates?.[WHOLE_ITEM_KEY];
+        out.push({ name: b.name, mesh: b.mesh, ...(b.group ? { group: b.group } : {}), ...(plate !== undefined ? { plate } : {}) });
+        continue;
+      }
+      const skip = new Set(choice.excluded?.[b.id] ?? []);
+      for (const it of items) {
+        if (skip.has(it.key)) continue;
+        const plate = plates?.[it.key];
+        out.push({
+          name: splitItemName(b.name, it.name),
+          mesh: extractItemMesh(b.mesh, it.triangles),
+          ...(b.group ? { group: b.group } : {}),
+          splitOf: b.id,
+          ...(plate !== undefined ? { plate } : {}),
+        });
+      }
+    }
+    return out;
+  }
+
+  /** Bake the picker's selection through its session (already-measured objects
+   *  are instant), reporting each object's state to the export progress modal. */
+  async function bakeSelectionForExport(
+    bakeParts: ExportBakePart[],
+    session: ExportSplitSession,
+    progress: { setStatus: (id: string, status: 'rendering' | 'done' | 'failed') => void },
+    cancel: { cancelled: boolean },
+  ): Promise<BakedExportObject[]> {
+    const out = await Promise.all(bakeParts.map(async p => {
+      if (!session.isReady(p.id)) progress.setStatus(p.id, 'rendering');
+      const b = await session.bake(p.id);
+      if (cancel.cancelled) return null;
+      progress.setStatus(p.id, b ? 'done' : 'failed');
+      return b;
+    }));
+    return out.filter((b): b is BakedExportObject => b !== null);
+  }
+
+  /** The export picker's Split hooks for one session. */
+  const splitPickerOptions = (session: ExportSplitSession) => ({ analyze: session.analyze, thumbnail: session.thumbnail });
+
+  /** True when the open object is the session's only object and is made of
+   *  several separate pieces — then a single-object export still opens the
+   *  picker so the pieces can be split. Voxel objects keep the direct export
+   *  (their greedy-meshed file mesh doesn't come from the picker's bake). */
+  function singleObjectCanSplit(): boolean {
+    const st = getState();
+    if (!st.session || st.parts.length !== 1 || !st.currentPart || !currentMeshData) return false;
+    if (getActiveLanguage() === 'voxel') return false;
+    const gd = getGeometryDataObj();
+    return typeof gd?.componentCount === 'number' && gd.componentCount >= 2
+      && gd.componentCount <= getConfig().renderer.exportMaxSplitItems;
   }
 
   /** Add the imported mesh as a brand-new part (becomes current). Optional
@@ -6528,17 +6755,74 @@ async function main() {
     return true;
   }
 
+  /** Add an imported model to object `objectId` (opening it) as named parts —
+   *  the mesh's own parts, else one part called `name` — placed beside the
+   *  object's geometry. A JavaScript object keeps its code: it is wrapped and
+   *  composed with `api.importWithParts(i)` (src/import/composeIntoCode.ts),
+   *  so the Parts panel can arrange the new parts. Other engines, or code
+   *  that won't compose, fall back to baking the object into a mesh
+   *  (composeMeshIntoCurrentPart). Selects the new parts on success. */
+  async function addImportToObject(objectId: string, mesh: ImportedMesh, name: string, seedRegions?: SeedRegionsInput, opts: { silent?: boolean } = {}): Promise<boolean> {
+    if (getState().currentPart?.id !== objectId) await selectPart(objectId);
+    else await preserveCurrentEditsIfNeeded();
+    if (getState().currentPart?.id !== objectId) return false;
+    const baseMesh = currentMeshData;
+    // The object's own language (an import may have switched the editor's).
+    const { currentVersion, session } = getState();
+    const lang = currentVersion ? effectiveVersionLanguage(currentVersion, session) : getActiveLanguage();
+    if (lang !== 'manifold-js' || getActiveLanguage() !== 'manifold-js' || !baseMesh || currentPartIsExpendable()) {
+      const ok = await composeMeshIntoCurrentPart(mesh, seedRegions, opts);
+      const warn = ok && lang !== 'manifold-js' ? engineBakeWarning(lang, 'manifold-js') : null;
+      if (warn && !opts.silent) showToast(`${warn} (Adding ${name} combined it into a mesh; the version history keeps the code.)`, { variant: 'warn', source: 'import' });
+      return ok;
+    }
+    // Names the code deletes (api.removePart) or edit lines create are taken too.
+    const parts = importAsParts(mesh, name, [...(currentObjectPartsSummary()?.parts.map(p => p.name) ?? []), ...reservedPartNames(getValue())]);
+    const base = vertexBox(baseMesh.vertProperties, baseMesh.numProp);
+    const add = vertexBox(mesh.vertProperties, mesh.numProp);
+    const gap = base && add ? Math.max(base.max[0] - base.min[0], add.max[0] - add.min[0]) * getConfig().ui.partArrangeGapRatio : 0;
+    const d = base && add ? besideOffset(base, add, gap) : [0, 0, 0] as [number, number, number];
+    const placed: ImportedMesh = { ...mesh, vertProperties: translatedVerts(mesh.vertProperties, mesh.numProp, d), parts };
+    const previousCode = getValue();
+    const previousImports = getActiveImports();
+    const imports = [...previousImports, placed];
+    const code = composeImportIntoCode(previousCode, imports.length - 1);
+    setActiveImports(imports);
+    setValue(code);
+    const ran = await runCodeSync(code);
+    const geo = getGeometryDataObj() as { status?: string } | null;
+    if (!ran || geo?.status === 'error' || !currentMeshData) {
+      setActiveImports(previousImports);
+      setValue(previousCode);
+      await runCodeSync(previousCode);
+      if (!opts.silent) showToast(`Couldn’t add ${name} to this object’s code — combined it as a mesh instead.`, { variant: 'neutral', source: 'import' });
+      return composeMeshIntoCurrentPart(mesh, seedRegions, opts);
+    }
+    // Colour seeds match the import's triangles by position, at the file's
+    // position: shift the result back for the match.
+    if (typeof seedRegions === 'function') {
+      const out = currentMeshData;
+      seedImportRegions(seedRegions({ ...out, vertProperties: translatedVerts(out.vertProperties, out.numProp, [-d[0], -d[1], -d[2]]) }));
+    }
+    const saved = await saveCurrentVersion(`add ${name}`, { importedMeshes: imports });
+    if ('error' in saved && !opts.silent) showToast(`Added ${name}, but saving the version failed: ${saved.error}`, { variant: 'warn', source: 'import' });
+    selectObjectParts(parts.names.map(n => `part:${n}`));
+    return true;
+  }
+
   /** Decide where a freshly-parsed STL mesh lands. With no session open it
    *  creates one (legacy behavior); otherwise the import-target modal lets the
    *  user pick a new part, the current part, or a new session. */
   async function placeImportedMesh(parsed: ParsedSTL, filename: string, seedRegions?: SeedRegionsInput): Promise<boolean> {
-    const placed = await placeImportedMeshInner(parsed, filename, seedRegions);
-    // Post-import ask. Interactive path only (importMeshData / console imports
+    const placedAs = await placeImportedMeshInner(parsed, filename, seedRegions);
+    const placed = placedAs !== false;
+    // Post-import ask. Not after adding to an existing object: converting would
+    // rebuild that object's own code too. Interactive path only (importMeshData / console imports
     // stay prompt-free for agents); render-only meshes skip it — they can't
     // carry parts or convert (their slices don't close).
     // Not awaited: the automatic part pass runs in the background so the
     // import itself (and its Recent Imports entry) completes immediately.
-    if (placed && parsed.isManifold && /\.stl$/i.test(filename)) void offerPostImportTools(filename);
+    if (placedAs === true && parsed.isManifold && /\.stl$/i.test(filename)) void offerPostImportTools(filename);
     return placed;
   }
 
@@ -6614,7 +6898,7 @@ async function main() {
     });
   }
 
-  async function placeImportedMeshInner(parsed: ParsedSTL, filename: string, seedRegions?: SeedRegionsInput): Promise<boolean> {
+  async function placeImportedMeshInner(parsed: ParsedSTL, filename: string, seedRegions?: SeedRegionsInput): Promise<boolean | 'added'> {
     // Mesh imports always produce a `Manifold.ofMesh(...)` / `Manifold.compose(...)`
     // wrapper, which is manifold-js code. saveVersion snapshots the active
     // language, so switch before any version is written — otherwise importing
@@ -6638,7 +6922,7 @@ async function main() {
     // "current part" means compose-into, never replace, and the default is a
     // new part so an import never silently overwrites it.
     const empty = currentPartIsExpendable();
-    const target = await showImportTargetModal({
+    const pick = await pickImportTarget({
       filename,
       currentPartName: state.currentPart?.name ?? null,
       canAddToCurrent: !!state.currentPart && (empty || parsed.isManifold),
@@ -6647,8 +6931,11 @@ async function main() {
         ? 'Render-only meshes can’t be combined into an existing object.'
         : undefined,
       recommend: empty ? 'current-part' : 'new-part',
+      objects: state.parts.map(p => ({ id: p.id, name: p.name })),
+      currentObjectId: state.currentPart?.id,
     });
-    if (!target) return false;
+    if (!pick) return false;
+    const target = pick.target;
     if (target === 'current-part' && empty) {
       await applyImportWrapper([parsed.mesh], parsed.isManifold, seedRegions);
       await nameFilledObject(sessionName);
@@ -6664,9 +6951,11 @@ async function main() {
       await seedNewPartWithMesh(parsed.mesh, filename, parsed.isManifold, seedRegions);
       return true;
     }
-    // current-part: compose the imported mesh into the existing real work.
-    await preserveCurrentEditsIfNeeded();
-    return composeMeshIntoCurrentPart(parsed.mesh, seedRegions);
+    // current-part: add it to the picked object (the open one by default) as
+    // named parts, keeping that object's code where it can.
+    const objectId = pick.objectId && getState().parts.some(p => p.id === pick.objectId) ? pick.objectId : getState().currentPart?.id;
+    if (!objectId) return false;
+    return (await addImportToObject(objectId, parsed.mesh, sessionName, seedRegions)) ? 'added' : false;
   }
 
   /** Place an imported code file (JS / SCAD) into the session, showing a target
@@ -7232,15 +7521,18 @@ async function main() {
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('GLB'))) return;
     // Multi-part session → pick parts and bundle them as named nodes in one scene.
-    if (getState().parts.length > 1) { await exportMultiPartFlow('GLB', GLB_PARTS_DESC, buildGLBPartsBlob); return; }
-    try {
-      assertFiniteMesh(currentMeshData);
-      notifyMultiPartExport();
-      const filename = await exportGLB(undefined, coloredMeshForExport(currentMeshData));
-      showToast(`Exported ${filename}`, { variant: 'success' });
-    } catch (e) {
-      showToast(e instanceof Error ? e.message : 'GLB export failed', { variant: 'warn' });
-    }
+    const direct = async () => {
+      try {
+        assertFiniteMesh(currentMeshData!);
+        notifyMultiPartExport();
+        const filename = await exportGLB(undefined, coloredMeshForExport(currentMeshData!));
+        showToast(`Exported ${filename}`, { variant: 'success' });
+      } catch (e) {
+        showToast(e instanceof Error ? e.message : 'GLB export failed', { variant: 'warn' });
+      }
+    };
+    if (getState().parts.length > 1 || singleObjectCanSplit()) { await exportMultiPartFlow('GLB', GLB_PARTS_DESC, buildGLBPartsBlob, direct); return; }
+    await direct();
   };
   // Animation exports: record the live viewport into a downloadable video.
   const actionExportTurntable = async () => {
@@ -7260,25 +7552,31 @@ async function main() {
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('STL'))) return;
     // Multi-part session → pick parts and bundle a .stl per part in one .zip.
-    if (getState().parts.length > 1) { await exportMultiPartFlow('STL', STL_PARTS_DESC, buildSTLPartsBlob); return; }
-    notifyMultiPartExport();
-    try { showToast(`Exported ${exportSTL(fileExportMesh(false)!)}`, { variant: 'success' }); }
-    catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
+    const direct = () => {
+      notifyMultiPartExport();
+      try { showToast(`Exported ${exportSTL(fileExportMesh(false)!)}`, { variant: 'success' }); }
+      catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
+    };
+    if (getState().parts.length > 1 || singleObjectCanSplit()) { await exportMultiPartFlow('STL', STL_PARTS_DESC, buildSTLPartsBlob, direct); return; }
+    direct();
   };
   const actionExportOBJ = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('OBJ'))) return;
     // Multi-part session → pick parts and emit named objects in one .obj.
-    if (getState().parts.length > 1) { await exportMultiPartFlow('OBJ', OBJ_PARTS_DESC, buildOBJPartsBlob); return; }
-    notifyMultiPartExport();
-    try { showToast(`Exported ${exportOBJ(fileExportMesh(true)!)}`, { variant: 'success' }); }
-    catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
+    const direct = () => {
+      notifyMultiPartExport();
+      try { showToast(`Exported ${exportOBJ(fileExportMesh(true)!)}`, { variant: 'success' }); }
+      catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
+    };
+    if (getState().parts.length > 1 || singleObjectCanSplit()) { await exportMultiPartFlow('OBJ', OBJ_PARTS_DESC, buildOBJPartsBlob, direct); return; }
+    direct();
   };
   /** Multi-part 3MF: pick parts (with previews), bake each part's coloured mesh
    *  off-editor, and bundle them into one 3MF. `bambu` true → one part per build
    *  plate (Bambu/Orca project); false → a generic multi-object 3MF (grid). */
-  async function export3MFMultiPartFlow(bambu: boolean): Promise<void> {
+  async function export3MFMultiPartFlow(bambu: boolean, direct?: () => void | Promise<void>): Promise<void> {
     const parts = getState().parts;
     const activeId = getState().currentPart?.id ?? null;
     // Pull each part's latest thumbnail for the picker (cheap — pre-baked Blobs).
@@ -7287,14 +7585,15 @@ async function main() {
       const v = await getLatestVersion(p.id);
       choices.push({ id: p.id, name: p.name, thumbnail: v?.thumbnail ?? null, ...(p.group ? { group: p.group } : {}) });
     }
+    const session = createExportSplitSession();
     const selected = await showExportPartsModal(choices, {
       activePartId: activeId,
-      title: bambu ? 'Export objects to 3MF (Bambu/Orca)' : 'Export objects to 3MF',
+      title: bambu ? 'Export objects to 3MF (Bambu/Orca)' : `Export ${parts.length > 1 ? 'objects ' : ''}to 3MF`,
       description: bambu
         ? 'Choose which objects to include and how they’re laid out across build plates. Painted colours are bound to filaments for Bambu Studio / OrcaSlicer.'
         : 'Choose which objects to include. Each selected object is added as a separate 3MF object, arranged in a grid so they don’t overlap. Standard 3MF — opens in any slicer.',
       bambu: bambu ? {
-        printers: BAMBU_PRINTERS.map(p => ({ id: p.id, label: p.label })),
+        printers: BAMBU_PRINTERS.map(p => ({ id: p.id, label: p.label, bed: p.bed })),
         defaultPrinter: DEFAULT_BAMBU_PRINTER,
         nozzles: [...BAMBU_NOZZLES],
         defaultNozzle: DEFAULT_BAMBU_NOZZLE,
@@ -7304,8 +7603,12 @@ async function main() {
       // Generic 3MF gets the packing-strategy pane too (Bambu implies it). Both use
       // the two-pane layout so the arrangement control is always visible.
       ...(bambu ? {} : { packing: true }),
+      split: splitPickerOptions(session),
     });
-    if (!selected || selected.partIds.length === 0) return;
+    if (!selected || selected.partIds.length === 0) { session.cancel(); return; }
+    // A single object kept whole exports exactly as before the picker existed
+    // (same file shape and placement) — the picker only offered the split.
+    if (direct && getState().parts.length === 1 && !selected.splits) { session.cancel(); await direct(); return; }
     const selectedIds = selected.partIds;
 
     const byId = new Map(parts.map(p => [p.id, p]));
@@ -7313,28 +7616,28 @@ async function main() {
       .map(id => byId.get(id))
       .filter((p): p is NonNullable<typeof p> => !!p)
       .map(p => ({ id: p.id, name: p.name, ...(p.group ? { group: p.group } : {}) }));
-    // Parts bake in parallel across the Worker pool; the per-part modal shows each
-    // one's queued → rendering → done state. Cancel disposes the pool (aborting
-    // in-flight bakes) and flips the flag so settled/late results are ignored.
+    // Parts the picker already measured are ready; the rest bake in parallel
+    // across the Worker pool, and the per-part modal shows each one's state.
+    // Cancel disposes the pool (aborting in-flight bakes) and flips the flag
+    // so settled/late results are ignored.
     const cancel = { cancelled: false };
     const progress = startExportProgress({
       title: 'Preparing 3MF…',
       parts: bakeParts,
-      onCancel: () => { cancel.cancelled = true; disposeEnginePool('Export cancelled'); },
+      onCancel: () => { cancel.cancelled = true; session.cancel(); disposeEnginePool('Export cancelled'); },
     });
     try {
-      const { baked } = await bakePartsParallel(bakeParts, {
-        cancel,
-        onStatus: (id, status) => progress.setStatus(id, status),
-      });
+      const baked = await bakeSelectionForExport(bakeParts, session, progress, cancel);
       if (cancel.cancelled) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
       if (baked.length === 0) { showToast('None of the selected objects produced geometry to export.', { variant: 'warn' }); return; }
+      const items = buildExportItems(baked, session, selected);
+      if (items.length === 0) { showToast('Nothing left to export — every piece was left out.', { variant: 'warn' }); return; }
       // Filament colours: merge near-identical shades before writing (export-only).
       progress.end();
       const onlyActive = baked.length === 1 && selectedIds.length === 1 && selectedIds[0] === activeId;
-      const remap = await chooseExportColors(baked.map(b => b.mesh), onlyActive);
+      const remap = await chooseExportColors(items.map(b => b.mesh), onlyActive);
       if (!remap) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
-      const toWrite = baked.map(b => ({ ...b, mesh: applyColorRemap(b.mesh, remap) }));
+      const toWrite = items.map(b => ({ ...b, mesh: applyColorRemap(b.mesh, remap) }));
 
       const bed = loadPrinterSettings().bed;
       const built = build3MFProject(toWrite, {
@@ -7343,14 +7646,22 @@ async function main() {
         plateLayout: selected.plateLayout, packStrategy: selected.packStrategy,
       });
       downloadBlob(built.blob, built.filename, '3MF');
-      const skipped = bakeParts.length - baked.length;
-      const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
-      showToast(`Exported ${built.filename} — ${baked.length} object${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
+      showToast(`Exported ${built.filename} — ${exportedSummary(bakeParts.length, baked.length, items)}`, { variant: 'success' });
     } catch (e) {
       showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' });
     } finally {
       progress.end();
     }
+  }
+
+  /** "3 objects", or "12 items from 2 objects" when objects were split, plus
+   *  a note for objects that produced no geometry. */
+  function exportedSummary(asked: number, baked: number, items: PartExport[]): string {
+    const objs = `${baked} object${baked === 1 ? '' : 's'}`;
+    const n = items.length;
+    const main = items.some(i => i.splitOf) ? `${n} item${n === 1 ? '' : 's'} from ${objs}` : objs;
+    const skipped = asked - baked;
+    return skipped > 0 ? `${main} (${skipped} skipped — no geometry)` : main;
   }
 
   /** Format-agnostic multi-part export flow for OBJ / STL / GLB: pick parts (with
@@ -7361,6 +7672,7 @@ async function main() {
     formatTag: string,
     description: string,
     build: (parts: { name: string; mesh: MeshData }[]) => BuiltExport | Promise<BuiltExport>,
+    direct?: () => void | Promise<void>,
   ): Promise<void> {
     const parts = getState().parts;
     const activeId = getState().currentPart?.id ?? null;
@@ -7369,12 +7681,17 @@ async function main() {
       const v = await getLatestVersion(p.id);
       choices.push({ id: p.id, name: p.name, thumbnail: v?.thumbnail ?? null, ...(p.group ? { group: p.group } : {}) });
     }
+    const session = createExportSplitSession();
     const selected = await showExportPartsModal(choices, {
       activePartId: activeId,
-      title: `Export objects to ${formatTag}`,
+      title: `Export ${parts.length > 1 ? 'objects ' : ''}to ${formatTag}`,
       description,
+      split: splitPickerOptions(session),
     });
-    if (!selected || selected.partIds.length === 0) return;
+    if (!selected || selected.partIds.length === 0) { session.cancel(); return; }
+    // A single object kept whole exports exactly as before the picker existed
+    // (same file shape and placement) — the picker only offered the split.
+    if (direct && getState().parts.length === 1 && !selected.splits) { session.cancel(); await direct(); return; }
     const selectedIds = selected.partIds;
 
     const byId = new Map(parts.map(p => [p.id, p]));
@@ -7382,29 +7699,27 @@ async function main() {
       .map(id => byId.get(id))
       .filter((p): p is NonNullable<typeof p> => !!p)
       .map(p => ({ id: p.id, name: p.name, ...(p.group ? { group: p.group } : {}) }));
-    // Parts bake in parallel across the Worker pool; the per-part modal shows each
-    // one's queued → rendering → done state. Cancel disposes the pool (aborting
-    // in-flight bakes) and flips the flag so settled/late results are ignored.
+    // Parts the picker already measured are ready; the rest bake in parallel
+    // across the Worker pool, and the per-part modal shows each one's state.
+    // Cancel disposes the pool (aborting in-flight bakes) and flips the flag
+    // so settled/late results are ignored.
     const cancel = { cancelled: false };
     const progress = startExportProgress({
       title: `Preparing ${formatTag}…`,
       parts: bakeParts,
-      onCancel: () => { cancel.cancelled = true; disposeEnginePool('Export cancelled'); },
+      onCancel: () => { cancel.cancelled = true; session.cancel(); disposeEnginePool('Export cancelled'); },
     });
     try {
-      const { baked } = await bakePartsParallel(bakeParts, {
-        cancel,
-        onStatus: (id, status) => progress.setStatus(id, status),
-      });
+      const baked = await bakeSelectionForExport(bakeParts, session, progress, cancel);
       if (cancel.cancelled) { showToast(`${formatTag} export cancelled.`, { variant: 'neutral' }); return; }
       if (baked.length === 0) { showToast('None of the selected objects produced geometry to export.', { variant: 'warn' }); return; }
+      const items = buildExportItems(baked, session, selected);
+      if (items.length === 0) { showToast('Nothing left to export — every piece was left out.', { variant: 'warn' }); return; }
       progress.setTitle(`Writing ${formatTag}…`);
 
-      const built = await build(baked);
+      const built = await build(items);
       downloadBlob(built.blob, built.filename, formatTag);
-      const skipped = bakeParts.length - baked.length;
-      const note = skipped > 0 ? ` (${skipped} skipped — no geometry)` : '';
-      showToast(`Exported ${built.filename} — ${baked.length} object${baked.length === 1 ? '' : 's'}${note}`, { variant: 'success' });
+      showToast(`Exported ${built.filename} — ${exportedSummary(bakeParts.length, baked.length, items)}`, { variant: 'success' });
     } catch (e) {
       showToast(e instanceof Error ? e.message : `${formatTag} export failed`, { variant: 'warn' });
     } finally {
@@ -7412,33 +7727,130 @@ async function main() {
     }
   }
 
-  /** Console/AI core for the multi-part OBJ/STL/GLB exports: validate the part ids
-   *  (default: all), bake each part's coloured mesh off-editor, and return the baked
-   *  set. Mirrors the validation of {@link build3MFPartsExport} without the 3MF
-   *  builder, so the per-format API twins just supply the builder. */
-  async function bakePartsForExport(partIds?: string[]): Promise<{ baked: { name: string; mesh: MeshData }[] } | { error: string }> {
+  /** Split options shared by the console/AI multi-object exports. */
+  interface ApiExportSplitOpts {
+    /** Object name or id → 'whole' | 'pieces' | 'parts'. */
+    split?: Record<string, string>;
+    /** Items to leave out, by export name ("<object> · <item>"). */
+    exclude?: string[];
+    /** Bambu `plateLayout: 'custom'`: export name (an item, or a whole object's
+     *  name) → 1-based plate number. */
+    plates?: Record<string, number>;
+  }
+  type ApiExportOpts = { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> } & ApiExportSplitOpts;
+
+  /** Shape-check the split options before anything bakes. */
+  function checkApiSplitShape(fn: string, opts: ApiExportSplitOpts | undefined, customPlates: boolean): string | null {
+    if (!opts) return null;
+    const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+    if (opts.split !== undefined) {
+      if (!isObj(opts.split)) return `${fn}: split must be an object of object name or id → ${EXPORT_SPLIT_MODES.map(m => `"${m}"`).join(' | ')}.`;
+      for (const [k, v] of Object.entries(opts.split)) {
+        if (!isExportSplitMode(v)) return `${fn}: split["${k}"] must be one of ${EXPORT_SPLIT_MODES.map(m => `"${m}"`).join(', ')} (got ${JSON.stringify(v)}).`;
+      }
+    }
+    if (opts.exclude !== undefined && (!Array.isArray(opts.exclude) || opts.exclude.some(x => typeof x !== 'string' || !x))) {
+      return `${fn}: exclude must be an array of item names ("<object> · <item>", see listExportItems()).`;
+    }
+    if (opts.plates !== undefined) {
+      if (!customPlates) return `${fn}: plates needs { bambu: true, plateLayout: "custom" }.`;
+      if (!isObj(opts.plates)) return `${fn}: plates must be an object of item or object name → plate number.`;
+      for (const [k, v] of Object.entries(opts.plates)) {
+        if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) return `${fn}: plates["${k}"] must be a whole number ≥ 1 (got ${JSON.stringify(v)}).`;
+      }
+    }
+    return null;
+  }
+
+  /** Resolve the split options against the baked objects into the choice
+   *  buildExportItems reads. Strict: a mode an object can't use, or a name
+   *  that matches nothing, is an error (with the valid names). */
+  function resolveApiSplit(fn: string, baked: BakedExportObject[], session: ExportSplitSession, opts: ApiExportSplitOpts | undefined): { choice: ExportItemChoice } | { error: string } {
+    const choice: ExportItemChoice = {};
+    const lower = (x: string) => x.trim().toLowerCase();
+    if (opts?.split) {
+      const splits: Record<string, ExportSplitMode> = {};
+      for (const [want, mode] of Object.entries(opts.split)) {
+        const b = baked.find(x => x.id === want) ?? baked.find(x => lower(x.name) === lower(want));
+        if (!b) return { error: `${fn}: split names "${want}", which isn't one of the exported objects (${baked.map(x => `"${x.name}"`).join(', ')}).` };
+        const m = mode as ExportSplitMode;
+        if (m === 'whole') continue;
+        const a = session.analysisOf(b);
+        if (!splitItems(a, m)) {
+          const why = m === 'pieces'
+            ? (a.pieceCount < 2 ? `it is one solid piece` : `it has ${a.pieceCount} pieces, over the ${getConfig().renderer.exportMaxSplitItems}-item split limit`)
+            : 'its labelled parts don’t make two or more separable items';
+          return { error: `${fn}: object "${b.name}" can't split by ${m} — ${why}. Splits it supports: ${availableSplitModes(a).join(', ')}.` };
+        }
+        splits[b.id] = m;
+      }
+      choice.splits = splits;
+    }
+    // Every exported name → [object id, item key] (whole objects use their own name).
+    const names = new Map<string, [string, string]>();
+    for (const b of baked) {
+      const m = choice.splits?.[b.id];
+      const items = m ? splitItems(session.analysisOf(b), m) : null;
+      if (!items) { names.set(lower(b.name), [b.id, WHOLE_ITEM_KEY]); continue; }
+      for (const it of items) names.set(lower(splitItemName(b.name, it.name)), [b.id, it.key]);
+    }
+    const listed = () => [...names.keys()].slice(0, 20).map(n => `"${n}"`).join(', ') + (names.size > 20 ? ', …' : '');
+    if (opts?.exclude) {
+      const excluded: Record<string, string[]> = {};
+      for (const want of opts.exclude) {
+        const hit = names.get(lower(want));
+        if (!hit || hit[1] === WHOLE_ITEM_KEY) return { error: `${fn}: exclude names "${want}", which isn't an item of a split object. Items: ${listed()}.` };
+        (excluded[hit[0]] ??= []).push(hit[1]);
+      }
+      choice.excluded = excluded;
+    }
+    if (opts?.plates) {
+      const plates: Record<string, Record<string, number>> = {};
+      for (const [want, n] of Object.entries(opts.plates)) {
+        const hit = names.get(lower(want));
+        if (!hit) return { error: `${fn}: plates names "${want}", which isn't an exported item. Items: ${listed()}.` };
+        (plates[hit[0]] ??= {})[hit[1]] = n;
+      }
+      choice.plates = plates;
+    }
+    return { choice };
+  }
+
+  /** Console/AI core for the multi-object exports: validate the object ids
+   *  (default: all), bake each object's coloured mesh off-editor, and turn
+   *  them into the file's items per the split options. */
+  async function bakeItemsForExport(fn: string, partIds: string[] | undefined, opts: ApiExportSplitOpts | undefined): Promise<{ items: PartExport[]; baked: BakedExportObject[]; split: boolean } | { error: string }> {
     const allParts = getState().parts;
     if (allParts.length === 0) return { error: 'No objects in this session.' };
     let ids = partIds;
     if (ids !== undefined) {
       if (!Array.isArray(ids) || !ids.every(id => typeof id === 'string')) {
-        return { error: 'objectIds must be an array of object-id strings.' };
+        return { error: `${fn}(objectIds): objectIds must be an array of object-id strings.` };
       }
     } else {
       ids = allParts.map(p => p.id);
     }
-    const byId = new Map(allParts.map(p => [p.id, p]));
+    const known = new Set(allParts.map(p => p.id));
     // Validate every id up front so a bad one fails fast (before spinning the pool).
-    const bakeParts: ExportBakePart[] = [];
-    for (const id of ids) {
-      const part = byId.get(id);
-      if (!part) return { error: `Unknown object id "${id}".` };
-      bakeParts.push({ id: part.id, name: part.name });
-    }
-    const { baked } = await bakePartsParallel(bakeParts);
+    for (const id of ids) if (!known.has(id)) return { error: `${fn}: unknown object id "${id}".` };
+    const session = createExportSplitSession();
+    const baked = (await Promise.all(ids.map(id => session.bake(id)))).filter((b): b is BakedExportObject => b !== null);
     if (baked.length === 0) return { error: 'None of the selected objects produced geometry to export.' };
-    return { baked };
+    const r = resolveApiSplit(fn, baked, session, opts);
+    if ('error' in r) return r;
+    const items = buildExportItems(baked, session, r.choice);
+    if (items.length === 0) return { error: `${fn}: nothing left to export — every item was excluded.` };
+    return { items, baked, split: !!r.choice.splits && Object.keys(r.choice.splits).length > 0 };
   }
+
+  /** The result fields every multi-object export reports: `objects` counts
+   *  the session objects exported (as before splitting existed); a split adds
+   *  `items` (the names written, one per file object) and `itemCount`. */
+  const exportCounts = (r: { items: PartExport[]; baked: BakedExportObject[]; split: boolean }) => ({
+    objects: r.baked.length,
+    parts: r.baked.length,
+    ...(r.split ? { items: r.items.map(i => i.name), itemCount: r.items.length } : {}),
+  });
 
   /** Console/AI twin of a multi-part OBJ/STL/GLB export — bakes the requested parts
    *  (default: all) and DOWNLOADS the bundled file. */
@@ -7447,15 +7859,19 @@ async function main() {
     build: (parts: { name: string; mesh: MeshData }[]) => BuiltExport | Promise<BuiltExport>,
     partIds?: string[],
     filename?: string,
-  ): Promise<{ ok: true; filename: string; objects: number; parts: number } | { error: string }> {
-    const bad = argError(() => assertString(filename, `export${formatTag}Objects(objectIds, filename)`, { optional: true }));
+    opts?: ApiExportSplitOpts,
+  ): Promise<{ ok: true; filename: string; objects: number; parts: number; items?: string[] } | { error: string }> {
+    const fn = `export${formatTag}Objects`;
+    const bad = argError(() => assertString(filename, `${fn}(objectIds, filename)`, { optional: true }));
     if (bad) return bad;
-    const r = await bakePartsForExport(partIds);
+    const shape = checkApiSplitShape(fn, opts, false);
+    if (shape) return { error: shape };
+    const r = await bakeItemsForExport(fn, partIds, opts);
     if ('error' in r) return r;
     let built: BuiltExport;
-    try { built = await build(r.baked); } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    try { built = await build(r.items); } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     downloadBlob(built.blob, built.filename, formatTag);
-    return { ok: true as const, filename: built.filename, objects: r.baked.length, parts: r.baked.length };
+    return { ok: true as const, filename: built.filename, ...exportCounts(r) };
   }
 
   /** Like {@link exportPartsApi} but RETURNS the bytes (base64) instead of
@@ -7465,21 +7881,55 @@ async function main() {
     build: (parts: { name: string; mesh: MeshData }[]) => BuiltExport | Promise<BuiltExport>,
     partIds?: string[],
     filename?: string,
-  ): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; objects: number; parts: number } | { error: string }> {
-    const bad = argError(() => assertString(filename, `export${formatTag}ObjectsData(objectIds, filename)`, { optional: true }));
+    opts?: ApiExportSplitOpts,
+  ): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; objects: number; parts: number; items?: string[] } | { error: string }> {
+    const fn = `export${formatTag}ObjectsData`;
+    const bad = argError(() => assertString(filename, `${fn}(objectIds, filename)`, { optional: true }));
     if (bad) return bad;
-    const r = await bakePartsForExport(partIds);
+    const shape = checkApiSplitShape(fn, opts, false);
+    if (shape) return { error: shape };
+    const r = await bakeItemsForExport(fn, partIds, opts);
     if ('error' in r) return r;
     let built: BuiltExport;
-    try { built = await build(r.baked); } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    try { built = await build(r.items); } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     return {
       filename: built.filename,
       mimeType: built.mimeType,
       sizeBytes: built.blob.size,
       base64: await blobToBase64(built.blob),
-      objects: r.baked.length,
-      parts: r.baked.length,
+      ...exportCounts(r),
     };
+  }
+
+  /** What each object can split into for an export — the picker's Split
+   *  menu as data, so an agent can name items for `exclude` / `plates`. */
+  async function listExportItemsApi(partIds?: string[]): Promise<{ objects: Record<string, unknown>[] } | { error: string }> {
+    const allParts = getState().parts;
+    if (allParts.length === 0) return { error: 'listExportItems: no objects in this session.' };
+    let ids = partIds;
+    if (ids !== undefined) {
+      if (!Array.isArray(ids) || !ids.every(id => typeof id === 'string')) return { error: 'listExportItems(objectIds): objectIds must be an array of object-id strings.' };
+      for (const id of ids) if (!allParts.some(p => p.id === id)) return { error: `listExportItems: unknown object id "${id}".` };
+    } else {
+      ids = allParts.map(p => p.id);
+    }
+    const session = createExportSplitSession();
+    const baked = await Promise.all(ids.map(id => session.bake(id)));
+    const round = (v: [number, number, number]) => v.map(x => Math.round(x * 100) / 100);
+    const objects = ids.map((id, i) => {
+      const part = allParts.find(p => p.id === id)!;
+      const b = baked[i];
+      if (!b) return { id, name: part.name, error: 'no geometry' };
+      const a = session.analysisOf(b);
+      const list = (items: ReturnType<typeof splitItems>) => items?.map(it => ({
+        name: splitItemName(part.name, it.name), size: round(it.size), labels: it.labels, ...(it.fused ? { fused: true } : {}),
+      })) ?? null;
+      return {
+        id, name: part.name, size: round(a.size), pieceCount: a.pieceCount,
+        splits: availableSplitModes(a), pieces: list(a.pieces), parts: list(a.parts),
+      };
+    });
+    return { objects };
   }
 
   // Per-format builder bound to a custom filename, shared by the menu flow + API.
@@ -7496,7 +7946,7 @@ async function main() {
    *  BuiltExport (no download, no base64) so callers can either trigger a
    *  download or return the bytes. `opts.bambu` (default true) → one part per
    *  build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
-  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }): Promise<{ built: import('./export/gltf').BuiltExport; parts: number } | { error: string }> {
+  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: ApiExportOpts): Promise<{ built: import('./export/gltf').BuiltExport; items: PartExport[]; baked: BakedExportObject[]; split: boolean } | { error: string }> {
     const bambu = opts?.bambu ?? true;
     // Validate the Bambu profile selectors at the boundary so a console/AI/MCP
     // caller gets the same constraints the export modal's dropdowns enforce. An
@@ -7518,41 +7968,25 @@ async function main() {
     // validate it regardless of `bambu`.
     if (opts?.packStrategy !== undefined && !isPackStrategy(opts.packStrategy))
       return { error: `export3MFParts: unknown packStrategy "${opts.packStrategy}". Valid: ${PACK_STRATEGIES.join(', ')}.` };
-    const allParts = getState().parts;
-    if (allParts.length === 0) return { error: 'No objects in this session.' };
-    let ids = partIds;
-    if (ids !== undefined) {
-      if (!Array.isArray(ids) || !ids.every(id => typeof id === 'string')) {
-        return { error: 'export3MFObjects(objectIds): objectIds must be an array of object-id strings.' };
-      }
-    } else {
-      ids = allParts.map(p => p.id);
-    }
-    const byId = new Map(allParts.map(p => [p.id, p]));
-    // Validate every id up front so a bad one fails fast (before spinning the pool).
-    const bakeParts: ExportBakePart[] = [];
-    for (const id of ids) {
-      const part = byId.get(id);
-      if (!part) return { error: `export3MFObjects: unknown object id "${id}".` };
-      bakeParts.push({ id: part.id, name: part.name, ...(part.group ? { group: part.group } : {}) });
-    }
+    const shape = checkApiSplitShape('export3MFObjects', opts, bambu && opts?.plateLayout === 'custom');
+    if (shape) return { error: shape };
     // Validate the colour options before baking (no meshes → no merge computed).
     const colorOptsCheck = resolveApiColorRemap([], opts, 'export3MFObjects');
     if ('error' in colorOptsCheck) return colorOptsCheck;
-    const { baked } = await bakePartsParallel(bakeParts);
-    if (baked.length === 0) return { error: 'None of the selected objects produced geometry to export.' };
-    const merge = resolveApiColorRemap(baked.map(b => b.mesh), opts, 'export3MFObjects');
+    const r = await bakeItemsForExport('export3MFObjects', partIds, opts);
+    if ('error' in r) return r;
+    const merge = resolveApiColorRemap(r.items.map(b => b.mesh), opts, 'export3MFObjects');
     if ('error' in merge) return merge;
     const { remap } = merge;
     try {
       const bed = loadPrinterSettings().bed;
-      const built = build3MFProject(baked.map(b => ({ ...b, mesh: applyColorRemap(b.mesh, remap) })), {
+      const built = build3MFProject(r.items.map(b => ({ ...b, mesh: applyColorRemap(b.mesh, remap) })), {
         customName: filename, bambu, bedSize: [bed[0], bed[1]],
         printer: opts?.printer, nozzle: opts?.nozzle, filament: opts?.filament,
         plateLayout: opts?.plateLayout as BambuPlateLayout | undefined,
         packStrategy: opts?.packStrategy as PackStrategy | undefined,
       });
-      return { built, parts: baked.length };
+      return { built, items: r.items, baked: r.baked, split: r.split };
     } catch (e) {
       return { error: e instanceof Error ? e.message : String(e) };
     }
@@ -7561,19 +7995,19 @@ async function main() {
   /** Console/AI twin of the multi-part 3MF export — bakes the requested parts
    *  (default: all) and DOWNLOADS one 3MF. `opts.bambu` (default true) → one part
    *  per build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
-  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }): Promise<{ ok: true; filename: string; objects: number; parts: number } | { error: string }> {
+  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: ApiExportOpts): Promise<{ ok: true; filename: string; objects: number; parts: number; items?: string[] } | { error: string }> {
     const bad = argError(() => assertString(filename, 'export3MFObjects(objectIds, filename)', { optional: true }));
     if (bad) return bad;
     const r = await build3MFPartsExport(partIds, filename, opts);
     if ('error' in r) return r;
     downloadBlob(r.built.blob, r.built.filename, '3MF');
-    return { ok: true as const, filename: r.built.filename, objects: r.parts, parts: r.parts };
+    return { ok: true as const, filename: r.built.filename, ...exportCounts(r) };
   }
 
   /** Like {@link export3MFPartsApi} but RETURNS the bytes (base64) instead of
    *  downloading — the agent/test-friendly twin. Lets a caller read the exported
    *  3MF back without the browser download path. */
-  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; objects: number; parts: number } | { error: string }> {
+  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: ApiExportOpts): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; objects: number; parts: number; items?: string[] } | { error: string }> {
     const bad = argError(() => assertString(filename, 'export3MFObjectsData(objectIds, filename)', { optional: true }));
     if (bad) return bad;
     const r = await build3MFPartsExport(partIds, filename, opts);
@@ -7583,8 +8017,7 @@ async function main() {
       mimeType: r.built.mimeType,
       sizeBytes: r.built.blob.size,
       base64: await blobToBase64(r.built.blob),
-      objects: r.parts,
-      parts: r.parts,
+      ...exportCounts(r),
     };
   }
 
@@ -7592,17 +8025,21 @@ async function main() {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('3MF'))) return;
-    // Multi-part session → offer the part picker and emit a GENERIC multi-object
-    // 3MF (grid-arranged, no Bambu metadata). Single-part keeps the original
+    // Multi-part session (or one object of several separate pieces, which the
+    // picker can split) → offer the part picker and emit a GENERIC multi-object
+    // 3MF (grid-arranged, no Bambu metadata). Otherwise the original
     // single-object export.
-    if (getState().parts.length > 1) { await export3MFMultiPartFlow(false); return; }
-    try {
-      const mesh = fileExportMesh(true)!;
-      const remap = await chooseExportColors([mesh]);
-      if (!remap) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
-      showToast(`Exported ${export3MF(applyColorRemap(mesh, remap))}`, { variant: 'success' });
-    }
-    catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
+    const direct = async () => {
+      try {
+        const mesh = fileExportMesh(true)!;
+        const remap = await chooseExportColors([mesh]);
+        if (!remap) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
+        showToast(`Exported ${export3MF(applyColorRemap(mesh, remap))}`, { variant: 'success' });
+      }
+      catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
+    };
+    if (getState().parts.length > 1 || singleObjectCanSplit()) { await export3MFMultiPartFlow(false, direct); return; }
+    await direct();
   };
   // Bambu/Orca multi-plate 3MF — a SEPARATE export from the generic 3MF above.
   // Opens the part picker and bundles the chosen parts into one Bambu project
@@ -8070,6 +8507,26 @@ async function main() {
     return null;
   }
 
+  /** `targets` with each group made by an `api.groupParts` line replaced by
+   *  its members (recursively); the member names go into `members`. */
+  function expandGroupTargets(code: string, targets: ({ part: string } | { piece: number })[], members: Set<string>): ({ part: string } | { piece: number })[] {
+    const groups = new Map<string, string[]>();
+    for (const { op } of findPartOpLines(code)) if (op.kind === 'group') groups.set(op.as, op.parts);
+    if (groups.size === 0) return targets;
+    const out: ({ part: string } | { piece: number })[] = [];
+    const seen = new Set<string>();
+    const add = (name: string, depth: number) => {
+      const inner = depth < 32 ? groups.get(name) : undefined;
+      if (inner) { for (const m of inner) { members.add(m); add(m, depth + 1); } return; }
+      if (!seen.has(name)) { seen.add(name); out.push({ part: name }); }
+    };
+    for (const t of targets) {
+      if ('part' in t) add(t.part, 0);
+      else out.push(t);
+    }
+    return out;
+  }
+
   /** Delete one part (an `api.label` / `label()` / `BREP.label` region, or a
    *  part detected on an import) or one piece (a separate solid) of the open
    *  object. Writes a removal line at the top of the code (`api.removePart` /
@@ -8111,6 +8568,19 @@ async function main() {
     const removed: string[] = [];
     const previousCode = getValue();
     let nextCode = previousCode;
+    // A group made in the Parts panel (api.groupParts) is deleted through its
+    // members: once they're all removed the engine drops the group too.
+    const members = new Set<string>();
+    if (lang === 'manifold-js') {
+      targets = expandGroupTargets(previousCode, targets, members);
+      // Copies and groups made from a part go with it — say so rather than
+      // dropping them silently; deleting them too (select them all) is fine.
+      const names = targets.flatMap(x => ('part' in x ? [x.part] : []));
+      const extra = derivedParts(previousCode, names).filter(n => !names.includes(n));
+      if (extra.length > 0) {
+        return { error: `${extra.map(n => `"${n}"`).join(', ')} ${extra.length === 1 ? 'was' : 'were'} made from ${names.length === 1 ? `"${names[0]}"` : 'these parts'} (a copy or group) and would go too — select ${extra.length === 1 ? 'it' : 'them'} as well to delete them together.` };
+      }
+    }
     const pieceTargets = targets.filter((x): x is { piece: number } => 'piece' in x);
     if (pieceTargets.length > 0 && summary.pieces.length < 2) return { error: 'This object is a single piece — delete the object instead.' };
     if (pieceTargets.length > 0 && new Set(pieceTargets.map(x => x.piece)).size >= summary.pieces.length) {
@@ -8122,10 +8592,10 @@ async function main() {
       let what: string;
       if ('part' in target) {
         const part = summary.parts.find(p => p.name === target.part && p.triangles.size > 0);
-        if (!part) return { error: `No part named "${target.part}" in this object. Call listObjectParts() for the names.` };
-        call = removePartCall(part.name, syntax);
+        if (!part && !members.has(target.part)) return { error: `No part named "${target.part}" in this object. Call listObjectParts() for the names.` };
+        call = removePartCall(target.part, syntax);
         line = call;
-        what = `part "${part.name}"`;
+        what = `part "${target.part}"`;
       } else {
         const piece = summary.pieces.find(p => p.index === target.piece);
         if (!piece) return { error: `No piece ${target.piece} in this object (it has ${summary.pieces.length}, indexed from 0).` };
@@ -8169,6 +8639,416 @@ async function main() {
       ...('id' in saved ? { version: { id: saved.id, index: saved.index, label: saved.label } } : {}),
       ...('error' in saved ? { saveWarning: saved.error } : {}),
     };
+  }
+
+  // === Part edits (the Parts panel: arrange, copies, grouping) ===
+  // Each action writes `api.movePart(…)`-style lines into the code
+  // (src/editor/partOpCode.ts), runs, and saves a version; the engine applies
+  // them after the run (src/geometry/partOps.ts). The previous code is kept for
+  // the panel's Undo.
+
+  const PART_ACTIONS = ['grid', 'pack', 'bed', 'align', 'distribute', 'drop', 'center', 'snap', 'move', 'rotate', 'layFlat', 'mirror', 'scale', 'duplicate', 'array', 'gridArray', 'group', 'ungroup', 'rename', 'cut'] as const;
+  type PartActionOpts = {
+    parts?: string[];
+    axis?: 'x' | 'y' | 'z';
+    mode?: 'min' | 'center' | 'max';
+    gap?: number;
+    step?: number | Vec3;
+    offset?: Vec3;
+    degrees?: Vec3;
+    factor?: number | Vec3;
+    count?: number;
+    cols?: number;
+    rows?: number;
+    name?: string;
+    pattern?: string;
+    /** Internal (the Parts panel's arrow keys): hold the version save until
+     *  the keys go idle. */
+    nudge?: boolean;
+  };
+  type PartActionResult = { ok: true; message: string; parts: string[]; version?: { id: string; index: number; label: string }; saveWarning?: string } | { error: string };
+
+  /** Undo stack of part edits: the code (and imports) before each one. */
+  type PaintRekey = { id: number; before: RegionDescriptor; after: RegionDescriptor; triangles: Set<number>; perTriColors: ReturnType<typeof getRegions>[number]['perTriColors'] };
+  const partEditUndo: { objectId: string; code: string; imports: ImportedMesh[]; label: string; after: string; rekeys?: PaintRekey[] }[] = [];
+
+  /** The parts an action applies to: `parts` when given, else every part of
+   *  the open object. (The Parts panel passes the user's selection; a UI
+   *  selection never narrows an API call on its own.) */
+  function partActionTargets(parts: string[] | undefined): string[] | { error: string } {
+    const summary = currentObjectPartsSummary();
+    if (!summary) return { error: 'No geometry loaded — run the code first.' };
+    const existing = summary.parts.filter(p => p.triangles.size > 0).map(p => p.name);
+    if (existing.length === 0) return { error: 'This object has no named parts. Import files as parts, detect parts, or wrap shapes in api.label(shape, "name").' };
+    if (parts) {
+      const missing = parts.filter(n => !existing.includes(n));
+      if (missing.length > 0) return { error: `No part named ${missing.map(n => `"${n}"`).join(', ')} — see listObjectParts().` };
+      return [...new Set(parts)];
+    }
+    return existing;
+  }
+
+  /** The parts' bounding boxes on the label mesh. */
+  function partBoxesOf(names: string[]): PartBox[] {
+    const summary = currentObjectPartsSummary()!;
+    const mesh = objectPartsMesh()!;
+    const { vertProperties: vp, triVerts: tv, numProp: np } = mesh;
+    return names.map((name) => {
+      const tris = summary.parts.find(p => p.name === name)!.triangles;
+      const min: Vec3 = [Infinity, Infinity, Infinity];
+      const max: Vec3 = [-Infinity, -Infinity, -Infinity];
+      for (const t of tris) {
+        for (let k = 0; k < 3; k++) {
+          const o = tv[t * 3 + k] * np;
+          for (let a = 0; a < 3; a++) {
+            const x = vp[o + a];
+            if (x < min[a]) min[a] = x;
+            if (x > max[a]) max[a] = x;
+          }
+        }
+      }
+      return { name, min, max };
+    });
+  }
+
+  /** Parts that share a solid with other geometry (so they can't move on
+   *  their own): some piece holds both their triangles and others. */
+  function jointParts(names: string[]): string[] {
+    const summary = currentObjectPartsSummary()!;
+    const out: string[] = [];
+    for (const name of names) {
+      const tris = summary.parts.find(p => p.name === name)!.triangles;
+      if (summary.pieces.length <= 1 && summary.parts.filter(p => p.triangles.size > 0).length > 1) { out.push(name); continue; }
+      for (const piece of summary.pieces) {
+        let inside = 0;
+        for (const t of piece.triangles) if (tris.has(t)) inside++;
+        if (inside > 0 && inside < piece.triangles.length) { out.push(name); break; }
+      }
+    }
+    return out;
+  }
+
+  /** A part name not yet used in the object (or by `taken`). */
+  function freshPartName(base: string, taken: Set<string>, start = 2): string {
+    const used = new Set([...(currentObjectPartsSummary()?.parts.map(p => p.name) ?? []), ...reservedPartNames(getValue()), ...taken]);
+    const stem = base.replace(/ \d+$/, '');
+    for (let n = start; ; n++) {
+      const name = `${stem} ${n}`;
+      if (!used.has(name)) { taken.add(name); return name; }
+    }
+  }
+
+  /** The mean footprint size of `boxes` times the arrange gap ratio. */
+  function arrangeGap(boxes: PartBox[], gap?: number): number {
+    if (gap !== undefined) return gap;
+    const mean = boxes.reduce((s, b) => s + ((b.max[0] - b.min[0]) + (b.max[1] - b.min[1])) / 2, 0) / Math.max(1, boxes.length);
+    return mean * getConfig().ui.partArrangeGapRatio;
+  }
+
+  /** Write `next` (code, and optionally imports) for the open object, run it,
+   *  and save a version labelled `label`. Restores the previous code when the
+   *  run fails. */
+  /** A part edit whose version save is held back (arrow-key nudges): saved
+   *  once the keys go idle, or before the next edit. */
+  let pendingPartSave: { objectId: string; label: string; timer: ReturnType<typeof setTimeout> } | null = null;
+  async function flushPartSave(): Promise<void> {
+    const p = pendingPartSave;
+    if (!p) return;
+    pendingPartSave = null;
+    clearTimeout(p.timer);
+    // Switched away meanwhile: the switch already saved the object's edits.
+    if (getState().currentPart?.id === p.objectId) await saveCurrentVersion(p.label);
+  }
+
+  async function commitPartEdit(next: string, label: string, imports?: ImportedMesh[], extra: { rekeys?: PaintRekey[]; deferSave?: boolean } = {}): Promise<{ ok: true; version?: { id: string; index: number; label: string }; saveWarning?: string } | { error: string }> {
+    if (isReadOnlyViewer()) return { error: 'This tab is a read-only viewer of the session.' };
+    if (isSharedPreview()) return { error: SHARED_PREVIEW_REFUSAL };
+    if (!extra.deferSave) await flushPartSave();
+    const objectId = getState().currentPart?.id;
+    if (!objectId) return { error: 'No object is open.' };
+    const previousCode = getValue();
+    const previousImports = getActiveImports();
+    if (next === previousCode && !imports) return { error: 'Nothing to change.' };
+    if (imports) setActiveImports(imports);
+    setValue(next);
+    const restore = async (why: string) => {
+      setActiveImports(previousImports);
+      setValue(previousCode);
+      await runCodeSync(previousCode);
+      return { error: `${why} The code was restored.` };
+    };
+    if (!(await runCodeSync(next))) return restore(runFailedMessage());
+    const geo = getGeometryDataObj() as { status?: string; error?: string } | null;
+    if (geo?.status === 'error') return restore(`That didn't work: ${geo.error ?? 'run error'}.`);
+    const last = partEditUndo[partEditUndo.length - 1];
+    if (extra.deferSave && pendingPartSave?.objectId === objectId && last?.objectId === objectId && last.label === label && last.after === previousCode) {
+      // The same burst of nudges: one undo step and one version for all of it.
+      last.after = next;
+    } else {
+      partEditUndo.push({ objectId, code: previousCode, imports: previousImports, label, after: next, ...(extra.rekeys ? { rekeys: extra.rekeys } : {}) });
+      if (partEditUndo.length > getConfig().ui.partEditUndoDepth) partEditUndo.shift();
+    }
+    if (extra.deferSave) {
+      if (pendingPartSave) clearTimeout(pendingPartSave.timer);
+      pendingPartSave = { objectId, label, timer: setTimeout(() => { void flushPartSave(); }, getConfig().ui.partNudgeSaveDelayMs) };
+      refreshPartsPanel();
+      return { ok: true };
+    }
+    const saved = await saveCurrentVersion(label, imports ? { importedMeshes: imports } : {});
+    refreshPartsPanel();
+    return {
+      ok: true,
+      ...('id' in saved ? { version: { id: saved.id, index: saved.index, label: saved.label } } : {}),
+      ...('error' in saved ? { saveWarning: saved.error } : {}),
+    };
+  }
+
+  /** Undo the open object's last part edit (its code before it). Refused when
+   *  the code changed since (a hand edit, the AI, another tool) — putting the
+   *  old code back would throw that away; the version history still can. */
+  async function undoPartEdit(): Promise<{ ok: true; undone: string } | { error: string }> {
+    const objectId = getState().currentPart?.id;
+    const i = partEditUndo.map(u => u.objectId).lastIndexOf(objectId ?? '');
+    if (!objectId || i < 0) return { error: 'No part edit to undo in this object.' };
+    await flushPartSave();
+    const entry = partEditUndo[i];
+    if (getValue() !== entry.after) return { error: `The code changed since “${entry.label}”, so Undo would lose that change — go back with the version history (Versions) instead.` };
+    partEditUndo.splice(i, 1);
+    for (const k of entry.rekeys ?? []) setRegionDescriptor(k.id, k.before, k.triangles, k.perTriColors);
+    const r = await commitPartEdit(entry.code, `Undo ${entry.label}`, entry.imports);
+    if ('error' in r) {
+      for (const k of entry.rekeys ?? []) setRegionDescriptor(k.id, k.after, k.triangles, k.perTriColors);
+      partEditUndo.splice(i, 0, entry);
+      return r;
+    }
+    // commitPartEdit pushed the undone state; an undo isn't itself undoable here.
+    partEditUndo.pop();
+    return { ok: true, undone: entry.label };
+  }
+
+  /** Rename part `from` → `to` everywhere it is named: its label in the code,
+   *  the part-edit lines, and an import's committed parts. */
+  function renamePartEverywhere(code: string, imports: ImportedMesh[], from: string, to: string): { code: string; imports: ImportedMesh[]; importsChanged: boolean; found: boolean } {
+    const labelled = renameLabelInCode(code, from, to);
+    const next = renamePartInOps(labelled.code, from, to);
+    const importsChanged = imports.some(m => m.parts?.names.includes(from));
+    const nextImports = importsChanged
+      ? imports.map(m => (m.parts?.names.includes(from) ? { ...m, parts: { ...m.parts, names: m.parts.names.map(n => (n === from ? to : n)) } } : m))
+      : imports;
+    return { code: next, imports: nextImports, importsChanged, found: labelled.count > 0 || next !== labelled.code || importsChanged };
+  }
+
+  /** The Parts panel's actions — `partwright.partAction(action, opts)`. */
+  async function runPartAction(action: string, opts: PartActionOpts = {}): Promise<PartActionResult> {
+    if (getActiveLanguage() !== 'manifold-js') {
+      return { error: `Part edits are written as JavaScript (api.movePart & co.), so they work on JS objects — this one is ${getActiveLanguage()}.` };
+    }
+    const targets = partActionTargets(opts.parts);
+    if ('error' in targets) return targets;
+    const code = getValue();
+    const what = targets.length === 1 ? `"${targets[0]}"` : `${targets.length} parts`;
+    const needFree = (verb: string): { error: string } | null => {
+      const joint = jointParts(targets);
+      return joint.length > 0
+        ? { error: `Can't ${verb} ${joint.map(n => `"${n}"`).join(', ')}: ${joint.length === 1 ? 'it is' : 'they are'} joined to other geometry, so ${joint.length === 1 ? 'it' : 'they'} can't move on ${joint.length === 1 ? 'its' : 'their'} own — only parts that are separate solids can. Move ${joint.length === 1 ? 'it' : 'them'} in the code instead.` }
+        : null;
+    };
+    const moves = (map: Map<string, Vec3>): PartOp[] => [...map].filter(([, d]) => d.some(v => Math.abs(v) > 1e-9)).map(([part, offset]) => ({ kind: 'move', part, offset }));
+    const finish = async (ops: PartOp[], label: string, message: string, next = addPartOps(code, ops), imports?: ImportedMesh[], rekeys?: PaintRekey[]): Promise<PartActionResult> => {
+      if (ops.length === 0 && next === code && !imports) return { ok: true, message: `${message} — already in place.`, parts: targets };
+      const r = await commitPartEdit(next, label, imports, { rekeys, deferSave: opts.nudge === true });
+      return 'error' in r ? r : { ...r, message, parts: targets };
+    };
+    const boxes = () => partBoxesOf(targets);
+    const axisOf = (): 'x' | 'y' | 'z' | { error: string } => (opts.axis === 'x' || opts.axis === 'y' || opts.axis === 'z' ? opts.axis : { error: `${action} needs axis 'x', 'y' or 'z'.` });
+
+    switch (action) {
+      case 'grid': case 'pack': case 'bed': {
+        const blocked = needFree('arrange'); if (blocked) return blocked;
+        const b = boxes();
+        const gap = arrangeGap(b, opts.gap);
+        if (action === 'grid') return finish(moves(gridLayout(b, { gap })), 'Arrange parts in a grid', `Arranged ${what} in a grid`);
+        if (action === 'pack') return finish(moves(packLayout(b, { gap })), 'Pack parts', `Packed ${what}`);
+        const bed = loadPrinterSettings().bed;
+        const laid = bedLayout(b, { gap, bed: [bed[0], bed[1]] });
+        const ops: PartOp[] = [
+          ...laid.rotateToFit.map((part): PartOp => ({ kind: 'rotate', part, degrees: [0, 0, 90] })),
+          ...moves(laid.moves),
+        ];
+        const notes = [laid.plates > 1 ? `${laid.plates} plates` : 'one plate', ...(laid.tooBig.length > 0 ? [`${laid.tooBig.map(n => `"${n}"`).join(', ')} won't fit the ${bed[0]}×${bed[1]} bed`] : [])];
+        return finish(ops, 'Pack parts onto the bed', `Packed ${what} onto the bed (${notes.join('; ')})`);
+      }
+      case 'align': {
+        const axis = axisOf(); if (typeof axis === 'object') return axis;
+        const mode = opts.mode ?? 'center';
+        if (mode !== 'min' && mode !== 'center' && mode !== 'max') return { error: "align needs mode 'min', 'center' or 'max'." };
+        if (targets.length < 2) return { error: 'Select 2 or more parts to align them.' };
+        const blocked = needFree('align'); if (blocked) return blocked;
+        return finish(moves(alignLayout(boxes(), axis, mode)), `Align parts ${mode} ${axis}`, `Aligned ${what} (${axis} ${mode})`);
+      }
+      case 'distribute': {
+        const axis = axisOf(); if (typeof axis === 'object') return axis;
+        if (targets.length < 3) return { error: 'Select 3 or more parts to distribute them.' };
+        const blocked = needFree('distribute'); if (blocked) return blocked;
+        return finish(moves(distributeLayout(boxes(), axis)), `Distribute parts along ${axis}`, `Spaced ${what} evenly along ${axis}`);
+      }
+      case 'drop': {
+        const blocked = needFree('move'); if (blocked) return blocked;
+        return finish(moves(dropToPlate(boxes())), 'Drop parts to the plate', `Dropped ${what} onto the plate`);
+      }
+      case 'center': {
+        const blocked = needFree('move'); if (blocked) return blocked;
+        return finish(moves(centerOnOrigin(boxes())), 'Centre parts on the origin', `Centred ${what} on the origin`);
+      }
+      case 'snap': {
+        const step = typeof opts.step === 'number' ? opts.step : getConfig().ui.partSnapStep;
+        if (!(step > 0)) return { error: 'snap needs a step greater than 0.' };
+        const blocked = needFree('move'); if (blocked) return blocked;
+        return finish(moves(snapToGrid(boxes(), step)), `Snap parts to a ${step} grid`, `Snapped ${what} to a ${step} grid`);
+      }
+      case 'move': {
+        const off = opts.offset;
+        if (!off || off.length !== 3 || off.some(v => !Number.isFinite(v))) return { error: 'move needs offset [x, y, z].' };
+        const blocked = needFree('move'); if (blocked) return blocked;
+        return finish(targets.map(part => ({ kind: 'move', part, offset: off })), 'Move parts', `Moved ${what} by [${off.join(', ')}]`);
+      }
+      case 'rotate': {
+        const deg = opts.degrees;
+        if (!deg || deg.length !== 3 || deg.some(v => !Number.isFinite(v))) return { error: 'rotate needs degrees [x, y, z].' };
+        const blocked = needFree('rotate'); if (blocked) return blocked;
+        return finish(targets.map(part => ({ kind: 'rotate', part, degrees: deg })), 'Rotate parts', `Turned ${what}`);
+      }
+      case 'layFlat': {
+        const blocked = needFree('lay flat'); if (blocked) return blocked;
+        const summary = currentObjectPartsSummary()!;
+        const mesh = objectPartsMesh()!;
+        const positions = xyzPositions(mesh.vertProperties, mesh.numProp);
+        const ops: PartOp[] = [];
+        for (const part of targets) {
+          const tris = summary.parts.find(p => p.name === part)!.triangles;
+          const deg = layFlatRotation(positions, mesh.triVerts, [...tris]);
+          if (deg.some(v => Math.abs(v) > 1e-6)) ops.push({ kind: 'rotate', part, degrees: deg });
+          // Drop it onto the plate in its new orientation.
+          const dz = -rotatedMinZ(positions, mesh.triVerts, tris, deg);
+          if (Math.abs(dz) > 1e-6) ops.push({ kind: 'move', part, offset: [0, 0, dz] });
+        }
+        return finish(ops, 'Lay parts flat', `Laid ${what} flat on ${targets.length === 1 ? 'its' : 'their'} largest face`);
+      }
+      case 'mirror': {
+        const axis = axisOf(); if (typeof axis === 'object') return axis;
+        const blocked = needFree('mirror'); if (blocked) return blocked;
+        return finish(targets.map(part => ({ kind: 'mirror', part, axis })), `Mirror parts in ${axis}`, `Mirrored ${what} in ${axis}`);
+      }
+      case 'scale': {
+        const f = typeof opts.factor === 'number' ? [opts.factor, opts.factor, opts.factor] as Vec3 : opts.factor;
+        if (!f || f.length !== 3 || f.some(v => !(v > 0) || !Number.isFinite(v))) return { error: 'scale needs a factor > 0 (a number, or [x, y, z]).' };
+        const blocked = needFree('scale'); if (blocked) return blocked;
+        return finish(targets.map(part => ({ kind: 'scale', part, factor: f })), 'Scale parts', `Scaled ${what} by ${f[0] === f[1] && f[1] === f[2] ? f[0] : `[${f.join(', ')}]`}`);
+      }
+      case 'duplicate': case 'array': case 'gridArray': {
+        const blocked = needFree('copy'); if (blocked) return blocked;
+        const b = boxes();
+        const taken = new Set<string>();
+        const ops: PartOp[] = [];
+        const made: string[] = [];
+        // A duplicate goes into free space, clear of every part and earlier copy.
+        const obstacles = partBoxesOf(currentObjectPartsSummary()!.parts.filter(p => p.triangles.size > 0).map(p => p.name));
+        for (const box of b) {
+          const w = box.max[0] - box.min[0], d = box.max[1] - box.min[1];
+          const gap = arrangeGap([box], opts.gap);
+          let offsets: Vec3[];
+          if (action === 'duplicate') {
+            const off = opts.offset ?? freeOffset(box, obstacles, gap);
+            offsets = [off];
+            obstacles.push({ name: '', min: [box.min[0] + off[0], box.min[1] + off[1], box.min[2] + off[2]], max: [box.max[0] + off[0], box.max[1] + off[1], box.max[2] + off[2]] });
+          } else if (action === 'array') {
+            const count = opts.count ?? 3;
+            if (!Number.isInteger(count) || count < 2) return { error: 'array needs count ≥ 2 (copies in total, the original included).' };
+            const step = Array.isArray(opts.step) ? opts.step : [w + gap, 0, 0] as Vec3;
+            offsets = arrayOffsets(count - 1, step);
+          } else {
+            const cols = opts.cols ?? 2, rows = opts.rows ?? 2;
+            if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1 || cols * rows < 2) return { error: 'gridArray needs whole cols and rows making 2+ cells.' };
+            const step: [number, number] = Array.isArray(opts.step) ? [opts.step[0], opts.step[1]] : [w + gap, d + gap];
+            offsets = gridArrayOffsets(cols, rows, step);
+          }
+          const max = getConfig().ui.partMaxCopies;
+          if (made.length + offsets.length > max) return { error: `That makes more than ${max} copies (Advanced settings → UI → Max part copies).` };
+          for (const offset of offsets) {
+            const as = freshPartName(box.name, taken);
+            ops.push({ kind: 'copy', part: box.name, as, offset });
+            made.push(as);
+          }
+        }
+        return finish(ops, action === 'duplicate' ? 'Duplicate parts' : 'Array parts', `Made ${made.length} cop${made.length === 1 ? 'y' : 'ies'} of ${what}`);
+      }
+      case 'group': {
+        if (targets.length < 2) return { error: 'Select 2 or more parts to group them.' };
+        const name = opts.name?.trim() || freshPartName('Group', new Set(), 1);
+        if (!targets.includes(name) && (currentObjectPartsSummary()!.parts.some(p => p.name === name) || reservedPartNames(code).has(name))) return { error: `The name "${name}" is taken (a part, or one the code deletes or creates) — pick another.` };
+        // The members' own labels give way to the group's: paint, colours and
+        // texture scopes keyed to a member stop matching.
+        const keyed = targets.filter(n => getRegions().some(r => descriptorPartLabel(r.descriptor) === n));
+        const note = keyed.length > 0 ? ` — paint on ${keyed.map(n => `"${n}"`).join(', ')} now shows under Unmatched paint (reassign it to "${name}")` : '';
+        const r = await finish([{ kind: 'group', parts: targets, as: name }], `Group parts as ${name}`, `Grouped ${what} as "${name}"${note}`);
+        if ('ok' in r) selectObjectParts([`part:${name}`]);
+        return r;
+      }
+      case 'ungroup': {
+        const groups = targets.filter(n => findPartOpLines(code).some(x => x.op.kind === 'group' && x.op.as === n));
+        if (groups.length === 0) return { error: `${what} ${targets.length === 1 ? 'isn’t a group' : 'aren’t groups'} made in the Parts panel (api.groupParts).` };
+        let next = code;
+        for (const g of groups) {
+          const r = ungroupInCode(next, g);
+          if (r && typeof r === 'object') return r;
+          if (typeof r === 'string') next = r;
+        }
+        return finish([], 'Ungroup parts', `Ungrouped ${groups.map(n => `"${n}"`).join(', ')}`, next);
+      }
+      case 'rename': {
+        const pattern = opts.pattern?.trim();
+        if (!pattern) return { error: "rename needs a pattern, e.g. 'bracket {n}' ({n} = 1, 2, 3…; without {n} a number is appended)." };
+        const names = targets.map((_, i) => (pattern.includes('{n}') ? pattern.split('{n}').join(String(i + 1)) : targets.length === 1 ? pattern : `${pattern} ${i + 1}`));
+        if (new Set(names).size !== names.length) return { error: 'The pattern gives two parts the same name — add {n}.' };
+        const others = [...currentObjectPartsSummary()!.parts.map(p => p.name), ...reservedPartNames(code)].filter(n => !targets.includes(n));
+        const clash = names.find(n => others.includes(n));
+        if (clash) return { error: `There's already a part named "${clash}".` };
+        // Through temporary names, so a → b, b → c can't collide midway.
+        let next = code;
+        let imports = getActiveImports();
+        let importsChanged = false;
+        const tmp = targets.map((_, i) => `\u0000rename${i}`);
+        for (const [from, to] of [...targets.map((n, i) => [n, tmp[i]]), ...tmp.map((n, i) => [n, names[i]])]) {
+          const r = renamePartEverywhere(next, imports, from, to);
+          if (!r.found && !from.startsWith('\u0000')) return { error: `Couldn't find "${from}" by name in the code or the import — it may be built dynamically. Rename it in the code.` };
+          next = r.code;
+          imports = r.imports;
+          importsChanged ||= r.importsChanged;
+        }
+        // Paint keyed to a part follows its new name (put back if the run fails).
+        const rekeyed: PaintRekey[] = [];
+        targets.forEach((from, i) => {
+          for (const reg of getRegions()) {
+            const d = reg.descriptor;
+            if (descriptorPartLabel(d) !== from) continue;
+            const nd: RegionDescriptor = d.kind === 'byLabel' ? { ...d, label: names[i] } : { ...d, withinPart: names[i] };
+            rekeyed.push({ id: reg.id, before: d, after: nd, triangles: reg.triangles, perTriColors: reg.perTriColors });
+            setRegionDescriptor(reg.id, nd, reg.triangles, reg.perTriColors);
+          }
+        });
+        const r = await finish([], 'Rename parts', `Renamed ${what}`, next, importsChanged ? imports : undefined, rekeyed);
+        if ('ok' in r) selectObjectParts(names.map(n => `part:${n}`));
+        else for (const k of rekeyed) setRegionDescriptor(k.id, k.before, k.triangles, k.perTriColors);
+        return r;
+      }
+      case 'cut': {
+        if (targets.length !== 1) return { error: 'Select exactly one part to cut with — it is subtracted from the rest of the object.' };
+        const blocked = needFree('cut with'); if (blocked) return blocked;
+        return finish([{ kind: 'cut', part: targets[0] }], `Cut with ${targets[0]}`, `Cut the rest of the object with "${targets[0]}"`);
+      }
+      default:
+        return { error: `Unknown part action "${action}". Actions: grid, pack, bed, align, distribute, drop, center, snap, move, rotate, layFlat, mirror, scale, duplicate, array, gridArray, group, ungroup, rename, cut.` };
+    }
   }
 
   // === Recover deleted ===
@@ -8677,6 +9557,145 @@ async function main() {
   surfaceReapplyEl.addEventListener('click', () => { void reapplySurfaceTextures(); });
   viewportPane.appendChild(surfaceReapplyEl);
 
+  // The open object's parts/pieces actions (the object list's part rows and
+  // the Parts panel). Each goes through the same window.partwright method an
+  // agent would call (UI ↔ API parity); failures surface as a toast.
+  const objectPartsActions: ObjectPartsActions = {
+    getView: () => currentObjectPartsView(),
+    getSelectedKeys: () => getSelectedPartKeys(),
+    getIsolatedKey: () => isolatedPartKey,
+    select: (key, opts) => {
+      const r = key !== null && opts?.extend ? toggleObjectPartInSelection(key) : selectObjectPart(key);
+      if (typeof r === 'string') showToast(r, { variant: 'warn' });
+    },
+    selectKeys: (keys) => {
+      const r = selectObjectParts(keys);
+      if (typeof r === 'string') showToast(r, { variant: 'warn' });
+    },
+    isolate: (keys) => {
+      const r = isolateObjectParts(keys);
+      if (typeof r === 'string') showToast(r, { variant: 'warn' });
+    },
+    info: (key) => objectPartInfo(key),
+    setPartColor: (name, hex) => { railResult(partwrightAPI.setObjectPartColor(name, hex)); },
+    resetPartColor: (name) => { railResult(partwrightAPI.resetObjectPartColor(name)); },
+    goToCode: (name) => { railResult(partwrightAPI.goToObjectPart(name)); },
+    renamePart: async (name, next) => {
+      if (isReadOnlyViewer()) return;
+      if (railResult(await partwrightAPI.renameObjectPart(name, next))) showToast(`Renamed part "${name}" → "${next}"`, { variant: 'success' });
+    },
+    bakePartColor: async (name) => {
+      if (isReadOnlyViewer()) return;
+      if (railResult(await partwrightAPI.bakeObjectPartColor(name))) showToast(`Baked "${name}"’s colour into the code`, { variant: 'success' });
+    },
+    editWithAI: (keys) => {
+      if (partSelectionSignature(getSelectedPartKeys()) !== partSelectionSignature(keys)) selectObjectParts(keys);
+      prefillAiInput(`Change ${describePartKeys(keys)}: `);
+    },
+    canArrange: (name) => {
+      // Parsed from the code; cached per code string (the drawer redraws on
+      // every mesh update).
+      const code = getValue();
+      if (arrangeNamesCache?.code !== code) {
+        let names: string[] = [];
+        try { names = apiListParts().map(p => p.name); } catch { /* unparseable code → nothing arrangeable */ }
+        arrangeNamesCache = { code, names };
+      }
+      return arrangeNamesCache.names.includes(name);
+    },
+    arrange: (name) => {
+      const r = apiEnterArrange();
+      if (!r.ok) { showToast(r.reason ?? 'Arrange mode isn’t available for this object.', { variant: 'warn' }); return; }
+      apiSetSelection([name]);
+    },
+    extractPiece: async (index) => {
+      if (isReadOnlyViewer()) return;
+      if (!(await confirmDialog(`Move piece ${index + 1} into its own new object? Both objects get a piece filter around their code — the original's version history keeps the unfiltered code.`, { title: 'Extract piece', confirmLabel: 'Extract' }))) return;
+      const r = await partwrightAPI.extractObjectPiece(index);
+      if (railResult(r) && 'object' in r) showToast(`Piece ${index + 1} is now "${(r.object as { name: string }).name}"`, { variant: 'success' });
+    },
+    moveSelection: async (keys, separate) => {
+      if (isReadOnlyViewer()) return;
+      const what = describePartKeys(keys);
+      const many = separate && keys.length > 1;
+      const ok = await confirmDialog(many
+        ? `Split ${what} into ${keys.length} new objects, one each? The original's code is rewritten to leave them out — its version history keeps the code as it is now.`
+        : `Move ${what} into a new object? The original's code is rewritten to leave ${keys.length > 1 ? 'them' : 'it'} out — its version history keeps the code as it is now.`,
+      { title: many ? 'Split into objects' : 'Move to new object', confirmLabel: many ? 'Split' : 'Move' });
+      if (!ok) return;
+      const r = await moveObjectSelection(keys, separate, many ? 'Split into objects' : 'Move to new object');
+      if ('error' in r) { showToast(r.error, { variant: 'warn' }); return; }
+      showToast(r.objects.length === 1 ? `Moved ${what} to "${r.objects[0].name}"` : `Split ${what} into ${r.objects.length} objects`, { variant: 'success' });
+    },
+    hideMany: (keys) => { railResult(partwrightAPI.setObjectPartHidden(keys.map(k => (k.startsWith('part:') ? k.slice(5) : { piece: Number(k.slice(6)) })), true)); },
+    deleteMany: async (keys) => {
+      const targets = keys.map(k => (k.startsWith('part:') ? { part: k.slice(5) } : { piece: Number(k.slice(6)) }));
+      selectObjectPart(null);
+      const objectId = getState().currentPart?.id;
+      const r = await deleteObjectPartsOrPieces(targets);
+      if ('error' in r) { showToast(r.error, { variant: 'warn' }); return; }
+      showToast(`Deleted ${describePartKeys(keys)} — added ${r.calls.length} removal lines to the code.`, {
+        variant: 'success',
+        action: {
+          label: 'Undo',
+          run: () => {
+            void restoreObjectPartsOrPieces(r.calls, objectId).then((u) => {
+              if ('error' in u) showToast(u.error, { variant: 'warn' });
+            });
+          },
+        },
+      });
+    },
+    exportPiece: (index) => { railResult(partwrightAPI.exportObjectPiece(index)); },
+    setHidden: (key, hide) => {
+      const r = setObjectPartHidden(key, hide);
+      if (typeof r === 'string') showToast(r, { variant: 'warn' });
+    },
+    getDelete: (key) => (isReadOnlyViewer() || isSharedPreview()
+      ? { show: false }
+      : { show: true, ...(objectPartDeleteBlocker(key) ? { reason: objectPartDeleteBlocker(key)! } : {}) }),
+    deletePart: async (key) => {
+      if (getSelectedPartKeys().includes(key)) selectObjectParts(getSelectedPartKeys().filter(k => k !== key));
+      const target = key.startsWith('part:') ? { part: key.slice(5) } : { piece: Number(key.slice(6)) };
+      const objectId = getState().currentPart?.id;
+      const r = await deleteObjectPartOrPiece(target);
+      if ('error' in r) showToast(r.error, { variant: 'warn' });
+      else {
+        showToast(`Deleted ${r.removed} — added ${r.call} to the code.`, {
+          variant: 'success',
+          action: {
+            label: 'Undo',
+            run: () => {
+              void restoreObjectPartOrPiece(r.call, objectId).then((u) => {
+                if ('error' in u) showToast(u.error, { variant: 'warn' });
+              });
+            },
+          },
+        });
+      }
+    },
+    reassignPaint: (regionId, label) => { railResult(partwrightAPI.reassignPaint(regionId, label)); },
+    keepPaint: (regionId) => { railResult(partwrightAPI.keepUnmatchedPaint(regionId)); },
+    deletePaint: (regionId) => { removeRegion(regionId); refreshObjectParts(); },
+    acceptRename: (from, to) => {
+      for (const r of getRegions().filter(x => descriptorPartLabel(x.descriptor) === from)) partwrightAPI.reassignPaint(r.id, to);
+      renameSuggestions = renameSuggestions.filter(s => s.from !== from);
+      refreshObjectParts();
+    },
+    openPartsPanel: () => openPartsPanel(),
+  };
+  initPartsPanel({
+    parts: objectPartsActions,
+    run: (action, opts) => runPartAction(action, opts as PartActionOpts),
+    undo: () => undoPartEdit(),
+    canUndo: () => partEditUndo.some(u => u.objectId === getState().currentPart?.id),
+    canEditParts: () => getActiveLanguage() === 'manifold-js' && !isReadOnlyViewer() && !isSharedPreview(),
+    groups: () => new Set(findPartOpLines(getValue()).flatMap(x => (x.op.kind === 'group' ? [x.op.as] : []))),
+    nudgeStep: () => getConfig().ui.partNudgeStep,
+    snapStep: () => getConfig().ui.partSnapStep,
+    suggestGroupName: () => freshPartName('Group', new Set(), 1),
+  });
+
   // Parts rail — IDE-style list of the session's parts.
   createPartList(partsRail, {
     onSelectPart: (partId: string) => {
@@ -8752,125 +9771,7 @@ async function main() {
     // The open object's parts/pieces section. Each action goes through the
     // same window.partwright method an agent would call (UI ↔ API parity);
     // failures surface as a toast.
-    objectParts: {
-      getView: () => currentObjectPartsView(),
-      getSelectedKeys: () => getSelectedPartKeys(),
-      getIsolatedKey: () => isolatedPartKey,
-      select: (key, opts) => {
-        const r = key !== null && opts?.extend ? toggleObjectPartInSelection(key) : selectObjectPart(key);
-        if (typeof r === 'string') showToast(r, { variant: 'warn' });
-      },
-      isolate: (keys) => {
-        const r = isolateObjectParts(keys);
-        if (typeof r === 'string') showToast(r, { variant: 'warn' });
-      },
-      info: (key) => objectPartInfo(key),
-      setPartColor: (name, hex) => { railResult(partwrightAPI.setObjectPartColor(name, hex)); },
-      resetPartColor: (name) => { railResult(partwrightAPI.resetObjectPartColor(name)); },
-      goToCode: (name) => { railResult(partwrightAPI.goToObjectPart(name)); },
-      renamePart: async (name, next) => {
-        if (isReadOnlyViewer()) return;
-        if (railResult(await partwrightAPI.renameObjectPart(name, next))) showToast(`Renamed part "${name}" → "${next}"`, { variant: 'success' });
-      },
-      bakePartColor: async (name) => {
-        if (isReadOnlyViewer()) return;
-        if (railResult(await partwrightAPI.bakeObjectPartColor(name))) showToast(`Baked "${name}"’s colour into the code`, { variant: 'success' });
-      },
-      editWithAI: (keys) => {
-        if (partSelectionSignature(getSelectedPartKeys()) !== partSelectionSignature(keys)) selectObjectParts(keys);
-        prefillAiInput(`Change ${describePartKeys(keys)}: `);
-      },
-      canArrange: (name) => {
-        // Parsed from the code; cached per code string (the drawer redraws on
-        // every mesh update).
-        const code = getValue();
-        if (arrangeNamesCache?.code !== code) {
-          let names: string[] = [];
-          try { names = apiListParts().map(p => p.name); } catch { /* unparseable code → nothing arrangeable */ }
-          arrangeNamesCache = { code, names };
-        }
-        return arrangeNamesCache.names.includes(name);
-      },
-      arrange: (name) => {
-        const r = apiEnterArrange();
-        if (!r.ok) { showToast(r.reason ?? 'Arrange mode isn’t available for this object.', { variant: 'warn' }); return; }
-        apiSetSelection([name]);
-      },
-      extractPiece: async (index) => {
-        if (isReadOnlyViewer()) return;
-        if (!(await confirmDialog(`Move piece ${index + 1} into its own new object? Both objects get a piece filter around their code — the original's version history keeps the unfiltered code.`, { title: 'Extract piece', confirmLabel: 'Extract' }))) return;
-        const r = await partwrightAPI.extractObjectPiece(index);
-        if (railResult(r) && 'object' in r) showToast(`Piece ${index + 1} is now "${(r.object as { name: string }).name}"`, { variant: 'success' });
-      },
-      moveSelection: async (keys, separate) => {
-        if (isReadOnlyViewer()) return;
-        const what = describePartKeys(keys);
-        const many = separate && keys.length > 1;
-        const ok = await confirmDialog(many
-          ? `Split ${what} into ${keys.length} new objects, one each? The original's code is rewritten to leave them out — its version history keeps the code as it is now.`
-          : `Move ${what} into a new object? The original's code is rewritten to leave ${keys.length > 1 ? 'them' : 'it'} out — its version history keeps the code as it is now.`,
-        { title: many ? 'Split into objects' : 'Move to new object', confirmLabel: many ? 'Split' : 'Move' });
-        if (!ok) return;
-        const r = await moveObjectSelection(keys, separate, many ? 'Split into objects' : 'Move to new object');
-        if ('error' in r) { showToast(r.error, { variant: 'warn' }); return; }
-        showToast(r.objects.length === 1 ? `Moved ${what} to "${r.objects[0].name}"` : `Split ${what} into ${r.objects.length} objects`, { variant: 'success' });
-      },
-      hideMany: (keys) => { railResult(partwrightAPI.setObjectPartHidden(keys.map(k => (k.startsWith('part:') ? k.slice(5) : { piece: Number(k.slice(6)) })), true)); },
-      deleteMany: async (keys) => {
-        const targets = keys.map(k => (k.startsWith('part:') ? { part: k.slice(5) } : { piece: Number(k.slice(6)) }));
-        selectObjectPart(null);
-        const objectId = getState().currentPart?.id;
-        const r = await deleteObjectPartsOrPieces(targets);
-        if ('error' in r) { showToast(r.error, { variant: 'warn' }); return; }
-        showToast(`Deleted ${describePartKeys(keys)} — added ${r.calls.length} removal lines to the code.`, {
-          variant: 'success',
-          action: {
-            label: 'Undo',
-            run: () => {
-              void restoreObjectPartsOrPieces(r.calls, objectId).then((u) => {
-                if ('error' in u) showToast(u.error, { variant: 'warn' });
-              });
-            },
-          },
-        });
-      },
-      exportPiece: (index) => { railResult(partwrightAPI.exportObjectPiece(index)); },
-      setHidden: (key, hide) => {
-        const r = setObjectPartHidden(key, hide);
-        if (typeof r === 'string') showToast(r, { variant: 'warn' });
-      },
-      getDelete: (key) => (isReadOnlyViewer() || isSharedPreview()
-        ? { show: false }
-        : { show: true, ...(objectPartDeleteBlocker(key) ? { reason: objectPartDeleteBlocker(key)! } : {}) }),
-      deletePart: async (key) => {
-        if (getSelectedPartKeys().includes(key)) selectObjectParts(getSelectedPartKeys().filter(k => k !== key));
-        const target = key.startsWith('part:') ? { part: key.slice(5) } : { piece: Number(key.slice(6)) };
-        const objectId = getState().currentPart?.id;
-        const r = await deleteObjectPartOrPiece(target);
-        if ('error' in r) showToast(r.error, { variant: 'warn' });
-        else {
-          showToast(`Deleted ${r.removed} — added ${r.call} to the code.`, {
-            variant: 'success',
-            action: {
-              label: 'Undo',
-              run: () => {
-                void restoreObjectPartOrPiece(r.call, objectId).then((u) => {
-                  if ('error' in u) showToast(u.error, { variant: 'warn' });
-                });
-              },
-            },
-          });
-        }
-      },
-      reassignPaint: (regionId, label) => { railResult(partwrightAPI.reassignPaint(regionId, label)); },
-      keepPaint: (regionId) => { railResult(partwrightAPI.keepUnmatchedPaint(regionId)); },
-      deletePaint: (regionId) => { removeRegion(regionId); refreshObjectParts(); },
-      acceptRename: (from, to) => {
-        for (const r of getRegions().filter(x => descriptorPartLabel(x.descriptor) === from)) partwrightAPI.reassignPaint(r.id, to);
-        renameSuggestions = renameSuggestions.filter(s => s.from !== from);
-        refreshObjectParts();
-      },
-    },
+    objectParts: objectPartsActions,
     onReorderParts: async (layout) => {
       if (isReadOnlyViewer()) return;
       await reorderParts(layout);
@@ -11590,6 +12491,7 @@ async function main() {
     exports: {
       canExport: () => currentMeshData !== null && !isSharedPreview(),
       objectCount: () => getState().parts.length,
+      singleObjectCanSplit: () => singleObjectCanSplit(),
       objects: () => getState().parts.map(o => ({ id: o.id, name: o.name, ...(o.group ? { group: o.group } : {}) })),
       bambuChoices: () => ({ printers: BAMBU_PRINTERS.map(x => x.id), nozzles: [...BAMBU_NOZZLES], filaments: BAMBU_FILAMENT_TYPES.map(x => x.id) }),
       versionIndices: async () => (await listCurrentVersions()).map(v => v.index),
@@ -11692,25 +12594,17 @@ async function main() {
     refreshPartSelectionVisual();
     refreshObjectParts();
   });
-  // Double-click the model to select the part under the cursor (or the piece,
-  // when that geometry isn't labelled); double-click empty space to clear.
-  // Shift/Ctrl/⌘-double-click adds it to (or takes it out of) the selection.
-  // Skipped while a click-driven tool owns the viewport.
-  getCanvas().addEventListener('dblclick', (e) => {
-    // Click-driven tools own the viewport while they're on.
-    if (isPaintOpen() || apiIsArrangeActive() || isAnnotateOpen() || isAssemblyViewOpen()) return;
-    const extend = e.shiftKey || e.ctrlKey || e.metaKey;
+  /** The selection key of the part under the pointer — the most specific
+   *  (smallest) part containing the hit triangle, or its piece when that
+   *  geometry isn't labelled. Null on empty space. */
+  const partKeyAtEvent = (e: MouseEvent): string | null => {
     const hit = pickFace(e);
-    if (!hit) {
-      if (!extend && getSelectedPartKeys().length > 0) selectObjectPart(null);
-      return;
-    }
+    if (!hit) return null;
     const shown = lastDisplayedMesh ?? currentMeshData;
     const base = objectPartsMesh();
     const summary = currentObjectPartsSummary();
-    if (!shown || !base || !summary) return;
+    if (!shown || !base || !summary) return null;
     const baseTri = shown.triVerts === base.triVerts ? hit.triangleIndex : baseTriangleOf(shown, base, hit.triangleIndex);
-    // The most specific (smallest) part containing the triangle.
     let key: string | null = null;
     let best = Infinity;
     for (const p of summary.parts) {
@@ -11720,9 +12614,96 @@ async function main() {
       const piece = summary.pieces.find(p => p.triangles.includes(baseTri));
       if (piece) key = `piece:${piece.index}`;
     }
-    if (!key) return;
+    return key;
+  };
+  // Click-driven tools own the viewport while they're on.
+  // Click-driven tools own Shift-clicks, Shift-drags and keys while they're on —
+  // and so may any docked tool panel other than Parts (Part Detection's
+  // Shift-drag selection, Surface's pick mode…), so those block part selection.
+  const viewportToolActive = () => isPaintOpen() || apiIsArrangeActive() || isAnnotateOpen() || isAssemblyViewOpen()
+    || getMeasureState().active || (!!getActiveViewportPanel() && !isPartsPanelOpen());
+  // Double-click the model to select the part under the cursor (or the piece,
+  // when that geometry isn't labelled); double-click empty space to clear.
+  // Ctrl/⌘-double-click adds it to (or takes it out of) the selection; a
+  // Shift-click (below) already does, so Shift-double-click is left to it.
+  getCanvas().addEventListener('dblclick', (e) => {
+    if (viewportToolActive() || e.shiftKey) return;
+    const extend = e.ctrlKey || e.metaKey;
+    const key = partKeyAtEvent(e);
+    if (!key) {
+      if (!extend && !pickFace(e) && getSelectedPartKeys().length > 0) selectObjectPart(null);
+      return;
+    }
     if (extend) toggleObjectPartInSelection(key);
     else selectObjectPart(getSelectedPartKey() === key ? null : key);
+  });
+  // Shift-click toggles the part under the cursor; Shift-drag box-selects.
+  installPartBoxSelect({
+    canvas: getCanvas(),
+    isBlocked: viewportToolActive,
+    keyAt: partKeyAtEvent,
+    keysInRect: (rect) => partKeysInScreenRect(rect),
+    toggle: (key) => { toggleObjectPartInSelection(key); },
+    add: (keys) => {
+      const current = getSelectedPartKeys();
+      // A box adds to a selection of the same kind (parts or pieces); a
+      // different kind starts over.
+      const kind = (k: string) => k.split(':')[0];
+      const keep = current.length > 0 && kind(current[0]) === kind(keys[0]) ? current : [];
+      selectObjectParts([...keep, ...keys]);
+    },
+  });
+
+  // Part-selection keys, for when the viewport or the object list has focus
+  // (never while typing, inside a dialog, or with a click-driven tool on):
+  // ⌘/Ctrl-A selects every part, Esc clears the selection, Delete/Backspace
+  // deletes the selection, H hides it, Shift-H shows every hidden part.
+  document.addEventListener('keydown', (e) => {
+    if (e.defaultPrevented || e.altKey || isCommandPaletteOpen() || viewportToolActive()) return;
+    const t = e.target as HTMLElement | null;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.closest('.cm-editor'))) return;
+    if (document.querySelector('[aria-modal="true"]')) return;
+    // Only with focus on the page itself, the viewport, the object list or the
+    // Parts panel — not a button in the AI panel or another tab.
+    const viewportPane = getCanvas().parentElement;
+    if (t && t !== document.body && !(viewportPane?.contains(t) || t.closest('#parts-rail, #parts-panel'))) return;
+    if (!getCanvas().isConnected || getCanvas().offsetParent === null) return;
+    const mod = e.metaKey || e.ctrlKey;
+    const key = e.key.toLowerCase();
+    const selected = getSelectedPartKeys();
+    if (mod && !e.shiftKey && key === 'a') {
+      const summary = currentObjectPartsSummary();
+      if (!summary) return;
+      const hidden = hiddenKeysForCurrentObject();
+      const all = summary.parts.length > 0
+        ? summary.parts.filter(p => p.triangles.size > 0).map(p => `part:${p.name}`)
+        : summary.pieces.length > 1 ? summary.pieces.map(p => `piece:${p.index}`) : [];
+      const visible = all.filter(k => !hidden.has(k));
+      if (visible.length === 0) return;
+      e.preventDefault();
+      selectObjectParts(visible);
+      return;
+    }
+    if (!mod && e.shiftKey && key === 'h') {
+      const hidden = [...hiddenKeysForCurrentObject()];
+      if (hidden.length === 0) return;
+      e.preventDefault();
+      for (const k of hidden) objectPartsActions.setHidden(k, false);
+      return;
+    }
+    if (mod || selected.length === 0) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      selectObjectPart(null);
+    } else if (e.key === 'Delete' || e.key === 'Backspace') {
+      if (selected.some(k => k === 'unlabeled' || !objectPartsActions.getDelete(k).show)) return;
+      e.preventDefault();
+      if (selected.length === 1) void objectPartsActions.deletePart(selected[0]);
+      else void objectPartsActions.deleteMany(selected);
+    } else if (key === 'h' && !e.shiftKey) {
+      e.preventDefault();
+      for (const k of selected) objectPartsActions.setHidden(k, true);
+    }
   });
 
   // Any region change reconciles the working mesh: incremental stroke append,
@@ -14023,10 +15004,15 @@ async function main() {
      *  part's latest version is baked WITH its colours. `{ plateLayout }` (Bambu
      *  only) controls plate distribution: `'separate'` (default, one part per
      *  plate), `'grid'` (all parts on one plate), or `'group'` (each part group on
-     *  its own plate). `{ packStrategy }` (both modes) shapes the arrangement:
-     *  `'grid'` (default, compact centred cluster), `'horizontal'`, or `'vertical'`.
-     *  `{ ok, filename, parts }` or `{ error }`. */
-    export3MFObjects(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }) {
+     *  its own plate — and each split object on its own), or `'custom'` (with
+     *  `{ plates: { '<item or object name>': n } }`). `{ packStrategy }` (both
+     *  modes) shapes the arrangement: `'grid'` (default, compact centred
+     *  cluster), `'horizontal'`, or `'vertical'`. `{ split: { '<object>':
+     *  'pieces' | 'parts' } }` writes one 3MF object per separate piece or per
+     *  labelled part (modelled orientation kept); `{ exclude: ['<object> ·
+     *  <item>'] }` leaves items out — see listExportItems() for the names.
+     *  `{ ok, filename, objects, items? }` or `{ error }`. */
+    export3MFObjects(partIds?: string[], filename?: string, opts?: ApiExportOpts) {
       return export3MFPartsApi(partIds, filename, opts);
     },
 
@@ -14036,7 +15022,7 @@ async function main() {
      *  exported file back without the browser download path. `{ bambu }` as in
      *  export3MFParts (default true), plus `{ plateLayout }` ('separate' | 'grid' |
      *  'group') and `{ packStrategy }` ('grid' | 'horizontal' | 'vertical'). */
-    export3MFObjectsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }) {
+    export3MFObjectsData(partIds?: string[], filename?: string, opts?: ApiExportOpts) {
       return export3MFPartsDataApi(partIds, filename, opts);
     },
 
@@ -14046,13 +15032,13 @@ async function main() {
      *  multi-part session. Pass an array of part ids (default: every part); each
      *  part's latest version is baked WITH its colours. `{ ok, filename, parts }` or
      *  `{ error }`. */
-    exportOBJObjects(partIds?: string[], filename?: string) {
-      return exportPartsApi('OBJ', baked => buildOBJPartsBlob(baked, filename), partIds, filename);
+    exportOBJObjects(partIds?: string[], filename?: string, opts?: ApiExportSplitOpts) {
+      return exportPartsApi('OBJ', baked => buildOBJPartsBlob(baked, filename), partIds, filename, opts);
     },
     /** Bytes-returning twin of {@link exportOBJParts} — RETURNS
      *  `{ filename, mimeType, base64, sizeBytes, parts }` (or `{ error }`). */
-    exportOBJObjectsData(partIds?: string[], filename?: string) {
-      return exportPartsDataApi('OBJ', baked => buildOBJPartsBlob(baked, filename), partIds, filename);
+    exportOBJObjectsData(partIds?: string[], filename?: string, opts?: ApiExportSplitOpts) {
+      return exportPartsDataApi('OBJ', baked => buildOBJPartsBlob(baked, filename), partIds, filename, opts);
     },
 
     /** Bundle several Session Parts into ONE STL download — a `.zip` with one `.stl`
@@ -14060,33 +15046,42 @@ async function main() {
      *  distinct). The UI equivalent is the "STL" export in a multi-part session. Pass
      *  an array of part ids (default: every part). `{ ok, filename, parts }` or
      *  `{ error }`. */
-    exportSTLObjects(partIds?: string[], filename?: string) {
-      return exportPartsApi('STL', baked => buildSTLPartsBlob(baked, filename), partIds, filename);
+    exportSTLObjects(partIds?: string[], filename?: string, opts?: ApiExportSplitOpts) {
+      return exportPartsApi('STL', baked => buildSTLPartsBlob(baked, filename), partIds, filename, opts);
     },
     /** Bytes-returning twin of {@link exportSTLParts}. */
-    exportSTLObjectsData(partIds?: string[], filename?: string) {
-      return exportPartsDataApi('STL', baked => buildSTLPartsBlob(baked, filename), partIds, filename);
+    exportSTLObjectsData(partIds?: string[], filename?: string, opts?: ApiExportSplitOpts) {
+      return exportPartsDataApi('STL', baked => buildSTLPartsBlob(baked, filename), partIds, filename, opts);
     },
 
     /** Bundle several Session Parts into ONE GLB — each part a named node in one glTF
      *  scene, grid-arranged; painted parts export as vertex colours. The UI
      *  equivalent is the "GLB" export in a multi-part session. Pass an array of part
      *  ids (default: every part). `{ ok, filename, parts }` or `{ error }`. */
-    exportGLBObjects(partIds?: string[], filename?: string) {
-      return exportPartsApi('GLB', baked => buildGLBPartsBlob(baked, filename), partIds, filename);
+    exportGLBObjects(partIds?: string[], filename?: string, opts?: ApiExportSplitOpts) {
+      return exportPartsApi('GLB', baked => buildGLBPartsBlob(baked, filename), partIds, filename, opts);
     },
     /** Bytes-returning twin of {@link exportGLBParts}. */
-    exportGLBObjectsData(partIds?: string[], filename?: string) {
-      return exportPartsDataApi('GLB', baked => buildGLBPartsBlob(baked, filename), partIds, filename);
+    exportGLBObjectsData(partIds?: string[], filename?: string, opts?: ApiExportSplitOpts) {
+      return exportPartsDataApi('GLB', baked => buildGLBPartsBlob(baked, filename), partIds, filename, opts);
+    },
+
+    /** What each object can split into for an export (the export picker's
+     *  Split menu as data): per object `{ id, name, size, pieceCount, splits,
+     *  pieces, parts }`, where `pieces` / `parts` list the items (by export
+     *  name, "<object> · <item>") or are null when that split doesn't apply.
+     *  Use the names with the multi-object exports' `exclude` / `plates`. */
+    listExportItems(objectIds?: string[]) {
+      return listExportItemsApi(objectIds);
     },
 
     // Deprecated pre-rename aliases — "parts" were renamed to "objects" (a part
     // is now a labelled piece inside one object). Kept so older prompts, agents,
     // and scripts keep working; prefer the *Objects* names.
-    export3MFParts(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }) {
+    export3MFParts(partIds?: string[], filename?: string, opts?: ApiExportOpts) {
       return partwrightAPI.export3MFObjects(partIds, filename, opts);
     },
-    export3MFPartsData(partIds?: string[], filename?: string, opts?: { bambu?: boolean; printer?: string; nozzle?: string; filament?: string; plateLayout?: string; packStrategy?: string; mergeColors?: number; maxColors?: number; colorMap?: Record<string, string> }) {
+    export3MFPartsData(partIds?: string[], filename?: string, opts?: ApiExportOpts) {
       return partwrightAPI.export3MFObjectsData(partIds, filename, opts);
     },
     exportOBJParts(partIds?: string[], filename?: string) { return partwrightAPI.exportOBJObjects(partIds, filename); },
@@ -16389,6 +17384,14 @@ async function main() {
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       if (from === to) return { error: 'renameObjectPart: the new name is the same as the old one.' };
       if ((currentLabelMap?.get(to)?.size ?? 0) > 0) return { error: `renameObjectPart: there's already a part named "${to}".` };
+      // A part named by part-edit lines (a copy, a group) or an import's parts
+      // is renamed there too — the Parts panel's rename does all of it.
+      if (getActiveLanguage() === 'manifold-js'
+        && (findPartOpLines(getValue()).some(x => partOpNames(x.op).includes(from))
+          || getActiveImports().some(m => m.parts?.names.includes(from)))) {
+        const r = await runPartAction('rename', { parts: [from], pattern: to });
+        return 'error' in r ? { error: `renameObjectPart: ${r.error}` } : { ...r, renamed: { from, to } };
+      }
       const { code, count } = renameLabelInCode(getValue(), from, to);
       if (count === 0) return { error: `renameObjectPart: couldn't find "${from}" as a label string in the code — it may be built dynamically. Rename it in the code by hand.` };
       const pre = await preflightRewrite(code, 'renameObjectPart');
@@ -16406,6 +17409,39 @@ async function main() {
       if (failed) return { ...res, error: `renameObjectPart: ${failed}` };
       if (wasSelected && (currentLabelMap?.get(to)?.size ?? 0) > 0) selectObjectPart(`part:${to}`);
       return { ...res, renamed: { from, to, occurrences: count } };
+    },
+
+    /** The Parts panel's layout / copy / group actions on the open object's
+     *  parts (opts.parts, else the selected parts, else every part). Each
+     *  writes `api.movePart(…)`-style lines into the code, runs, and saves a
+     *  version. -> { ok, message, parts, version? } or { error } */
+    async partAction(action: string, opts: Record<string, unknown> = {}) {
+      const check = guard(() => {
+        assertEnum(action, PART_ACTIONS, 'partAction(action)');
+        assertObject(opts, 'partAction(opts)');
+        assertNoUnknownKeys(opts, ['parts', 'axis', 'mode', 'gap', 'step', 'offset', 'degrees', 'factor', 'count', 'cols', 'rows', 'name', 'pattern'], 'partAction(opts)');
+        if (opts.parts !== undefined) assertArray(opts.parts, 'partAction(opts.parts)').forEach((n, i) => assertString(n, `partAction(opts.parts[${i}])`, { allowEmpty: false }));
+        if (opts.axis !== undefined) assertEnum(opts.axis, ['x', 'y', 'z'] as const, 'partAction(opts.axis)');
+        if (opts.mode !== undefined) assertEnum(opts.mode, ['min', 'center', 'max'] as const, 'partAction(opts.mode)');
+        for (const k of ['gap', 'count', 'cols', 'rows'] as const) if (opts[k] !== undefined) assertNumber(opts[k], `partAction(opts.${k})`);
+        if (typeof opts.gap === 'number' && opts.gap < 0) throw new ValidationError('partAction(opts.gap): must be 0 or more.');
+        for (const k of ['offset', 'degrees'] as const) if (opts[k] !== undefined) assertNumberTuple(opts[k], 3, `partAction(opts.${k})`);
+        // step: a number for snap, [x, y] for gridArray, [x, y, z] for array.
+        if (opts.step !== undefined && !(action === 'snap' && typeof opts.step === 'number')) assertNumberTuple(opts.step, action === 'gridArray' ? 2 : 3, 'partAction(opts.step)');
+        if (opts.factor !== undefined && typeof opts.factor !== 'number') assertNumberTuple(opts.factor, 3, 'partAction(opts.factor)');
+        for (const k of ['name', 'pattern'] as const) if (opts[k] !== undefined) assertString(opts[k], `partAction(opts.${k})`, { allowEmpty: false });
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const o = { ...opts } as PartActionOpts;
+      // gridArray's step is [x, y]; pad it to the shared Vec3 shape.
+      if (Array.isArray(opts.step) && opts.step.length === 2) o.step = [opts.step[0] as number, opts.step[1] as number, 0];
+      return runPartAction(action, o);
+    },
+
+    /** Undo the open object's last part edit (partAction / the Parts panel). -> { ok, undone } or { error } */
+    async undoPartEdit() {
+      return undoPartEdit();
     },
 
     /** Write part `name`'s current drawn colour into the code as
@@ -21895,6 +22931,8 @@ async function main() {
         'setObjectPartColor': { signature: "setObjectPartColor(name, '#rrggbb' | [r,g,b]) -- Fill a whole part (recolours its fill in place, else adds a byLabel region) -> {id, name, triangles}", docs: '/ai.md#editing-parts-from-the-objects-list' },
         'resetObjectPartColor': { signature: 'resetObjectPartColor(name) -- Remove the paint filling a part (back to its code colour) -> {ok, removed}', docs: '/ai.md#editing-parts-from-the-objects-list' },
         'goToObjectPart': { signature: 'goToObjectPart(name) -- Reveal the part\'s label in the code editor -> {ok, line}', docs: '/ai.md#editing-parts-from-the-objects-list' },
+        'partAction': { signature: "await partAction(action, {parts?, axis?, mode?, gap?, step?, offset?, degrees?, factor?, count?, cols?, rows?, name?, pattern?}) -- Arrange / copy / group parts as api.movePart-style code lines (grid, pack, bed, align, distribute, drop, center, snap, move, rotate, layFlat, mirror, scale, duplicate, array, gridArray, group, ungroup, rename, cut); parts = opts.parts, else every part; runAndSave -> {ok, message, parts, version}", docs: '/ai.md#arranging-copying-and-grouping-parts' },
+        'undoPartEdit': { signature: 'await undoPartEdit() -- Undo the open object\'s last partAction -> {ok, undone}', docs: '/ai.md#arranging-copying-and-grouping-parts' },
         'renameObjectPart': { signature: 'await renameObjectPart(from, to) -- Rename a part in code literals + its paint, then runAndSave -> {...runAndSave, renamed}', docs: '/ai.md#editing-parts-from-the-objects-list' },
         'bakeObjectPartColor': { signature: "await bakeObjectPartColor(name) -- Write the part's colour into code as api.paint.label (manifold-js), drop its paint fill, runAndSave -> {...runAndSave, baked}", docs: '/ai.md#editing-parts-from-the-objects-list' },
         'extractObjectPiece': { signature: 'await extractObjectPiece(index) -- Move a piece into a new object (piece filters on both; manifold-js) -> {ok, object, original}', docs: '/ai.md#editing-parts-from-the-objects-list' },
@@ -22051,14 +23089,15 @@ async function main() {
         'exportExplode':   { signature: 'await exportExplode({seconds?, spread?}) -- Record an exploded-view video: components ease apart, hold, reassemble (needs a multi-component model) -> {ok, filename}', docs: '/ai.md#console-api--windowpartwright' },
         'exportParamSweep': { signature: 'await exportParamSweep(param, from, to, {steps?, seconds?, pingPong?}) -- Animate a Customizer parameter across a range and download the video (manifold-js sessions) -> {ok, filename}', docs: '/ai.md#console-api--windowpartwright' },
         'publish':         { signature: 'publish(platform?) -- Open the assisted-publish modal for Printables/MakerWorld/Thingiverse/Thangs (no public upload API, so it prepares the file + cover + clipboard details and opens the upload page). platform optionally preselects one site', docs: '/ai/file-io.md' },
-        'export3MFObjects': { signature: 'await export3MFObjects(objectIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?, mergeColors?, maxColors?, colorMap?}) -- Bundle objects into one 3MF; bambu:true (default) = Bambu/Orca project (printer e.g. "p1s"/"h2c", nozzle "0.4", filament "pla"/"petg"…), false = generic multi-object grid. plateLayout: "separate" (default, one object/plate) | "grid" (all on one plate) | "group" (each object group on its own plate). packStrategy: "grid" (default, centered cluster) | "horizontal" | "vertical". mergeColors/maxColors/colorMap as in export3MF -> {ok, filename, objects}', docs: '/ai/file-io.md' },
-        'export3MFObjectsData': { signature: 'await export3MFObjectsData(objectIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?, mergeColors?, maxColors?, colorMap?}) -- Same as export3MFObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
-        'exportOBJObjects': { signature: 'await exportOBJObjects(objectIds?, filename?) -- Bundle objects into one OBJ (named objects, grid-arranged; .mtl in a .zip if painted) -> {ok, filename, objects}', docs: '/ai/file-io.md' },
-        'exportOBJObjectsData': { signature: 'await exportOBJObjectsData(objectIds?, filename?) -- Same as exportOBJObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
-        'exportSTLObjects': { signature: 'await exportSTLObjects(objectIds?, filename?) -- Bundle objects into a .zip of one .stl per object -> {ok, filename, objects}', docs: '/ai/file-io.md' },
-        'exportSTLObjectsData': { signature: 'await exportSTLObjectsData(objectIds?, filename?) -- Same as exportSTLObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
-        'exportGLBObjects': { signature: 'await exportGLBObjects(objectIds?, filename?) -- Bundle objects into one GLB (named nodes, grid-arranged; vertex colours) -> {ok, filename, objects}', docs: '/ai/file-io.md' },
-        'exportGLBObjectsData': { signature: 'await exportGLBObjectsData(objectIds?, filename?) -- Same as exportGLBObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
+        'export3MFObjects': { signature: 'await export3MFObjects(objectIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?, split?, exclude?, plates?, mergeColors?, maxColors?, colorMap?}) -- Bundle objects into one 3MF; bambu:true (default) = Bambu/Orca project (printer e.g. "p1s"/"h2c", nozzle "0.4", filament "pla"/"petg"…), false = generic multi-object grid. split: {"<object>": "pieces"|"parts"} writes one 3MF object per separate piece / labelled part (orientation kept); exclude: ["<object> · <item>"] leaves items out (names from listExportItems). plateLayout: "separate" (default, one object/plate) | "grid" (all on one plate) | "group" (each object group, and each split object, on its own plate) | "custom" (plates: {"<item or object name>": n}). packStrategy: "grid" (default, centered cluster) | "horizontal" | "vertical". mergeColors/maxColors/colorMap as in export3MF -> {ok, filename, objects, items?}', docs: '/ai/file-io.md' },
+        'export3MFObjectsData': { signature: 'await export3MFObjectsData(objectIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?, split?, exclude?, plates?, mergeColors?, maxColors?, colorMap?}) -- Same as export3MFObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
+        'listExportItems': { signature: 'await listExportItems(objectIds?) -- What each object can split into for an export: [{id, name, size, pieceCount, splits, pieces, parts}] where pieces/parts list item names ("<object> · <item>", fused parts flagged) for the export split/exclude/plates options -> {objects}', docs: '/ai/file-io.md' },
+        'exportOBJObjects': { signature: 'await exportOBJObjects(objectIds?, filename?, {split?, exclude?}) -- Bundle objects into one OBJ (named objects, grid-arranged; .mtl in a .zip if painted). split/exclude as in export3MFObjects (one entry per piece / part) -> {ok, filename, objects, items?}', docs: '/ai/file-io.md' },
+        'exportOBJObjectsData': { signature: 'await exportOBJObjectsData(objectIds?, filename?, {split?, exclude?}) -- Same as exportOBJObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
+        'exportSTLObjects': { signature: 'await exportSTLObjects(objectIds?, filename?, {split?, exclude?}) -- Bundle objects into a .zip of one .stl per object. split/exclude as in export3MFObjects (one entry per piece / part) -> {ok, filename, objects, items?}', docs: '/ai/file-io.md' },
+        'exportSTLObjectsData': { signature: 'await exportSTLObjectsData(objectIds?, filename?, {split?, exclude?}) -- Same as exportSTLObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
+        'exportGLBObjects': { signature: 'await exportGLBObjects(objectIds?, filename?, {split?, exclude?}) -- Bundle objects into one GLB (named nodes, grid-arranged; vertex colours). split/exclude as in export3MFObjects (one entry per piece / part) -> {ok, filename, objects, items?}', docs: '/ai/file-io.md' },
+        'exportGLBObjectsData': { signature: 'await exportGLBObjectsData(objectIds?, filename?, {split?, exclude?}) -- Same as exportGLBObjects but RETURNS {filename, mimeType, base64, sizeBytes, objects} instead of downloading', docs: '/ai/file-io.md' },
         'export3MFParts':  { signature: 'await export3MFParts(...) -- DEPRECATED alias of export3MFObjects()', docs: '/ai/file-io.md' },
         'export3MFPartsData': { signature: 'await export3MFPartsData(...) -- DEPRECATED alias of export3MFObjectsData()', docs: '/ai/file-io.md' },
         'exportOBJParts':  { signature: 'await exportOBJParts(...) -- DEPRECATED alias of exportOBJObjects()', docs: '/ai/file-io.md' },

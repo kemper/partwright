@@ -7,6 +7,7 @@ import { buildOffscreenOverlay, disposeOffscreenOverlay } from './viewportRegist
 import { presetIndex } from '../storage/db';
 import type { SessionAttachment, AttachedImage } from '../storage/attachment';
 import { CREASE_ANGLE_DEG, resolveEdgeMode, type EdgeMode } from './edgeMode';
+import { creaseEdgeSegments } from './creaseEdges';
 import { getConfig } from '../config/appConfig';
 export { EDGE_MODES, type EdgeMode } from './edgeMode';
 
@@ -115,17 +116,30 @@ function disposeScene(scene: THREE.Scene): void {
 
 /** Add the chosen edge overlay on top of a scene that already holds the
  *  solid mesh. `wireframe` draws every triangle edge; `crease` draws only
- *  feature edges (via EdgesGeometry past CREASE_ANGLE_DEG); `none` adds
- *  nothing. The overlay shares the solid mesh's geometry for the wireframe
- *  case, and builds a throwaway EdgesGeometry for the crease case —
- *  disposeScene releases both. Crease edges are skipped past
- *  `renderer.creaseEdgeMaxTriangles`: EdgesGeometry is a synchronous
- *  main-thread pass that froze the app for seconds on a dense import. */
+ *  feature edges (past CREASE_ANGLE_DEG, minus micro-steps — see
+ *  creaseEdges.ts); `none` adds nothing. The overlay shares the solid mesh's
+ *  geometry for the wireframe case, and builds a throwaway segment geometry
+ *  for the crease case — disposeScene releases both. Crease edges are
+ *  skipped past `renderer.creaseEdgeMaxTriangles`: the extraction is a
+ *  synchronous main-thread pass that froze the app for seconds on a dense
+ *  import. */
 function addEdgeOverlay(scene: THREE.Scene, geometry: THREE.BufferGeometry, mode: EdgeMode): void {
   if (mode === 'wireframe') {
     scene.add(new THREE.Mesh(geometry, createBlackWireframeMaterial()));
   } else if (mode === 'crease' && triangleCount(geometry) <= getConfig().renderer.creaseEdgeMaxTriangles) {
-    const edges = new THREE.EdgesGeometry(geometry, CREASE_ANGLE_DEG);
+    // EdgesGeometry's creases, minus sub-voxel steps (a scoped round's seam)
+    // that would otherwise outline the edit as if it were a defect (#1112).
+    geometry.computeBoundingBox();
+    const box = geometry.boundingBox!;
+    const diag = box.max.distanceTo(box.min);
+    const segments = creaseEdgeSegments(
+      geometry.getAttribute('position').array,
+      geometry.index ? geometry.index.array : null,
+      CREASE_ANGLE_DEG,
+      getConfig().renderer.creaseMinStep * diag,
+    );
+    const edges = new THREE.BufferGeometry();
+    edges.setAttribute('position', new THREE.BufferAttribute(segments, 3));
     scene.add(new THREE.LineSegments(edges, createCreaseEdgeMaterial()));
   }
 }
@@ -390,6 +404,9 @@ export function renderSingleViewCanvas(meshData: MeshData, options: {
    *  proxy (see previewProxy.ts). For version thumbnails only — renders an
    *  agent or the user inspects (renderViews, highlights, parts) stay exact. */
   thumbnail?: boolean;
+  /** Draw the open object's annotations over the render (default true). Off
+   *  for previews of something other than the open object. */
+  annotations?: boolean;
 } = {}): HTMLCanvasElement {
   const viewSize = options.size ?? 500;
 
@@ -398,7 +415,7 @@ export function renderSingleViewCanvas(meshData: MeshData, options: {
   const camera = buildViewCamera(meshData, options);
   const renderer = getOffscreenRenderer(viewSize);
 
-  const annotations = buildOffscreenOverlay(viewSize);
+  const annotations = options.annotations === false ? null : buildOffscreenOverlay(viewSize);
   if (annotations) scene.add(annotations);
 
   renderer.render(scene, camera);

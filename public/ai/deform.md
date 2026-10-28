@@ -174,8 +174,9 @@ existing models render exactly as before.
 rounded when it lies within `radius` of a selected face; the rounding fades out
 over `blend` (default = radius). Everything the op doesn't change — other
 edges, flat faces, the tessellation, labels — stays the input's own geometry:
-only the rounded strip is remeshed and spliced in (the seam is about a tenth of
-a voxel). Labels carry through by default here (`keepLabels: false` to drop
+only the rounded strip is remeshed and spliced in (the seam is a fraction of
+a voxel, and `renderView`'s crease edges leave it out, so a clean edit isn't
+outlined). Labels carry through by default here (`keepLabels: false` to drop
 them in the strip).
 
 ```js

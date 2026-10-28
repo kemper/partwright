@@ -45,7 +45,7 @@ Each call also adds the export to the Recent Exports inbox so the user can re-do
 
 > The session's left-rail entries are **objects** (each with its own code + versions). They were called "parts" before; the old names — `export3MFParts`, `exportOBJParts`, … and their `*PartsData` twins — still work as deprecated aliases, and results also carry the old `parts` count.
 
-`export3MFObjects(objectIds?, filename?, { bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy? })` bundles several objects into **one** 3MF. Two modes:
+`export3MFObjects(objectIds?, filename?, { bambu?, printer?, nozzle?, filament?, plateLayout?, packStrategy?, split?, exclude?, plates? })` bundles several objects into **one** 3MF. Two modes:
 
 - **`{ bambu: true }`** (default) — a Bambu Studio / OrcaSlicer **project**: objects distributed across build plates (see `plateLayout`), painted colours bound to filaments (one filament per distinct colour). The console/AI twin of the **"3MF — Bambu/Orca"** menu item.
 - **`{ bambu: false }`** — a **generic** multi-object 3MF: objects grid-arranged (no overlap), opens in any slicer, no Bambu metadata. The console/AI twin of the generic **"3MF"** export in a multi-object session.
@@ -57,7 +57,8 @@ In Bambu mode you can pick the target machine (these match the export modal's dr
 - **`plateLayout`** — how selected objects spread across build plates. `"grid"` / `"group"` **shelf-pack** objects by their real footprint into the printer's bed, spilling onto extra plates when they don't all fit (so nothing lands off the plate):
   - `"separate"` (default) — **one object per plate**. Best for a handful of objects; unwieldy past ~30.
   - `"grid"` — **all objects packed together**, filling each plate before starting the next. Best for many small objects you want to print in as few jobs as possible.
-  - `"group"` — **each object group packed onto its own plate(s)** (objects sharing a `group`; ungrouped objects print separately). A group too big for one bed spills onto more plates. Best for large collections organised into groups.
+  - `"group"` — **each object group packed onto its own plate(s)** (objects sharing a `group`; ungrouped objects print separately). A **split** object's items count as a group of their own. A group too big for one bed spills onto more plates. Best for large collections organised into groups.
+  - `"custom"` — **you pick the plate**: pass `plates: { "<item or object name>": n }` (1-based). Items sharing a number share a plate; plates come out in number order; anything unnamed gets a plate of its own; a plate that doesn't fit the bed spills onto the next. The picker's **Custom** layout (a Plate menu on every row).
 
 **`packStrategy`** — how objects that *share* a plate (or the whole generic model) are spatially arranged. Works in **both** modes (Bambu and generic); orthogonal to `plateLayout`:
 - `"grid"` (default) — a compact, roughly-square cluster **centred** on the plate. Keeps objects toward the middle of the bed, away from the far left/right edges that aren't always printable on wide beds like the H2C.
@@ -85,9 +86,35 @@ await partwright.export3MFObjects(undefined, "row", { plateLayout: "grid", packS
 await partwright.export3MFObjects(["obj_abc", "obj_def"], "assembly", { bambu: false })
 ```
 
+### Splitting an object into pieces or parts
+
+An object exports as **one** file object by default — a chess set modelled as one object of 17 separate solids lands in the slicer as one rigid lump. **`split`** breaks it up:
+
+- **`"pieces"`** — one file object per **connected solid** (`componentCount`), named after the part covering most of it (else `Piece N`).
+- **`"parts"`** — one file object per **`api.label` part**. Parts fused into one solid can't be pulled apart without cutting the mesh open, so they stay together as one item (`"hair + face"`, flagged `fused`); pieces no label touches travel together as `Unlabeled`. A label spread over several pieces (four wheels labelled `wheels`) is one item.
+
+Items keep their **modelled position and orientation** — the exporter only moves them onto plates. Item names are `"<object> · <item>"`; **`exclude: [names]`** leaves some out. **`listExportItems(objectIds?)`** shows what applies — per object `{ id, name, size, pieceCount, splits, pieces, parts }`, with `pieces` / `parts` null when that split doesn't apply (one solid, no separable parts, or more than the *Export split limit* in Advanced Settings). Asking for a split the object can't use is an error that lists the splits it supports. `split` / `exclude` also work on `exportSTLObjects` / `exportOBJObjects` / `exportGLBObjects` (one `.stl` / OBJ object / GLB node per item).
+
+```js
+await partwright.listExportItems()
+// -> { objects: [{ name: "Chess set", pieceCount: 17, splits: ["whole", "pieces", "parts"],
+//                  pieces: [{ name: "Chess set · King", size: [30, 30, 62], labels: ["King"] }, …], parts: […] }] }
+
+// Every piece on its own plate, minus the brim tab:
+await partwright.export3MFObjects(undefined, "chess", { split: { "Chess set": "pieces" }, exclude: ["Chess set · Brim tab"] })
+
+// Pieces packed together, kings and queens on a plate of their own:
+await partwright.export3MFObjects(undefined, "chess", {
+  split: { "Chess set": "pieces" }, plateLayout: "custom",
+  plates: { "Chess set · King": 1, "Chess set · Queen": 1, "Chess set · Board": 2 },
+})
+```
+
+In the app, every export's object picker has a **Split** menu on each object made of separate pieces or parts (Whole / Pieces (N) / Parts (N)), with a row per item to leave pieces out; the Bambu picker also previews each plate. A **single-object** session whose model has two or more pieces opens the picker too, instead of exporting the pieces fused into one object.
+
 Each object's **latest version** is re-baked with its colours (both code-declared `api.label`/`api.paint.*` and saved manual paint). Bambu mode places objects on plates using your configured **bed size** (printer settings) for the plate stride, and arranges multiple objects sharing a plate (`"grid"` / `"group"`) in a sub-grid within the bed. Both modes carry colours via `m:colorgroup`, so any slicer sees them.
 
-`export3MFObjects` triggers a browser download; **`export3MFObjectsData(objectIds?, filename?, { bambu? })`** is the bytes-returning twin — it returns `{ filename, mimeType, base64, sizeBytes, objects }` so an agent can read the exported 3MF back (unzip the base64) without the download path.
+`export3MFObjects` triggers a browser download; **`export3MFObjectsData(objectIds?, filename?, { bambu?, … })`** is the bytes-returning twin — it returns `{ filename, mimeType, base64, sizeBytes, objects }` (plus `items` — the written item names — and `itemCount` when something was split; `objects` still counts session objects) so an agent can read the exported 3MF back (unzip the base64) without the download path.
 
 ```js
 const r = await partwright.export3MFObjectsData(undefined, 'assembly', { bambu: true })
@@ -193,7 +220,7 @@ API twin of the import-target dialog:
 |---|---|
 | `'new-session'` (default) | a fresh session named after the file (`sessionName` overrides) |
 | `'new-object'` | a new object in the current session; it becomes current |
-| `'current-object'` | combined into the current object: a mesh / voxel import is composed with its geometry (a blank starter object is replaced instead). A `.js`/`.scad` file replaces the object's code. Render-only meshes and BREP shapes can't be combined. |
+| `'current-object'` | added to the current object (`changeObject(name)` first to pick another): a mesh becomes a **named part** of it, placed beside its geometry. A JavaScript object **keeps its code** — it is wrapped in `const __partwrightBase = (() => { … })();` and composed with `api.importWithParts(i)`, so the Parts panel / `partAction` can arrange the new part; SCAD/BREP/voxel objects (or code that won't compose) are baked into a mesh and composed instead. A voxel import is composed with its geometry; a blank starter object is replaced. A `.js`/`.scad` file replaces the object's code. Render-only meshes and BREP shapes can't be combined. |
 
 Targets other than `'new-session'` need an open session. Unsaved work on the current
 object is saved as a version first, exactly as in the dialog.
@@ -298,8 +325,11 @@ await partwright.importMeshFiles([
   a new session).
 - **`current-object`:** an EMPTY current object (untouched starter code, no
   saved version — e.g. one just made with `createObject()`) is filled by the
-  import rather than combined with. Otherwise the models are combined into it,
-  and `convert: true` is refused (it would rebuild the object's own code too).
+  import rather than combined with. Otherwise each model becomes a named part
+  of it, beside its geometry (a JavaScript object keeps its code — see the
+  target table above), and `convert: true` is refused (it would rebuild the
+  object's own code too). The import dialogs let the user pick which object
+  ("Add to object"); from the console, `changeObject(name)` first.
 - In `object` mode, a 3MF's objects are grouped under its file name in the
   object list. Colours from 3MF files carry over through one merged palette.
 - Capped by **Advanced settings → Import → Max files per import** (default 50),
