@@ -65,18 +65,18 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
     tools: [
       'getMeshSummary', 'findFaces', 'probePixel', 'probePixels', 'probeRay', 'getFeatureCentroids',
       'sliceAtZVisual', 'renderSection', 'getMeasurement', 'photoMatch', 'getViewState',
-      'setReferenceGeometry', 'clearReferenceGeometry',
+      'setReferenceGeometry', 'clearReferenceGeometry', 'thicknessMap',
     ],
   },
   {
     id: 'objects',
-    summary: 'manage objects, parts and pieces: rename, delete/restore, hide/isolate, extract, merge, reorder, group, arrange parts, export split items',
+    summary: 'manage objects, parts and pieces: rename, delete/restore, hide/isolate, extract, merge, reorder, group',
     tools: [
       'renameObject', 'deleteObject', 'listDeleted', 'restoreObject', 'highlightObjectPart',
       'setObjectPartHidden', 'deleteObjectPart', 'restoreObjectPart', 'frameObjectPart',
       'isolateObjectPart', 'getObjectPartInfo', 'renameObjectPart', 'extractObjectPiece',
       'extractObjectParts', 'mergeObjects', 'reorderObjects', 'saveAllObjects', 'setObjectGroup',
-      'partAction', 'undoPartEdit', 'listExportItems',
+      'listExportItems', 'partAction', 'undoPartEdit',
     ],
   },
   {
@@ -114,8 +114,8 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
   },
   {
     id: 'printing',
-    summary: 'printer settings, model units, and the wall-thickness map',
-    tools: ['getPrinterSettings', 'setPrinterSettings', 'getUnits', 'setUnits', 'thicknessMap'],
+    summary: 'printer settings and model units',
+    tools: ['getPrinterSettings', 'setPrinterSettings', 'getUnits', 'setUnits'],
   },
   {
     id: 'versions',
