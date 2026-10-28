@@ -63,9 +63,11 @@ export interface ObjectPartsActions {
   getSelectedKeys(): string[];
   /** The isolated selection's partSelectionSignature, or null. */
   getIsolatedKey(): string | null;
-  /** Select `key` alone (null clears) — or, with `extend` (Shift/Ctrl/⌘-
-   *  click), add it to / take it out of the selection. */
+  /** Select `key` alone (null clears) — or, with `extend` (Ctrl/⌘-click),
+   *  add it to / take it out of the selection. */
   select(key: string | null, opts?: { extend?: boolean }): void;
+  /** Replace the selection with `keys` (a Shift-click range). */
+  selectKeys(keys: string[]): void;
   /** Isolate these keys (null shows everything again). */
   isolate(keys: string[] | null): void;
   info(key: string): PartInfo | null;
@@ -126,6 +128,8 @@ function rowIconBtn(glyph: string, title: string): HTMLButtonElement {
  *  phone): while on, tapping a row adds it to / takes it out of the
  *  selection. Turns itself off when the selection is cleared. */
 let extendTaps = false;
+/** The row a Shift-click range runs from: the last row clicked without Shift. */
+let rangeAnchor: string | null = null;
 
 const ACTION_BTN = 'px-1.5 py-1 min-h-[44px] md:min-h-0 rounded text-[10px] leading-tight text-zinc-300 bg-zinc-800 border border-zinc-700 [@media(hover:hover)]:hover:bg-zinc-700 [@media(hover:hover)]:hover:text-zinc-100 disabled:opacity-40 disabled:pointer-events-none text-left truncate';
 
@@ -157,6 +161,16 @@ function selectMoreButton(grid: HTMLElement): HTMLButtonElement {
     b.classList.toggle('!border-amber-400/40', extendTaps);
   }, { pressed: extendTaps });
   return b;
+}
+
+/** The keys from `from` to `to` inclusive, in list order, when both are rows
+ *  of the same kind (parts, or pieces); null otherwise. */
+function rowRange(view: ObjectPartsView, from: string, to: string): string[] | null {
+  for (const order of [view.parts.map(p => `part:${p.name}`), view.pieces.map(p => `piece:${p.index}`)]) {
+    const i = order.indexOf(from), j = order.indexOf(to);
+    if (i >= 0 && j >= 0) return order.slice(Math.min(i, j), Math.max(i, j) + 1);
+  }
+  return null;
 }
 
 /** Build the `#object-parts` section. Rebuilt wholesale on every mesh update
@@ -253,7 +267,14 @@ export function buildObjectPartsSection(a: ObjectPartsActions): HTMLElement {
     b.appendChild(c);
     b.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (e.shiftKey || e.ctrlKey || e.metaKey || extendTaps) a.select(key, { extend: true });
+      // Shift-click: everything from the anchor row to this one (rows of the
+      // same kind — parts with parts, pieces with pieces), like a file list.
+      if (e.shiftKey && view && rangeAnchor && rangeAnchor !== key) {
+        const range = rowRange(view, rangeAnchor, key);
+        if (range) { a.selectKeys(range); return; }
+      }
+      rangeAnchor = key;
+      if (e.ctrlKey || e.metaKey || e.shiftKey || extendTaps) a.select(key, { extend: true });
       else a.select(on && !multi ? null : key);
     });
     row.appendChild(b);
@@ -298,7 +319,7 @@ export function buildObjectPartsSection(a: ObjectPartsActions): HTMLElement {
     if (multi && view && key === lastSelectedRow) section.appendChild(buildMultiDrawer(a, selectedKeys, view, isolated === partSelectionSignature(selectedKeys)));
   };
 
-  heading('Parts', 'Named regions of this object, declared in code with api.label(shape, "name"). They stay tracked through unions and cuts, even when several parts fuse into one solid. Select one and Paint, Surface and the AI act on just that part. Shift-click to select several and move, split, hide or delete them together.');
+  heading('Parts', 'Named regions of this object, declared in code with api.label(shape, "name"). They stay tracked through unions and cuts, even when several parts fuse into one solid. Select one and Paint, Surface and the AI act on just that part. Shift-click selects a range, Ctrl/⌘-click adds or removes one, and the Parts panel (Tools) works on the selection.');
   if (!view) {
     note('Run the code to list this object’s parts.');
     return section;

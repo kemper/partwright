@@ -1793,6 +1793,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={5_000} max={600_000} step={5_000} integer
           onChange={v => set('ui', 'paintAdjacencyWorkerTimeoutMs', v)}
         />
+        <Field cfgKey="ui.partBoxSelectSamples"
+          label="Box-select samples per part"
+          unit="tris"
+          hint="How many of a part's triangles Shift-drag box select checks."
+          tooltip="Shift-dragging a box in the viewport selects every part with geometry inside it. Each part is tested by projecting up to this many of its triangle centres onto the screen; higher catches thin slivers of very big parts at the cost of a slower box select."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.partBoxSelectSamples}
+          value={c.ui.partBoxSelectSamples}
+          min={50} max={1_000_000} integer
+          onChange={v => set('ui', 'partBoxSelectSamples', v)}
+        />
         <Field cfgKey="ui.maxPendingAppliedNotes"
           label="AI applied-notes kept"
           unit="notes"

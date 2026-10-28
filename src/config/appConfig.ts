@@ -466,6 +466,10 @@ export interface AppConfig {
     /** How long (ms) to wait for that Worker before building the graph on the
      *  main thread instead (a Worker killed for memory may never answer). */
     paintAdjacencyWorkerTimeoutMs: number;
+    /** Shift-drag box select in the viewport: most triangle centres sampled
+     *  per part when testing which parts the box touches (a part counts once
+     *  one sample lands inside). Higher catches thin slivers of huge parts. */
+    partBoxSelectSamples: number;
     /** "[UI · app note] user applied …" notes kept for the AI's next turn (latest per
      *  tool; the oldest drop past this). */
     maxPendingAppliedNotes: number;
@@ -827,6 +831,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     toolDialogOpenWaitMs: 4000,
     paintAdjacencyWorkerMinTriangles: 300_000,
     paintAdjacencyWorkerTimeoutMs: 60_000,
+    partBoxSelectSamples: 4000,
     maxPendingAppliedNotes: 6,
     maxAppliedNoteChars: 400,
     toastDurationMs: 2200,

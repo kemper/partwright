@@ -194,6 +194,7 @@ export const APP_CONFIG_FIELD_BOUNDS: { [S in ConfigSection]: Partial<Record<key
     toolDialogOpenWaitMs: { min: 500, max: 60_000, integer: true },
     paintAdjacencyWorkerMinTriangles: { min: 0, max: 50_000_000, integer: true },
     paintAdjacencyWorkerTimeoutMs: { min: 5_000, max: 600_000, integer: true },
+    partBoxSelectSamples: { min: 50, max: 1_000_000, integer: true },
     maxPendingAppliedNotes: { min: 1, max: 50, integer: true },
     maxAppliedNoteChars: { min: 80, max: 4_000, integer: true },
     toastDurationMs: { min: 500, max: 15_000, integer: true },
