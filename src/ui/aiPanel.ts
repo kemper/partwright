@@ -105,7 +105,7 @@ const state: PanelState = {
  *  which all receive the full ai.md system prompt. Default is a rough match
  *  for the current ai.md so the context meter is sensible before the fetch
  *  lands. */
-let cachedAiMdLength = 55_000;
+let cachedAiMdLength = 100_000;
 
 /** Fixed per-request overhead in characters for the active provider / model /
  *  override combo: the system prompt plus, for every provider but Local, the
@@ -1576,7 +1576,7 @@ function renderPromptChip(): void {
   } else {
     label = '· Full ai.md';
     cls = 'h-6 px-1.5 inline-flex items-center rounded text-[10px] bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700';
-    title = 'Anthropic gets the full ai.md (~15K tokens) cached on the API. Click to view or edit.';
+    title = 'Hosted models get the full prompt: ai.md without its console-only sections (~27K tokens), cached on the API. Click to view or edit.';
   }
   chip.className = cls;
   chip.textContent = label;

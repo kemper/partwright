@@ -203,16 +203,16 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 - **Placing the front face on the wrong side** — "Front" in Partwright means the −Y face. The default Front view camera is at −Y looking toward +Y, so a door, a character's face, a screen, or any feature intended to face the viewer must have its outward normal pointing in the −Y direction. If `renderViews()` shows the back of your model in the "Front" tile, rotate the model 180° around Z (`model.rotate([0,0,180])`).
 - **Flush boolean placement** -- shapes must overlap by at least 0.5 units to union correctly. Merely touching at a face produces disconnected components.
 - **Tapering to a near-point on printed geometry** -- `scaleTop=[0.01, 0.01]` or chamfers that collapse the top to sub-millimeter area look fine in `geometry-data` but FDM slicers silently drop sub-extrusion-width layers, so the cap disappears on the print. See [/ai/print-safety.md](/ai/print-safety.md).
-- **Not reading session context before modifying** -- when resuming work in an established session, call `getSessionContext()` first and read the notes/version history before making changes. See [Resuming a session](#resuming-a-session).
-- **Branching off a prior version by hand** -- don't chain `loadVersion` -> `getCode` -> modify -> `runAndSave`. A silent failure (blocked return value, stale buffer) can drop parts of the parent. Use [`forkVersion({index} | {id}, transformFn, label, assertions?)`](#forking-a-prior-version) instead -- it loads the parent's code server-side, applies your transform, validates, and saves atomically.
+- **Not reading session context before modifying** -- when resuming work in an established session, call `getSessionContext()` first and read the notes/version history before making changes. See [Resuming a session](/ai/iteration-workflow.md#resuming-a-session) (`readDoc("iteration-workflow")`).
+- **Branching off a prior version by hand** -- don't chain `loadVersion` -> `getCode` -> modify -> `runAndSave`. A silent failure (blocked return value, stale buffer) can drop parts of the parent. Use [`forkVersion({index} | {id}, transformFn, label, assertions?)`](/ai/iteration-workflow.md#forking-a-prior-version) instead -- it loads the parent's code server-side, applies your transform, validates, and saves atomically.
 - **Passing a bare index or id instead of `{index}` / `{id}`** -- `loadVersion` and `forkVersion` take an object with exactly one of `{index: number}` or `{id: string}`, e.g. `loadVersion({index: 2})` or `loadVersion({id: "Kx3Pq9mA2wEr"})`. Bare `loadVersion(2)` will return `{error: "...target must be { index: number } or { id: string }..."}`.
-- **Passing the wrong object shape to `setImages`, `setReferenceGeometry`, `query`, `runAndAssert`, etc.** -- the API rejects unknown keys and wrong-type values. See [Argument validation](#argument-validation).
-- **Doing `setCode` then `run` when you meant `runAndSave`.** `setCode` doesn't auto-run, `run` doesn't save and doesn't validate, and the gallery won't see the version. `runAndSave(code, label, assertions)` does all three atomically -- prefer it for committed iterations. See also [`runAndSave` is for committed iterations; `runIsolated` is for sanity checks](#runandsave-is-for-committed-iterations-runisolated-is-for-sanity-checks).
+- **Passing the wrong object shape to `setImages`, `setReferenceGeometry`, `query`, `runAndAssert`, etc.** -- the API rejects unknown keys and wrong-type values, and the error names the bad parameter.
+- **Doing `setCode` then `run` when you meant `runAndSave`.** `setCode` doesn't auto-run, `run` doesn't save and doesn't validate, and the gallery won't see the version. `runAndSave(code, label, assertions)` does all three atomically -- prefer it for committed iterations. See also [`runAndSave` is for committed iterations; `runIsolated` is for sanity checks](/ai/gotchas.md#runandsave-is-for-committed-iterations-runisolated-is-for-sanity-checks).
 - **Passing a short stub to `runAndSave` intending to "save current state".** `runAndSave(code, ...)` is **authoritative**: it overwrites the editor with `code`, runs it, and saves the result. Passing anything other than the full intended code will replace the editor and save a broken version. To snapshot the editor as-is (e.g. after painting), call `saveVersion(label?)` instead — it captures the current code + geometry + colors without re-running.
 - **Querying stale geometry after `setCode`.** `setCode` updates the editor but does NOT re-run. Calling `getGeometryData()` or `query()` after `setCode` (without a subsequent `runAndSave`/`run`) returns the geometry from the previous execution. The result now includes `stale: true` when the editor code hash doesn't match the last-run hash — treat this as a signal to run first.
 - **No "fork from current editor" path.** `forkVersion({index}, ...)` forks a *saved* version. If your best code is unsaved in the editor, first call `await saveVersion("checkpoint")` to commit it as a version, then `forkVersion({index: <that index>}, ...)` from there. `listVersions()` shows the new index.
 
-<!-- in-app: Your tools validate their arguments: a wrong type or an unknown key comes back as an error that names the parameter, so fix the call rather than working around it. The `window.partwright` console listing for external agents is left out here; each tool carries its own schema, and the readDoc topics cover each area in depth. -->
+<!-- in-app: (In-app chat only.) Your tools validate their arguments: a wrong type or an unknown key comes back as an error that names the parameter, so fix the call rather than working around it. The `window.partwright` console method listing is not included in your prompt; each tool carries its own schema, and the readDoc topics cover each area in depth. -->
 
 <!-- external-only:start -->
 ## Argument validation
@@ -856,6 +856,7 @@ The Assembly view is **read-only**: the editing tools and cross-section are hidd
 > Note: the Assembly grid renders each object's **base executed mesh** — in-code `api.paint`/label colours from the voxel engine carry through, but brush-painted regions and baked surface textures are not re-applied in the grid preview (they remain intact on the object itself).
 
 <!-- external-only:end -->
+<!-- in-app: (In-app chat only.) The **Assembly view** (⧉ above the object list) shows every object of the session at once in a read-only grid, with one panel for the `api.params` knobs they share; the user opens it, you have no tool for it. -->
 
 ### Model-declared color (self-coloring models)
 
@@ -1044,6 +1045,7 @@ if (api.volumeDelta(body, after) === 0) throw new Error("subtract did nothing");
 For smooth curve helpers (`loft`, `sweep`, `naca4`, `bezier`, `polyline` with fillet, etc.), see **[/ai/curves.md](/ai/curves.md)**.
 
 ### Text — `api.text` / `api.textSection`
+<a id="text--api-text--api-textsection"></a>
 
 Produces 3D extruded text (or a 2D `CrossSection`) from the Liberation Sans font family. Uses the same TTF files as the OpenSCAD engine — ~1.6 MB, lazy-loaded on the first run that calls `api.text` or `api.textSection`.
 
@@ -1385,6 +1387,11 @@ Read the notes and version history before making changes. The notes tell you:
 ### Recommended iteration pattern
 
 1. Write initial code, assert+save in one call: `runAndSave(code, "v1 - base", {isManifold: true, maxComponents: 1})`
+2. Verify visually: `renderViews()` while iterating, `renderViews({views: "box"})` (all faces) before declaring done.
+3. Try changes without side effects: `modifyAndTest(patchFn)` or `runIsolated(code)`.
+4. Save the keeper with `runAndSave(code, "v2 - …", assertions)` and check its diff.
+5. Inspect further with `query({sliceAt: [...], decompose: true})` instead of re-running.
+6. Repeat; when done, say briefly what you built (it's already saved as a version).
 
 ## Visual verification
 
@@ -1409,6 +1416,8 @@ Users can mark up the model surface with the **Annotate** tool (✏️ in the vi
 When the user wants to **tweak it interactively**, asks you to **show them** a tool, or the result is subjective (texture depth, colours, character proportions), **open the tool prefilled instead of applying**: `openTool(id, prefill, {note})` opens the panel with your values in its fields and leaves it to them — it never applies; they preview, adjust and click Apply. On desktop the chat stays beside the panel. Put what you set and what to try in `note` (shown as "Suggested by AI: …"), then read `getUiState().toolState` later to see what they changed. Everything else — "make it knit", "scale it to 80 mm" — you just do with the API.
 
 **Call `readDoc({name: "ui-control"})`** for each tool's prefill keys (`tool-surface`, `tool-paint`, `tool-image-paint`, `tool-palette`, `tool-resize`, `tool-place`, `tool-quality`, `tool-customize`, `tool-voxel-paint`, `tool-print`, `tool-cross-section`, `character-creator`, `convert-to-code`, `detect-parts`, `tool-measure`, `tool-annotate`, the `export-objects` / `export-session` / `publish-model` dialogs, the `import-relief` / `import-image-voxel` wizards, and `open-quality` Settings focus). After the user applies from a panel you opened, your next turn starts with an app-generated `[UI · app note] user applied …` line saying what they settled on.
+
+<!-- in-app: (In-app chat only.) **Arrange mode** (from the Insert palette) lets the user click, drag, align and resize parts directly in the viewport. You have no tool for it: to move, copy, align or group parts yourself, use partAction (see Arranging, copying and grouping parts). -->
 
 <!-- external-only:start -->
 ## Arrange mode

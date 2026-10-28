@@ -1,7 +1,8 @@
 // Context sizing for the Custom (OpenAI-compatible) provider.
 //
-// Hosted providers get the full payload: PREAMBLE + all of ai.md (~39k
-// tokens) and every tool schema (~60k tokens) — about 100k tokens before the
+// Hosted providers get the full payload: PREAMBLE + the in-app ai.md (~27k
+// tokens) and the core tool schemas (~17k; more groups load on demand, or
+// every tool at ~66k with on-demand groups off) — about 45k tokens before the
 // user types a word. That is fine for a frontier model with prompt caching,
 // but a local model behind llama.cpp / vLLM / LM Studio / Ollama on consumer
 // hardware usually runs a 8k–64k window: the request is rejected (or, on
