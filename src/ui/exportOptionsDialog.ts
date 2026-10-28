@@ -9,7 +9,7 @@ import { createToolNote, type ToolOpenContext, type ToolOpenResult } from './too
 import { armDialogConfirm } from './dialogConfirmGuard';
 
 /** The include-flag keys an `openTool('export-session')` prefill may set. */
-export const EXPORT_SESSION_FLAGS = ['includeThumbnails', 'includeAnnotations', 'includeNotes', 'includeColorRegions', 'includeChat'] as const;
+export const EXPORT_SESSION_FLAGS = ['includeThumbnails', 'includeAnnotations', 'includeNotes', 'includeColorRegions', 'includeChat', 'includeLatestMeshes'] as const;
 
 /** Pre-set values for the NEXT session-export dialog. It only opens staged —
  *  the user still clicks Export. */
@@ -78,6 +78,12 @@ const OPTIONS: OptionDef[] = [
     label: 'Chat history',
     description: 'The AI conversation for this session — text, tool calls, and results. Restored on import.',
     defaultValue: true,
+  },
+  {
+    key: 'includeLatestMeshes',
+    label: 'Latest meshes',
+    description: 'Each object’s newest mesh as it was saved, colours included, so the file keeps the model even if a later Partwright builds its code differently. Can add megabytes; imported meshes are always included already.',
+    defaultValue: false,
   },
 ];
 

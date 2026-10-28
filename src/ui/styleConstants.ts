@@ -12,6 +12,10 @@ export const BUTTON_PRIMARY = 'px-4 py-1.5 rounded-lg text-sm font-medium bg-blu
 /** Destructive primary action button (red, white text) — deletes, clears. */
 export const BUTTON_DANGER = 'px-4 py-1.5 rounded-lg text-sm font-medium bg-red-600 text-white hover:bg-red-500 transition-colors';
 
+/** Secondary action button sized like BUTTON_PRIMARY (filled zinc) — for a
+ *  dialog with two real choices beside its cancel. */
+export const BUTTON_SECONDARY = 'px-4 py-1.5 rounded-lg text-sm font-medium bg-zinc-700 text-zinc-100 hover:bg-zinc-600 transition-colors';
+
 /** Standard cancel / secondary action button (transparent, zinc text). */
 export const BUTTON_CANCEL = 'px-4 py-1.5 rounded-lg text-sm text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 transition-colors';
 

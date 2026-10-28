@@ -597,6 +597,22 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'getModelDrift',
+    description: 'Check whether the open version\'s code now builds a different model than the one saved with it — after a Partwright update changed a builder (a figure, a texture, a default), or because the code is random. The app shows this to the user as a "Built differently than saved" notice; loadVersion also reports it as builtDifferently. Returns {changed:false} or {changed:true, version, label, savedWith, running, differences (plain words, e.g. "volume +2.1%"), canRestore, dismissed}. Resolve it with resolveModelDrift — but ask the user first: it is their model.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'resolveModelDrift',
+    description: 'Resolve a version that builds differently than saved (see getModelDrift). choice "restore" commits the version\'s SAVED mesh (colours included) as a new version — only when getModelDrift().canRestore (each object\'s newest version keeps its mesh); the model then becomes a stored mesh, no longer editable as code. choice "keep" saves the newly built model as a new version. Either way the drifted version itself is left untouched. Only do this when the user has said which they want.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        choice: { type: 'string', enum: ['restore', 'keep'], description: '"restore" = bring back the saved mesh; "keep" = keep the newly built model.' },
+      },
+      required: ['choice'],
+    },
+  },
+  {
     name: 'saveVersion',
     description: 'Snapshot the CURRENT editor code, geometry, color regions, and annotations as a new gallery version WITHOUT re-running the code. Use this to persist a painted/annotated state — unlike runAndSave it does NOT re-execute the code, so it won\'t re-resolve color regions against regenerated triangles (re-running new geometry with colors in memory misaligns them). For committing a code change, prefer runAndSave (runs + validates + saves in one call). Returns {id, index, label} on success, {skipped, reason} when nothing changed since the current version, or {error} if no session is active.',
     input_schema: {
@@ -2576,6 +2592,7 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   'getCode', 'setCode', 'runCode', 'runAndSave', 'runAndAssert', 'runAndExplain',
   'getParams', 'setParams', 'getGeometryData', 'getMeshSummary', 'getFeatureCentroids',
   'listVersions', 'loadVersion', 'saveVersion', 'forkVersion', 'copyColorsFromVersion',
+  'getModelDrift', 'resolveModelDrift',
   'modifyAndTest', 'query', 'findFaces', 'listComponents', 'listLabels', 'getModelColors',
   'listRegions', 'probePixel', 'probePixels', 'probeRay', 'paintPreview', 'paintExplain',
   'getPartTriangles', 'partBoundary', 'paintAlongBoundary',
@@ -2631,6 +2648,7 @@ for (const tool of ALL_TOOLS) {
 
 const ALWAYS_AVAILABLE = new Set([
   ASK_USER_TOOL,
+  'getModelDrift',
   'listPartDetectors',
   'getPartDraft',
   'getActiveLanguage',
@@ -2898,7 +2916,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams', 'setCurvatureQuality']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'resolveModelDrift', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts']);
 /** SAVE_GATED tools that touch version history WITHOUT executing new code, so
  *  they only need the saveVersions scope (not runCode). */
 const SAVE_NON_RUNNING = new Set(['loadVersion', 'saveVersion', 'renameVersion', 'deleteVersion', 'saveAllObjects']);
@@ -3640,6 +3658,12 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.loadVersion({ index: input.index as number });
     case 'saveVersion':
       return api.saveVersion(input.label as string | undefined);
+    case 'getModelDrift':
+      return api.getModelDrift();
+    case 'resolveModelDrift':
+      if (input.choice === 'restore') return api.restoreSavedModel();
+      if (input.choice === 'keep') return api.keepRebuiltModel();
+      return { error: `resolveModelDrift: choice must be "restore" or "keep" (got ${JSON.stringify(input.choice)})` };
     case 'addSessionNote':
       return api.addSessionNote(input.text as string);
     case 'listSessionNotes':

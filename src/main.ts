@@ -369,9 +369,14 @@ import {
   initSessionTabSync,
   setViewerPredicate,
   refreshCurrentSession,
+  setVersionSnapshotProvider,
   type ExportedSession,
   type ExportOptions,
 } from './storage/sessionManager';
+import { computeModelFingerprint, compareModelFingerprints, fingerprintFromStats, parseModelFingerprint, type FingerprintComparison } from './geometry/modelFingerprint';
+import { toSavedMesh, parseSavedMesh, type SavedMesh, type VersionSnapshot } from './storage/versionMesh';
+import { mountModelDriftPill, showModelDriftDialog } from './ui/modelDriftNotice';
+import { buildInfo } from './buildInfo';
 import { isQuotaError } from './storage/quota';
 import { isolationSupported } from './geometry/isolation';
 import { getEngineSandboxStatus, isEngineSandboxUnavailableError, runWithoutEngineSandbox } from './sandbox/sandboxHost';
@@ -595,6 +600,67 @@ let currentMeshData: MeshData | null = null;
  *  code itself (#1090). */
 type VoxelRunCache = { code: string; paramsKey: string; grid: unknown };
 let lastVoxelRun: VoxelRunCache | null = null;
+/** The last successful mesh-producing run: the code + Customizer values it ran
+ *  with, the mesh the ENGINE built (before api.surface.* textures — what a
+ *  version's fingerprint describes), and the mesh it displayed (`shown`, the
+ *  textured one when a texture applied). A save of that same code records a
+ *  snapshot from it (versionSnapshotFor); a version load compares against it. */
+let lastEngineRun: { code: string; paramsKey: string; mesh: MeshData; shown: MeshData } | null = null;
+
+/** The model snapshot a save of `code` with `paramValues` records, or null
+ *  when the live model wasn't built from exactly that code and those values
+ *  (some save paths commit code that isn't on screen). The fingerprint is of
+ *  the engine's mesh; the stored mesh is what the viewport shows (paint
+ *  refinement and colours included), capped by versionMeshMaxTriangles. */
+function versionSnapshotFor(code: string, paramValues: Record<string, unknown> | undefined): VersionSnapshot | null {
+  const run = lastEngineRun;
+  if (!run || run.code !== code || run.paramsKey !== voxelParamsKey(paramValues)) return null;
+  const snapshot: VersionSnapshot = { fingerprint: computeModelFingerprint(run.mesh) };
+  // paintBaseMesh is the displayed run mesh until another run or a bake
+  // replaces it; currentMeshData is that mesh or its paint-refined version.
+  const shown = currentMeshData;
+  if (shown && paintBaseMesh === run.shown && shown.numTri <= getConfig().renderer.versionMeshMaxTriangles) {
+    snapshot.mesh = toSavedMesh(hasColorRegions() || hasModelColorRegions() ? applyTriColors(shown) : shown);
+  }
+  return snapshot;
+}
+setVersionSnapshotProvider(versionSnapshotFor);
+
+/** The opened version whose code now builds a different model than the one
+ *  saved with it ("Built differently than saved"), while it's on screen. Set by
+ *  checkVersionDrift after a version load's run; cleared by the next load or a
+ *  run of other code. Module scope: version loads can run before init's later
+ *  lines (see "Editing src/main.ts — scope traps" in CLAUDE.md). */
+let modelDrift: {
+  versionId: string;
+  versionIndex: number;
+  versionLabel: string;
+  code: string;
+  savedWith: string | null;
+  diffs: string[];
+  /** The version's stored mesh, when it kept one (newest versions only). */
+  savedMesh: SavedMesh | null;
+  thumbnail: Blob | null;
+} | null = null;
+/** Versions whose drift notice the user chose to ignore, remembered on this
+ *  device (localStorage; a per-viewer convenience — losing it just shows the
+ *  notice again). Capped to the most recent DRIFT_IGNORED_MAX. */
+const DRIFT_IGNORED_KEY = 'partwright-drift-ignored';
+const DRIFT_IGNORED_MAX = 500;
+const dismissedDrift = {
+  has(id: string): boolean {
+    try { return (JSON.parse(localStorage.getItem(DRIFT_IGNORED_KEY) ?? '[]') as string[]).includes(id); } catch { return false; }
+  },
+  add(id: string): void {
+    try {
+      const ids = (JSON.parse(localStorage.getItem(DRIFT_IGNORED_KEY) ?? '[]') as string[]).filter(x => x !== id);
+      ids.push(id);
+      localStorage.setItem(DRIFT_IGNORED_KEY, JSON.stringify(ids.slice(-DRIFT_IGNORED_MAX)));
+    } catch { /* storage unavailable: the notice just shows again next time */ }
+  },
+};
+/** The viewport pill for modelDrift (mounted during init). */
+let driftPill: { show(): void; hide(): void } | null = null;
 
 /** Engine trust domain for a session (#1090): model code from one session
  *  never shares a geometry Worker realm with another session's runs. Objects
@@ -3318,7 +3384,7 @@ function enrichGeometryDataWithColors(geoData: Record<string, unknown> | null): 
  *  window.partwright.saveVersion() API and the mod+S keyboard shortcut.
  *  Returns `{ id, index, label }` on success, `{ error }` when no session is
  *  active, or `{ skipped }` when nothing changed since the current version. */
-async function saveCurrentVersion(label?: string): Promise<
+async function saveCurrentVersion(label?: string, opts?: { force?: boolean }): Promise<
   | { error: string }
   | { id: string; index: number; label: string; colorRegions?: ReturnType<typeof colorRegionStats> }
   | { skipped: true; reason: string }
@@ -3333,7 +3399,7 @@ async function saveCurrentVersion(label?: string): Promise<
     return { error: 'This session is open and being edited in another tab. Use "Take over" in the viewer banner to edit here.' };
   }
   const thumbnail = await captureThumbnail();
-  const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, undefined, { paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave() });
+  const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, undefined, { force: opts?.force, paramValues: currentParamValues, companionFiles: getCompanionFiles(), surfaceTexture: currentSurfaceTextureForSave() });
   if (version) cacheCurrentPaintRefine();
   if (version) {
     // Keep the mesh cache valid for the newly-saved version so that switching
@@ -8661,6 +8727,10 @@ async function main() {
   surfaceReapplyEl.addEventListener('click', () => { void reapplySurfaceTextures(); });
   viewportPane.appendChild(surfaceReapplyEl);
 
+  // "Built differently than saved" pill — see checkVersionDrift.
+  driftPill = mountModelDriftPill(viewportPane, () => openModelDriftDialog());
+  if (modelDrift && !dismissedDrift.has(modelDrift.versionId)) driftPill.show();
+
   // Parts rail — IDE-style list of the session's parts.
   createPartList(partsRail, {
     onSelectPart: (partId: string) => {
@@ -9339,6 +9409,7 @@ async function main() {
     // after navigation would write the wrong session's voxels into the new
     // editor. Also unlocks the editor and clears the floating panel.
     cancelVoxelPaintIfActive();
+    clearModelDrift();
     // Preserve the user's interactive camera angle across version switches
     // *within* a session. Loading a version re-renders the geometry, whose
     // updateMesh auto-frames the camera back to the default 3/4 view — undoing
@@ -9357,6 +9428,7 @@ async function main() {
     // silently drop work-in-progress in the language we're leaving.
     // skipDraftSave is set by onSelectPart, which saves the outgoing draft
     // before calling changePart (ensuring it lands under the correct part id).
+    let ranVersionCode = false;
     const versionLang = effectiveVersionLanguage(version, getState().session);
     if (versionLang !== getActiveLanguage()) {
       if (!opts.skipDraftSave) {
@@ -9487,6 +9559,7 @@ async function main() {
       } finally {
         if (deferRefineRunGen === deferGen) deferRefineRunGen = -1;
       }
+      if (applied) ranVersionCode = true;
       // If a newer version-switch arrived while we were compiling, our result
       // was discarded — don't rehydrate colours or annotations for the wrong version.
       if (!applied) {
@@ -9535,6 +9608,128 @@ async function main() {
     await rehydrateColorRegions(version.geometryData);
     applyVersionAnnotations(version);
     await restoreAttachmentsForActiveSession();
+    if (ranVersionCode) checkVersionDrift(version, opts);
+  }
+
+  /** After a version load re-ran its code: compare what it built with the
+   *  fingerprint saved with it — or, for a version saved before fingerprints,
+   *  with the stats saved with it — and raise the "Built differently than
+   *  saved" pill when they differ. */
+  function checkVersionDrift(version: Version, opts: { skipSurface?: boolean }): void {
+    const run = lastEngineRun;
+    if (!run || run.code !== version.code || getValue() !== version.code) return;
+    let cmp: FingerprintComparison;
+    const savedPrint = parseModelFingerprint(version.fingerprint);
+    if (savedPrint) {
+      cmp = compareModelFingerprints(savedPrint, computeModelFingerprint(run.mesh));
+    } else {
+      // Saved before fingerprints: the stats saved with it describe the mesh
+      // shown at save time. Skip when they can't describe this run: stats for
+      // other code, or a texture that didn't apply this time (skipped,
+      // cancelled or failed). Triangle counts are left out — paint refinement
+      // can change them without changing the shape.
+      const gd = version.geometryData as Record<string, unknown> | null;
+      if (!gd || (typeof gd.codeHash === 'string' && gd.codeHash !== simpleHash(version.code))) return;
+      if (opts.skipSurface || pendingSurface) return;
+      const saved = fingerprintFromStats(gd);
+      const now = fingerprintFromStats(getGeometryDataObj());
+      if (!saved || !now) return;
+      cmp = compareModelFingerprints(saved, { ...now, tris: saved.tris });
+    }
+    if (!cmp.changed) return;
+    modelDrift = {
+      versionId: version.id,
+      versionIndex: version.index,
+      versionLabel: version.label,
+      code: version.code,
+      savedWith: version.appVersion ?? null,
+      diffs: cmp.diffs,
+      savedMesh: parseSavedMesh(version.latestMesh),
+      thumbnail: version.thumbnail,
+    };
+    errorLog.capture({
+      level: 'info',
+      source: 'engine',
+      message: `v${version.index} builds differently than when it was saved: ${cmp.diffs.join(', ')}`,
+    });
+    if (!dismissedDrift.has(version.id)) driftPill?.show();
+  }
+
+  function clearModelDrift(): void {
+    modelDrift = null;
+    driftPill?.hide();
+  }
+
+  /** `partwright.getModelDrift()`: whether the open version builds differently
+   *  than saved, and how. */
+  function modelDriftReport(): Record<string, unknown> {
+    const d = modelDrift;
+    if (!d) return { changed: false };
+    return {
+      changed: true,
+      version: d.versionIndex,
+      label: d.versionLabel,
+      savedWith: d.savedWith,
+      running: buildInfo.version,
+      differences: d.diffs,
+      canRestore: d.savedMesh !== null,
+      dismissed: dismissedDrift.has(d.versionId),
+    };
+  }
+
+  /** Bring back the model as saved: the version's stored mesh, committed as a
+   *  new version (the same path as a baked surface modifier, colours carried). */
+  async function restoreSavedModel(): Promise<Record<string, unknown>> {
+    const d = modelDrift;
+    if (!d) return { error: 'Nothing to restore: the open version builds the same model it was saved with.' };
+    if (!d.savedMesh) {
+      return { error: `v${d.versionIndex} has no saved mesh to restore: only each object's newest version keeps one. Use keepRebuiltModel() to keep the new model instead.` };
+    }
+    const label = `v${d.versionIndex} as saved`;
+    const result = await commitSurfaceModifier({
+      kind: 'manifold',
+      label,
+      mesh: d.savedMesh as MeshData,
+      code: `// v${d.versionIndex} restored as it was saved${d.savedWith ? ` (Partwright v${d.savedWith})` : ''}, on ${new Date().toISOString().slice(0, 10)}.\n` +
+        `// Its code now builds a different model; this is the mesh saved with it,\n// baked onto api.imports[0]. The original code is in v${d.versionIndex}.\n` +
+        `const { Manifold } = api;\nreturn Manifold.ofMesh(api.imports[0]);\n`,
+    }, true);
+    if (!result.error) clearModelDrift();
+    return result;
+  }
+
+  /** Accept the rebuilt model: save it as a new version, which records the new
+   *  fingerprint (and newest mesh). */
+  async function keepRebuiltModel(): Promise<Record<string, unknown>> {
+    const d = modelDrift;
+    if (!d) return { error: 'Nothing to keep: the open version builds the same model it was saved with.' };
+    if (getValue() !== d.code) return { error: 'The code has been edited since the version was opened; save it normally instead.' };
+    const running = buildInfo.version !== 'unknown' ? ` on v${buildInfo.version}` : '';
+    const r = await saveCurrentVersion(`v${d.versionIndex} rebuilt${running}`, { force: true });
+    if ('error' in r) return r;
+    clearModelDrift();
+    return { ok: true, ...r };
+  }
+
+  function openModelDriftDialog(): void {
+    const d = modelDrift;
+    if (!d) return;
+    showModelDriftDialog({
+      versionIndex: d.versionIndex,
+      versionLabel: d.versionLabel,
+      savedWith: d.savedWith,
+      running: buildInfo.version,
+      diffs: d.diffs,
+      canRestore: d.savedMesh !== null,
+      thumbnail: d.thumbnail,
+    }, {
+      restore: restoreSavedModel,
+      keep: keepRebuiltModel,
+      dismiss: () => {
+        dismissedDrift.add(d.versionId);
+        driftPill?.hide();
+      },
+    });
   }
 
   async function openEditorFromLanding() {
@@ -14219,15 +14414,16 @@ async function main() {
     /** Build a session export (.partwright.json). Returns the parsed JSON object directly.
      *  Pass `options.includeThumbnails: true` to embed the per-version
      *  thumbnail PNG data URLs — needed when generating catalog entries. */
-    async exportSessionData(sessionId?: string, options?: { includeThumbnails?: boolean; includeAnnotations?: boolean; includeNotes?: boolean }) {
+    async exportSessionData(sessionId?: string, options?: { includeThumbnails?: boolean; includeAnnotations?: boolean; includeNotes?: boolean; includeLatestMeshes?: boolean }) {
       const bad = argError(() => {
         assertString(sessionId, 'exportSessionData(sessionId)', { optional: true, allowEmpty: false });
         if (options !== undefined) {
           const o = assertObject(options, 'exportSessionData(_, options)')!;
-          assertNoUnknownKeys(o, ['includeThumbnails', 'includeAnnotations', 'includeNotes'], 'exportSessionData(_, options)');
+          assertNoUnknownKeys(o, ['includeThumbnails', 'includeAnnotations', 'includeNotes', 'includeLatestMeshes'], 'exportSessionData(_, options)');
           if (o.includeThumbnails !== undefined) assertBoolean(o.includeThumbnails, 'exportSessionData.options.includeThumbnails');
           if (o.includeAnnotations !== undefined) assertBoolean(o.includeAnnotations, 'exportSessionData.options.includeAnnotations');
           if (o.includeNotes !== undefined) assertBoolean(o.includeNotes, 'exportSessionData.options.includeNotes');
+          if (o.includeLatestMeshes !== undefined) assertBoolean(o.includeLatestMeshes, 'exportSessionData.options.includeLatestMeshes');
         }
       });
       if (bad) return bad;
@@ -16074,6 +16270,30 @@ async function main() {
       return saveCurrentVersion(label);
     },
 
+    /** Whether the open version's code now builds a different model than the
+     *  one saved with it (an app update changed a builder, or the code is
+     *  random) — the "Built differently than saved" pill. Returns
+     *  `{ changed: false }` or `{ changed: true, version, label, savedWith,
+     *  running, differences, canRestore, dismissed }`. */
+    getModelDrift() {
+      return modelDriftReport();
+    },
+
+    /** Restore the open version's model as it was saved — its stored mesh,
+     *  committed as a new version — when it builds differently now. Only each
+     *  object's newest version keeps a mesh (`getModelDrift().canRestore`). */
+    async restoreSavedModel() {
+      if (isReadOnlyViewer()) return { error: 'This session is open and being edited in another tab. Use "Take over" in the viewer banner to edit here.' };
+      return restoreSavedModel();
+    },
+
+    /** Keep the rebuilt model of a version that builds differently now: save
+     *  it as a new version (recording its new fingerprint). */
+    async keepRebuiltModel() {
+      if (isReadOnlyViewer()) return { error: 'This session is open and being edited in another tab. Use "Take over" in the viewer banner to edit here.' };
+      return keepRebuiltModel();
+    },
+
     /** Save every part in the active session that has unsaved changes, in one
      *  call — the non-interactive twin of the 💾 button's multi-part save
      *  modal. Each part is loaded, saved, and the originally-active part is
@@ -16696,9 +16916,11 @@ async function main() {
       // Restore this version's Customizer overrides before the re-run so it
       // renders with the values it was saved at (matches loadVersionIntoEditor).
       currentParamValues = { ...(version.paramValues ?? {}) };
-      await runCodeSync(version.code, { preserveCamera: true });
+      clearModelDrift();
+      const ran = await runCodeSync(version.code, { preserveCamera: true });
       await rehydrateColorRegions(version.geometryData);
       applyVersionAnnotations(version);
+      if (ran) checkVersionDrift(version, {});
       // Labels are runtime state from the just-executed code. Surface
       // whether any were registered so callers can decide between
       // paintByLabel (when available) and paintComponent / paintInBox
@@ -16712,6 +16934,9 @@ async function main() {
         geometryData: version.geometryData,
         labelsAvailable: labelCount > 0,
         labelCount,
+        // The code now builds a different model than the one saved (see
+        // getModelDrift / restoreSavedModel / keepRebuiltModel).
+        ...(modelDrift ? { builtDifferently: modelDriftReport() } : {}),
       };
     },
 
@@ -17154,8 +17379,9 @@ async function main() {
         assertString(sessionId, 'exportSession(sessionId)', { optional: true });
         if (options !== undefined) {
           const o = assertObject(options, 'exportSession(options)')!;
-          assertNoUnknownKeys(o, ['includeThumbnails', 'includeAnnotations', 'includeNotes', 'includeColorRegions'], 'exportSession(options)');
-          for (const k of ['includeThumbnails', 'includeAnnotations', 'includeNotes', 'includeColorRegions'] as const) {
+          const flags = ['includeThumbnails', 'includeAnnotations', 'includeNotes', 'includeColorRegions', 'includeChat', 'includeLatestMeshes'] as const;
+          assertNoUnknownKeys(o, [...flags], 'exportSession(options)');
+          for (const k of flags) {
             assertBoolean(o[k], `exportSession(options).${k}`, { optional: true });
           }
         }
@@ -21806,6 +22032,9 @@ async function main() {
         'listCharacterPresets': { signature: 'listCharacterPresets() -- The Character Creator starting characters -> [{id, label, description, spec}] (pass a spec to buildCharacter)', docs: '/ai/figure.md' },
         'randomCharacter': { signature: 'await randomCharacter({seed?, save?, label?}) -- Build a random, coherent figure (any body-plan style) (the panel\'s Random button) -> {seed, spec, code, ...}. Same seed = same character.', docs: '/ai/figure.md' },
         'saveVersion':     { signature: 'await saveVersion(label?) -- Save current state as version', docs: '/ai.md#console-api--windowpartwright' },
+        'getModelDrift':   { signature: 'getModelDrift() -- Does the open version build differently than saved? -> {changed:false} | {changed:true, version, label, savedWith, running, differences[], canRestore, dismissed}', docs: '/ai/file-io.md#built-differently-than-saved' },
+        'restoreSavedModel': { signature: 'await restoreSavedModel() -- Commit the open version\'s saved mesh as a new version (newest versions only; see getModelDrift().canRestore) -> {ok, label, geometry} | {error}', docs: '/ai/file-io.md#built-differently-than-saved' },
+        'keepRebuiltModel': { signature: 'await keepRebuiltModel() -- Save the rebuilt model of a drifted version as a new version -> {ok, id, index, label} | {error}', docs: '/ai/file-io.md#built-differently-than-saved' },
         'commitWithColors': { signature: 'await commitWithColors({code?, label?, assertions?}) -- Commit, routing for you: code given and different from the editor -> full runAndSave; otherwise a saveVersion snapshot -> {routed: "run"|"snapshot", ...that result} or {error}', docs: '/ai.md#assert--save-in-one-call' },
         'saveAllObjects':  { signature: 'await saveAllObjects() -- Save every object with unsaved changes', docs: '/ai.md#console-api--windowpartwright' },
         'listVersions':    { signature: 'await listVersions() -- List all versions in session', docs: '/ai.md#console-api--windowpartwright' },
@@ -22052,8 +22281,8 @@ async function main() {
         'exportOBJData':   { signature: 'await exportOBJData() -- Return OBJ as {filename, mimeType, text? | base64, sizeBytes}', docs: '/ai/file-io.md' },
         'export3MFData':   { signature: 'await export3MFData(filename?, {mergeColors?, maxColors?, colorMap?}) -- Return 3MF as {filename, mimeType, base64, sizeBytes}', docs: '/ai/file-io.md' },
         'exportVOXData':   { signature: 'await exportVOXData() -- Return .vox as {filename, mimeType, base64, sizeBytes} (voxel sessions)', docs: '/ai/file-io.md' },
-        'exportSessionData': { signature: 'await exportSessionData(sessionId?) -- Return parsed session JSON {filename, mimeType, data, sizeBytes}', docs: '/ai/file-io.md' },
-        'exportSession': { signature: 'await exportSession(sessionId?, {includeThumbnails?, includeAnnotations?, includeNotes?, includeColorRegions?}) -- Session (default: current) as an ExportedSession object (thumbnails off by default) -> object, null when none, or {error}', docs: '/ai/file-io.md' },
+        'exportSessionData': { signature: 'await exportSessionData(sessionId?, {includeThumbnails?, includeAnnotations?, includeNotes?, includeLatestMeshes?}) -- Return parsed session JSON {filename, mimeType, data, sizeBytes}', docs: '/ai/file-io.md' },
+        'exportSession': { signature: 'await exportSession(sessionId?, {includeThumbnails?, includeAnnotations?, includeNotes?, includeColorRegions?, includeChat?, includeLatestMeshes?}) -- Session (default: current) as an ExportedSession object (thumbnails and latest meshes off by default) -> object, null when none, or {error}', docs: '/ai/file-io.md' },
         'exportCodeData':  { signature: 'exportCodeData() -- Return editor source as {filename, mimeType, language, text, sizeBytes}', docs: '/ai/file-io.md' },
         // AI-friendly import — bypass the file picker
         'importSessionData': { signature: 'await importSessionData(jsonObjectOrString) -- Import .partwright.json payload -> {sessionId} or {error}', docs: '/ai/file-io.md' },
@@ -23533,6 +23762,8 @@ async function main() {
       // a refined mesh built from the OLD base over result.mesh.
       resetPaintWorkerState();
       currentMeshData = result.mesh;
+      lastEngineRun = { code: src, paramsKey: runParamsKey, mesh: engineMesh, shown: result.mesh };
+      if (modelDrift && src !== modelDrift.code) clearModelDrift();
       lastVoxelRun = result.voxelGrid
         ? { code: src, paramsKey: runParamsKey, grid: result.voxelGrid }
         : null;

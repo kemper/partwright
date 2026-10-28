@@ -342,7 +342,7 @@ await partwright.exportGLBObjects(objectIds?, filename?)        // GLB: named no
 // ...each has a *Data twin (export{3MF,OBJ,STL,GLB}ObjectsData) that RETURNS the bytes instead of downloading.
 // Results carry {objects: N}. The pre-rename export*Parts / export*PartsData names still work (deprecated aliases).
 await partwright.exportSessionData()    // -> {filename, mimeType, data, sizeBytes} (parsed JSON)
-await partwright.exportSession(sessionId?, {includeThumbnails?, includeAnnotations?, includeNotes?, includeColorRegions?}) // -> the ExportedSession object itself (default: current; thumbnails off by default), null if none, or {error}
+await partwright.exportSession(sessionId?, {includeThumbnails?, includeAnnotations?, includeNotes?, includeColorRegions?, includeChat?, includeLatestMeshes?}) // -> the ExportedSession object itself (default: current; thumbnails and latest meshes off by default), null if none, or {error}. includeLatestMeshes embeds each object's newest mesh as saved -- see /ai/file-io.md#built-differently-than-saved
 partwright.exportCodeData()             // -> {filename, mimeType, language, text, sizeBytes}
 await partwright.importSessionData(parsedJson)         // -> {sessionId} or {error}
 await partwright.importSession(exportedSession)        // Import a parsed session object (regenerates thumbnails) and open it -> {id, name, warning?} or {error}
@@ -441,6 +441,9 @@ partwright.getCharacterSpec()                         // Read the spec from the 
 partwright.listCharacterPresets()               // Character Creator starting characters -> [{id, label, description, spec}]; pass .spec (optionally tweaked) to buildCharacter.
 await partwright.randomCharacter({seed?, save?, label?}) // Random, coherent humanoid (the panel's 🎲 Random) -> {seed, spec, code, ...}. Same seed = same character.
 await partwright.saveVersion(label?)     // Save current state as version
+partwright.getModelDrift()              // Does the open version's code now build a different model than saved (an app update, or random code)? -> {changed:false} | {changed:true, version, savedWith, running, differences[], canRestore, …}. loadVersion reports it as builtDifferently. See /ai/file-io.md#built-differently-than-saved
+await partwright.restoreSavedModel()    // Commit the drifted version's saved mesh as a new version (newest versions keep one: canRestore) -> {ok, label, geometry} | {error}. Ask the user first
+await partwright.keepRebuiltModel()     // Save the drifted version's newly built model as a new version -> {ok, id, index, label} | {error}. Ask the user first
 await partwright.commitWithColors({code?, label?, assertions?}) // Routes for you: new code -> runAndSave; same/omitted code -> saveVersion snapshot -> {routed:'run'|'snapshot', ...} or {error}
 await partwright.saveAllObjects()        // Save every object with unsaved changes (visits each, restores the active object) -> {saved, failed} or {error}
 await partwright.listVersions()          // -> [{id, index, label, timestamp, status}]

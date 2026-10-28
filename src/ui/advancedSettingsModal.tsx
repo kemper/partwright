@@ -1032,6 +1032,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0} max={20_000_000} integer
           onChange={v => set('renderer', 'surfaceTexturePersistMaxTriangles', v)}
         />
+        <Field cfgKey="renderer.versionMeshMaxTriangles"
+          label="Keep the newest saved mesh up to"
+          unit="tris"
+          hint="Each object's newest version keeps the mesh it showed, so the saved model can be restored if an update changes how its code builds."
+          tooltip="Opening a saved version re-runs its code, and an update to the app can make the same code build a slightly different model. Every version stores a small fingerprint so the app notices when that happens; each object's NEWEST version also keeps the mesh it displayed (colours included), so you can restore it. Older versions drop theirs when you save a newer one, so this costs one mesh per object. Models that are already stored meshes (imports, baked textures) never keep a second copy. About 18 bytes per triangle; 0 never keeps a mesh."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.versionMeshMaxTriangles}
+          value={c.renderer.versionMeshMaxTriangles}
+          min={0} max={20_000_000} integer
+          onChange={v => set('renderer', 'versionMeshMaxTriangles', v)}
+        />
         <Field cfgKey="renderer.storedArrayBlobMinKB"
           label="Store big arrays as files from"
           unit="KB"
