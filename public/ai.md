@@ -336,10 +336,12 @@ await partwright.exportOBJData()        // text or base64 depending on whether c
 await partwright.export3MFData(filename?, {mergeColors?, maxColors?, colorMap?})  // 3MF options also on export3MF / export3MFObjects*
 await partwright.exportVOXData()        // -> {filename, mimeType, base64, sizeBytes} (voxel sessions only)
 // Multi-object: bundle several of the session's objects into one file (default: all objects). See /ai/file-io.md.
-await partwright.export3MFObjects(objectIds?, filename?, {bambu?, printer?, nozzle?, filament?})  // 3MF: one object per Bambu/Orca plate (bambu:true, default; printer "p1s"/"h2c"…, nozzle "0.4", filament "pla"/"petg"…) or generic grid (false)
-await partwright.exportOBJObjects(objectIds?, filename?)        // OBJ: named objects in one file, grid-arranged (+ .mtl .zip if painted)
-await partwright.exportSTLObjects(objectIds?, filename?)        // STL: a .zip of one .stl per object
-await partwright.exportGLBObjects(objectIds?, filename?)        // GLB: named nodes in one scene, grid-arranged
+await partwright.export3MFObjects(objectIds?, filename?, {bambu?, printer?, nozzle?, filament?, plateLayout?, split?, exclude?, plates?})  // 3MF: one object per Bambu/Orca plate (bambu:true, default; printer "p1s"/"h2c"…, nozzle "0.4", filament "pla"/"petg"…) or generic grid (false)
+await partwright.exportOBJObjects(objectIds?, filename?, {split?, exclude?})  // OBJ: named objects in one file, grid-arranged (+ .mtl .zip if painted)
+await partwright.exportSTLObjects(objectIds?, filename?, {split?, exclude?})  // STL: a .zip of one .stl per object
+await partwright.exportGLBObjects(objectIds?, filename?, {split?, exclude?})  // GLB: named nodes in one scene, grid-arranged
+// split: {"<object>": "pieces" | "parts"} -- one file object per separate piece / labelled part (orientation kept);
+// exclude: ["<object> · <item>"] leaves items out. listExportItems(objectIds?) lists what each object splits into.
 // ...each has a *Data twin (export{3MF,OBJ,STL,GLB}ObjectsData) that RETURNS the bytes instead of downloading.
 // Results carry {objects: N}. The pre-rename export*Parts / export*PartsData names still work (deprecated aliases).
 await partwright.exportSessionData()    // -> {filename, mimeType, data, sizeBytes} (parsed JSON)

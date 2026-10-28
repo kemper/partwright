@@ -333,6 +333,10 @@ export interface AppConfig {
      *  memory for export speed; clamped at runtime to both (hardwareConcurrency −
      *  1) and the number of parts being exported. 1 ⇒ parts bake one at a time. */
     exportPoolSize: number;
+    /** Most items one object may split into in the export picker (Split →
+     *  Pieces / Parts). An object with more loose shells than this offers
+     *  only "Whole" — thousands of items aren't worth spreading over plates. */
+    exportMaxSplitItems: number;
     /** How long (ms) the engine sandbox (Advanced Settings → Security) may take
      *  to load its frame (or start a Worker in a loaded frame) before it gives
      *  up. Never falls back to an unsandboxed Worker: the first frame failing
@@ -787,6 +791,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     sdfCompileChunkNodes: 120,
     assemblyPoolSize: 3,
     exportPoolSize: 8,
+    exportMaxSplitItems: 200,
     engineSandboxBootTimeoutMs: 20_000,
     engineSandboxMaxFrameRestarts: 2,
     engineSandboxHeartbeatMs: 2_000,

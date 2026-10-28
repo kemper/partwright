@@ -469,6 +469,14 @@ describe('AI tool dispatch', () => {
     expect(unknown.error).toMatch(/"Nope"/);
     const vox = JSON.parse((await executeTool('exportModel', { format: 'vox', objects: ['Base'] })).content);
     expect(vox.error).toMatch(/only the current object/);
+    // split / exclude route a single-object export through the multi-object
+    // exporter for the current object.
+    await executeTool('exportModel', { format: '3mf', split: { Base: 'pieces' }, exclude: ['Base · Piece 2'] });
+    expect(calls.filter(c => c.method === 'export3MFObjects')[2].args).toEqual([['o1'], undefined, { bambu: false, split: { Base: 'pieces' }, exclude: ['Base · Piece 2'] }]);
+    const badSplit = JSON.parse((await executeTool('exportModel', { format: 'stl', split: { Base: 'halves' } })).content);
+    expect(badSplit.error).toMatch(/"pieces", "parts" or "whole"/);
+    const stepSplit = JSON.parse((await executeTool('exportModel', { format: 'step', split: { Base: 'pieces' } })).content);
+    expect(stepSplit.error).toMatch(/can't split/);
   });
 
   test('confirm labels name the export format + objects and the voxel image', async () => {

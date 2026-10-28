@@ -424,6 +424,9 @@ export function renderSingleViewCanvas(meshData: MeshData, options: {
   /** Draw the reference ("ghost") geometry from setReferenceGeometry, when
    *  one is set. The camera still frames the model. */
   reference?: boolean;
+  /** Draw the open object's annotations over the render (default true). Off
+   *  for previews of something other than the open object. */
+  annotations?: boolean;
 } = {}): HTMLCanvasElement {
   const viewSize = options.size ?? 500;
 
@@ -433,7 +436,7 @@ export function renderSingleViewCanvas(meshData: MeshData, options: {
   const camera = buildViewCamera(meshData, options);
   const renderer = getOffscreenRenderer(viewSize);
 
-  const annotations = buildOffscreenOverlay(viewSize);
+  const annotations = options.annotations === false ? null : buildOffscreenOverlay(viewSize);
   if (annotations) scene.add(annotations);
 
   renderer.render(scene, camera);
