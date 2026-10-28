@@ -198,6 +198,12 @@ export interface AppConfig {
      *  edge-adjacency pass on the main thread — ~2.5 s at 500k triangles —
      *  and on a mesh that dense the creases are noise at thumbnail size. */
     creaseEdgeMaxTriangles: number;
+    /** Largest step, as a fraction of the model's bounding-box diagonal,
+     *  whose walls the crease-edge overlay leaves out: two parallel faces
+     *  offset by less than this read as one surface. Hides the sub-voxel
+     *  seam a scoped round / smoothWeld leaves (#1112); real steps and
+     *  engraved walls are deeper. 0 = draw every crease. */
+    creaseMinStep: number;
     /** Triangle count from which a manifold-js run's volume / genus /
      *  component stats are computed in the engine Worker, and the main
      *  thread's own Manifold (for slicing, booleans, decompose) is rebuilt
@@ -770,6 +776,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     interactionRenderScale: 0.6,
     isolateGhostOpacity: 0.1,
     creaseEdgeMaxTriangles: 200_000,
+    creaseMinStep: 0.004,
     lazyManifoldMinTriangles: 250_000,
     thumbnailMaxTriangles: 600_000,
     containmentSamples: 12,

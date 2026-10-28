@@ -85,6 +85,7 @@ export const APP_CONFIG_FIELD_BOUNDS: { [S in ConfigSection]: Partial<Record<key
     gridDivisions: { min: 2, max: 200, integer: true },
     isolateGhostOpacity: { min: 0, max: 0.9 },
     creaseEdgeMaxTriangles: { min: 0, max: 50_000_000, integer: true },
+    creaseMinStep: { min: 0, max: 0.05 },
     lazyManifoldMinTriangles: { min: 0, max: 50_000_000, integer: true },
     thumbnailMaxTriangles: { min: 0, max: 50_000_000, integer: true },
     containmentSamples: { min: 1, max: 256, integer: true },
