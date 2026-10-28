@@ -132,7 +132,11 @@ test.describe('smooth paintbrush — UI interactions', () => {
     await page.locator('#paint-toggle').dispatchEvent('click');
     await page.waitForSelector('#paint-picker-panel:not(.hidden)');
 
+    // The default View alignment paints what's under the brush and has no wrap
+    // gate, so the slider only shows once the brush follows the surface.
     const wrapSlider = page.locator('#paint-picker-panel input[type="range"][title*="How sharp an edge"]');
+    await expect(wrapSlider).toBeHidden();
+    await page.locator('#brush-align-wrap button[data-align="surface"]').dispatchEvent('click');
     await expect(wrapSlider).toBeVisible();
     await expect(wrapSlider).toHaveAttribute('min', '0');
     await expect(wrapSlider).toHaveAttribute('max', '180');

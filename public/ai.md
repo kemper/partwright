@@ -169,7 +169,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `voxel` | Before writing voxel-language code or importing an image as voxels. Covers the `api.voxels()` grid API, colors, coordinate system, and image import. |
 | `mechanisms` | Before modeling a print-in-place / multi-part assembly that **moves** — a screw, spinner, hinge, captive ball, or slider. Covers clearance gaps, `componentCount` verification, twist-extrude threads/spirals, matched-taper nesting, and cutaway checks. |
 | `print-safety` | Before exporting STL/3MF for FDM printing — minimum wall thickness, taper traps, sub-extrusion-width layer detection. |
-| `printing` | The print-readiness toolkit — `checkPrintability` (overhangs, walls, bed fit, tip-over) and `get/setPrinterSettings`. The same check also runs automatically on STL / OBJ / 3MF / GLB export. Read before declaring a model print-ready, then steer the user to the dedicated Resize and Split tools if it doesn't fit. |
+| `printing` | The print-readiness toolkit — `checkPrintability` (overhangs, walls, bed fit, tip-over), `thicknessMap` (exact wall thickness everywhere: the thin spots and a heatmap) and `get/setPrinterSettings`. The same check also runs automatically on STL / OBJ / 3MF / GLB export. Read before declaring a model print-ready, then steer the user to the dedicated Resize and Split tools if it doesn't fit. |
 | `fasteners` | Before building parts that mate with real hardware — `api.fasteners.*` screw holes, tap/pilot holes, heat-set insert bosses, captive-nut pockets, the M2–M8 metric table, clearance presets, and a calibration coupon. |
 | `joints` | Before connecting printed parts to each other — `api.joints.*` alignment pins, sliding dovetails, snap-fits, print-in-place barrel hinges, articulating ball joints (friction / clamp / snap retention), and annular snap rims for press-on lids. |
 | `gears` | Before modeling an involute spur gear, a meshing gear pair, or a rack — `api.gears.spur/pair/rack(...)`, module/teeth/pressure-angle, centre distance, ratio, bores and hubs. |
@@ -199,6 +199,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 - **Hand-rolling curve math instead of using helpers** -- if you need a smooth surface or curve, check the verb table above. `Curves.loft` / BOSL2 `skin()` are far more reliable than a hand-written polygon-sampling loop.
 - **Building an organic figure as "primitive soup"** -- modeling a figurine, character, animal, or body by `union`-ing constant-radius spheres and capsules. It validates (manifold, prints) so nothing forces a rethink, but the ceiling is tubes-and-balls: every limb a cylinder, every joint a visible ball. For anything anatomical, reach for `api.sdf` `smoothUnion` (capsule limbs blended into ellipsoid masses) from the first version → `readDoc("sdf")`. "Smooth/organic figure" should trigger SDF the way "exact fillet" triggers BREP.
 - **Not saving versions** -- a session is always open for you; save your work with `runAndSave` so the user can review it in the gallery.
+- **Modelling straight on a huge import.** A 500k–1M-triangle scan or sculpt makes every run slow (tens of seconds) and memory-heavy, and `.simplify()` inside the model code re-runs every time. Decimate ONCE with `partwright.simplifyModel({ targetTris: 200000 })`, which saves a lighter version to build on (the original stays in history). See [/ai/file-io.md → Big imports](/ai/file-io.md#big-imports--decimate-once-first).
 - **Skipping visual verification** -- stats alone can't catch visual defects. After structural changes, call `renderViews()`; `renderViews({views: "box"})` is the only set that shows the back, left, and bottom faces.
 - **Placing the front face on the wrong side** — "Front" in Partwright means the −Y face. The default Front view camera is at −Y looking toward +Y, so a door, a character's face, a screen, or any feature intended to face the viewer must have its outward normal pointing in the −Y direction. If `renderViews()` shows the back of your model in the "Front" tile, rotate the model 180° around Z (`model.rotate([0,0,180])`).
 - **Flush boolean placement** -- shapes must overlap by at least 0.5 units to union correctly. Merely touching at a face produces disconnected components.
@@ -254,7 +255,7 @@ Call `partwright.help()` for a full method list, or `partwright.help('methodName
 
 ```js
 partwright.run(code?)          // Run code, update views, return geometry stats (+ `logs`: the model code's console output)
-partwright.getGeometryData()   // Current stats (same as #geometry-data)
+partwright.getGeometryData()   // Current stats (same as #geometry-data) + `logs`: what the last run printed, even one the user started
 partwright.validate(code)      // Check code without rendering -> {valid, error?}
 partwright.getCode()           // Read editor contents
 partwright.setCode(code)       // Set editor contents (no auto-run)
@@ -271,7 +272,7 @@ await partwright.evalAgainstImport(i?, opts?) // Chamfer/hausdorff report: curre
 partwright.toggleClip(on?)     // Toggle 3D clipping plane -> {enabled, z, min, max}
 partwright.setClipZ(z)         // Set clip height -> {enabled, z, min, max}
 partwright.getClipState()      // -> {enabled, z, min, max}
-await partwright.setReferenceGeometry(code, {color?, opacity?, wireframe?}) // Translucent fitment ghost built in the (sandboxed) engine Worker (manifold-js); superseded (error) if a newer set/clear or a session switch lands first -> Promise<{success, boundingBox?, volume?, error?}>
+await partwright.setReferenceGeometry(code, {color?, opacity?, wireframe?}) // Translucent fitment ghost built in the (sandboxed) engine Worker (manifold-js); superseded (error) if a newer set/clear or a session switch lands first -> Promise<{success, boundingBox?, volume?, error?}>. The ghost also appears in renderView/renderViews images (depth-tested, so you see where it pokes through; `reference: false` hides it) and as a dashed outline in renderSection — check a fit visually, not just by construction
 partwright.clearReferenceGeometry() / partwright.hasReferenceGeometry() // Remove the ghost / -> boolean
 partwright.setUnits('mm'|'cm'|'in'|'unitless') / partwright.getUnits() // Declared unit system (export metadata only; no scaling)
 
@@ -392,13 +393,13 @@ await partwright.runAndAssert(code, assertions) // -> {passed, failures?, stats,
 await partwright.runAndExplain(code)     // -> {stats, components[], hints[], logs?} (debug disconnects)
 await partwright.modifyAndTest(patchFn, assertions?) // Modify current code + test in isolation
 partwright.query({sliceAt?, decompose?, boundingBox?}) // Multi-query current geometry in one call
-partwright.renderView({elevation?, azimuth?, ortho?, size?, edges?})  // Render ONE angle -> data URL. edges: 'none'|'crease'|'wireframe' (default 'crease' uncolored / 'none' painted)
-await partwright.renderViews({views?: 'auto'|'tri'|'all'|'box', angles?, size?, edges?})  // multi-angle labeled composite -> data URL; 'auto' (default) picks angles by aspect ratio; 'box' = all 6 faces (the all-faces final check); pass `angles` for a custom set; `edges` sets the overlay on every tile; prefer for verification
+partwright.renderView({elevation?, azimuth?, ortho?, size?, edges?, reference?})  // Render ONE angle -> data URL. edges: 'none'|'crease'|'wireframe' (default 'crease' uncolored / 'none' painted); reference: draw the setReferenceGeometry ghost (default true when one is set)
+await partwright.renderViews({views?: 'auto'|'tri'|'all'|'box', angles?, size?, edges?, reference?})  // multi-angle labeled composite -> data URL; reference: the setReferenceGeometry ghost (default true when one is set); 'auto' (default) picks angles by aspect ratio; 'box' = all 6 faces (the all-faces final check); pass `angles` for a custom set; `edges` sets the overlay on every tile; prefer for verification
 await partwright.photoMatch({image?, view?: {azimuth, elevation, ortho?}, crop?, bg?, bgTolerance?, bgMode?, mask?, exclude?, merge?, ignore?, bands?, fit?, pixelAspect?, size?, overlay?, views?: [{image, azimuth, elevation, …}]})  // TEXT-ONLY likeness score vs a reference photo (attachment id/label or data URL) -> {silhouetteIoU, aspect, bands[] (+ left/right edge offsets), outline[], regions[], worst[], warnings[]}; views[] scores several angles at once (mean silhouetteIoU). Use instead of renders for routine likeness passes — see /ai/reference-images.md#photo-match
 await partwright.setThumbnailCamera({azimuth, elevation} | 'current' | null)  // Pin the session's thumbnail/catalog-tile camera angle (degrees) instead of the default iso 3/4 view (default az 45° — the +X/−Y corner — el 35°). 'current' pins the angle you're looking at in the viewport (orbit, then pin — no guessing numbers); null clears. Persists on the session. -> {thumbCamera} or {error}
 partwright.getThumbnailCamera()         // -> {azimuth, elevation} or null (unpinned ⇒ default iso)
 partwright.sliceAtZVisual(z)            // Cross-section SVG at height z -> {svg, area, contours}, null (no geometry) or {error}
-partwright.renderSection({axis?, offset?, size?})  // Slice on any axis -> {dataUrl, svg, axis, offset, area, contours}. axis: 'x'|'y'|'z' (default 'z'). offset defaults to bbox midpoint along axis. Engine-agnostic (works for SCAD too).
+partwright.renderSection({axis?, offset?, size?, reference?})  // Slice on any axis -> {dataUrl, svg, axis, offset, area, contours, view: {right, up, from}, boundingBox, referenceContours?}. axis: 'x'|'y'|'z' (default 'z'). offset defaults to bbox midpoint along axis. The image reads like the matching view — y cut from the front (+X right, +Z up), x cut from the right (+Y right, +Z up), z cut from above (+X right, +Y up) — and is captioned with labelled axis arrows, a scale bar and the section's extents; `boundingBox` is in those image axes. `reference` (default true when one is set) outlines the setReferenceGeometry ghost's section, dashed green. Engine-agnostic (works for SCAD too).
 partwright.componentBounds()             // -> [{index, volume, triangleCount, bbox: {min,max,size,center}}], largest first. Use to find leaked / satellite pieces after a boolean.
 partwright.pointInside([x,y,z])          // -> boolean (or null if no geometry). Tiny-probe-cube method; ambiguous within ~1e-5 of the surface.
 partwright.healCurrent({tolerance?})     // -> {ok, volumeDelta, triangleDelta, componentCountBefore, componentCountAfter}. Runs .simplify() on the current model and applies the result. Engine-agnostic.
@@ -413,6 +414,7 @@ partwright.measureMode(on?) / partwright.getMeasurement() // Interactive two-cli
 partwright.getPrinterSettings()          // -> {bed:[x,y,z], nozzleWidth, overhangAngleDeg, clearance} (mm)
 partwright.setPrinterSettings({bed?, nozzleWidth?, overhangAngleDeg?, clearance?}) // update any subset -> merged settings or {error}
 partwright.checkPrintability({bed?, nozzleWidth?, overhangAngleDeg?}?) // bed fit / overhang / thin wall / small feature / tip-over / watertight report, or {error}
+await partwright.thicknessMap({threshold?, limit?, render?, views?, size?}?) // EXACT wall thickness under every triangle -> {minThickness, thinnest, medianThickness, thinArea, thinFraction, spots[] (connected thin areas, thinnest first: center, thinnest, thickness, area), image? (heatmap)} — find WHERE walls are thin; see /ai/printing.md#thicknessmapopts
 partwright.isRunning()                   // -> boolean (is code executing?)
 
 // Spending mode (AI budget) -- respect what the user set; see #spending-mode
@@ -543,7 +545,7 @@ partwright.paintConnected({seed, maxDeviationDeg?, color, name?, withinPart?, wi
 partwright.paintRegion({point, normal?, color, name?, withinPart?, tolerance?, smooth?, smoothness?}) // bucket: coplanar flood-fill (edge-bounded); tolerance is a COSINE (default 0.9995)
 partwright.paintNearestRegion({point, color, searchRadius?, name?})       // snap-to-nearest variant
 partwright.paintNear({point, radius, normalCone?, color, name?})          // sphere selector
-partwright.paintStroke({points, radius, resolution?, maxEdge?, shape?, wrapAngleDeg?, color, name?, withinPart?}) // SMOOTH brush: subdivides mesh for a rounded painted edge (wrapAngleDeg = wrap tolerance, see note below)
+partwright.paintStroke({points, radius, resolution?, maxEdge?, shape?, surface?, depth?, wrapAngleDeg?, align?, viewDir?, frontFacesOnly?, color, name?, withinPart?}) // SMOOTH brush: subdivides mesh for a rounded painted edge (wrapAngleDeg = wrap tolerance; align/frontFacesOnly, see /ai/colors.md)
 partwright.paintInBox({box, normalCone?, color, name?})                   // AABB selector
 partwright.paintInOrientedBox({box: {center, size, quaternion?}, color, smooth?, resolution?, maxEdge?})  // rotated box selector (same as UI Box tool); SMOOTH edges by default
 partwright.paintFaces({triangleIds, color, name?, withinPart?})           // explicit triangle ids
@@ -583,7 +585,9 @@ partwright.setPaletteCapacity(n) / setPaletteConstrained(on)
 partwright.getBucketTolerance() / setBucketTolerance(t)                   // UI bucket tool config
 partwright.getBrushSize() / setBrushSize(r)                               // UI brush tool config
 partwright.getBrushSmooth() / setBrushSmooth(on) / setBrushSmoothDivisor(2..1024) // UI smooth-brush config (detail = radius ÷ divisor)
-partwright.getBrushSurface() / setBrushSurface('geodesic'|'slab') / setBrushDepth(d) // UI brush surface mode + slab depth (0 = auto)
+partwright.getBrushSurface() / setBrushSurface('geodesic'|'slab'|'sphere') / setBrushDepth(d) // UI brush volume + slab depth (0 = auto)
+partwright.getBrushAlign() / setBrushAlign('view'|'surface'|'area')           // UI brush direction: view (default) = camera ray, surface = triangle normal, area = averaged normal
+partwright.getBrushFrontFacesOnly() / setBrushFrontFacesOnly(bool)           // UI brush: only paint triangles facing the camera (default on)
 partwright.getBrushWrapAngle() / setBrushWrapAngle(0..180)                 // UI brush wrap tolerance (max edge bend paint crosses)
 partwright.getLabelNames()                                                // -> string[] label names from the current run (lighter than listLabels)
 await partwright.waitForPaint()                                           // resolve when no paint subdivision is in flight (only for pointer-driven brush tests)
@@ -684,7 +688,7 @@ const { Manifold, CrossSection, Curves, setCircularSegments } = api;
 - `knurl` -- functional grips: `diamond`/`straight`/`ribs` knurled cylinders for knobs, thumbscrews, and handles (distinct from decorative `surface` textures). See **[/ai/knurl.md](/ai/knurl.md)**.
 - `setCircularSegments`, `setMinCircularAngle`, `setMinCircularEdgeLength` -- global curve resolution defaults.
 
-**Debug with `console.log` — its output comes back to you.** Whatever model code prints with `console.log` / `info` / `warn` / `error` (in manifold-js, voxel and BREP sessions) is returned as `logs: string[]` by `run`, `runAndSave`, `setParams`, `runIsolated`, `runAndAssert` and `runAndExplain` (and the `runCode` / `runAndSave` chat tools), **including when the code throws** — so print intermediate values instead of throwing `JSON.stringify(...)` in an Error. Objects print as compact JSON, a Manifold prints as `Manifold{tris, bbox}`, and `warn`/`error` lines are prefixed. Output is capped per run (200 lines / 20,000 characters by default — Advanced Settings), so log summaries, not every loop iteration.:
+**Debug with `console.log` — its output comes back to you.** Whatever model code prints with `console.log` / `info` / `warn` / `error` (in manifold-js, voxel and BREP sessions) is returned as `logs: string[]` by `run`, `runAndSave`, `setParams`, `runIsolated`, `runAndAssert` and `runAndExplain` (and the `runCode` / `runAndSave` chat tools), and `getGeometryData()` carries the last run's `logs` whoever started it (the user's Run button or an auto-run included), **including when the code throws** — so print intermediate values instead of throwing `JSON.stringify(...)` in an Error. Objects print as compact JSON, a Manifold prints as `Manifold{tris, bbox}`, and `warn`/`error` lines are prefixed. Output is capped per run (200 lines / 20,000 characters by default — Advanced Settings), so log summaries, not every loop iteration.:
 
 ```js
 const head = Manifold.ofMesh(api.imports[0]);

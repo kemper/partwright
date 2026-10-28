@@ -70,7 +70,7 @@ function meshDataToBufferGeometry(mesh: MeshData): THREE.BufferGeometry {
 // does. Raycast hit normals come from the face, so no vertex normals are needed.
 const raycastCache = new WeakMap<MeshData, { numTri: number; geometry: THREE.BufferGeometry }>();
 
-function raycastGeometry(mesh: MeshData): THREE.BufferGeometry {
+export function raycastGeometry(mesh: MeshData): THREE.BufferGeometry {
   const hit = raycastCache.get(mesh);
   if (hit && hit.numTri === mesh.numTri) return hit.geometry;
   const geometry = meshDataToBufferGeometry(mesh);
