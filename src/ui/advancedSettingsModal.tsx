@@ -1124,6 +1124,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={1} max={100_000} integer
           onChange={v => set('renderer', 'probePixelsMaxPixels', v)}
         />
+        <Field cfgKey="renderer.viewFocusPadding"
+          label="Zoomed-render margin"
+          unit="×"
+          tooltip="When renderView/renderViews zoom onto a part or box (focus), this fraction of the part's largest side is added around it as context. A call's own padding option overrides it."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.viewFocusPadding}
+          value={c.renderer.viewFocusPadding}
+          min={0} max={5}
+          onChange={v => set('renderer', 'viewFocusPadding', v)}
+        />
         <Field cfgKey="renderer.sdfPreviewScale"
           label="SDF fast-preview coarsening"
           unit="×"

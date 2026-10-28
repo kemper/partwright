@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import type { MeshData } from './types';
 import { ensureBoundsTree } from '../renderer/bvh';
+import { pointInViewBox, type ViewBox } from '../renderer/viewFocus';
 
 export interface RayHit {
   z: number;
@@ -251,6 +252,9 @@ export function probePixel(
   camera: THREE.Camera,
   pixel: [number, number],
   size: number,
+  /** A clipped render's box: hits outside it were cut away in the image, so
+   *  the front-most hit INSIDE the box is the one the caller saw. */
+  clipBox?: ViewBox,
 ): PixelHit | PixelMiss {
   const geometry = raycastGeometry(meshData);
   const material = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
@@ -267,17 +271,23 @@ export function probePixel(
   camera.updateMatrixWorld();
   const raycaster = new THREE.Raycaster();
   raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
-  const intersections = raycaster.intersectObject(tempMesh);
+  const first = firstVisibleHit(raycaster.intersectObject(tempMesh), clipBox);
 
-  if (intersections.length === 0) {
+  if (!first) {
     const modelPixelBounds = projectBoundsToPixels(geometry, camera, size);
     material.dispose();
     return { hit: false, modelPixelBounds };
   }
 
-  const result = toPixelHit(intersections[0]);
+  const result = toPixelHit(first);
   material.dispose();
   return result;
+}
+
+/** The front-most intersection, skipping ones a clipped render cut away. */
+function firstVisibleHit(hits: THREE.Intersection[], clipBox?: ViewBox): THREE.Intersection | undefined {
+  if (!clipBox) return hits[0];
+  return hits.find(h => pointInViewBox([h.point.x, h.point.y, h.point.z], clipBox));
 }
 
 function toPixelHit(hit: THREE.Intersection): PixelHit {
@@ -307,6 +317,7 @@ export function probePixels(
   camera: THREE.Camera,
   pixels: [number, number][],
   size: number,
+  clipBox?: ViewBox,
 ): (PixelHit | PixelMiss)[] {
   const geometry = raycastGeometry(meshData);
   const material = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
@@ -319,12 +330,12 @@ export function probePixels(
   for (const [px, py] of pixels) {
     ndc.set((px / size) * 2 - 1, -((py / size) * 2 - 1));
     raycaster.setFromCamera(ndc, camera);
-    const hits = raycaster.intersectObject(tempMesh);
-    if (hits.length === 0) {
+    const first = firstVisibleHit(raycaster.intersectObject(tempMesh), clipBox);
+    if (!first) {
       if (bounds === undefined) bounds = projectBoundsToPixels(geometry, camera, size);
       out.push({ hit: false, modelPixelBounds: bounds });
     } else {
-      out.push(toPixelHit(hits[0]));
+      out.push(toPixelHit(first));
     }
   }
   material.dispose();

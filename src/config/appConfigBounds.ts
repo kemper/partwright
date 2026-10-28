@@ -123,6 +123,7 @@ export const APP_CONFIG_FIELD_BOUNDS: { [S in ConfigSection]: Partial<Record<key
     paintRefineCacheMaxMB: { min: 0, max: 4096, integer: true },
     paintRefineCacheTouchMinutes: { min: 0, max: 10_080, integer: true },
     probePixelsMaxPixels: { min: 1, max: 100_000, integer: true },
+    viewFocusPadding: { min: 0, max: 5 },
     sdfPreviewScale: { min: 1, max: 6 },
   },
   import: {

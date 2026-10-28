@@ -323,6 +323,10 @@ export interface AppConfig {
     paintRefineCacheTouchMinutes: number;
     /** Most pixels one `probePixels` call may cast (one ray each). */
     probePixelsMaxPixels: number;
+    /** Margin added around a `renderView`/`renderViews` `focus` box, as a
+     *  fraction of the box's largest side, so a zoomed part keeps a little
+     *  context around it. An explicit `padding` option overrides it. */
+    viewFocusPadding: number;
     /** Fast-preview coarsening factor for SDF models (figures). Before the
      *  full-quality render, the Worker meshes a throwaway coarse pass at this
      *  multiple of the model's march `edgeLength` (and skips detail regions) so
@@ -828,6 +832,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     paintRefineCacheMaxMB: 256,
     paintRefineCacheTouchMinutes: 60,
     probePixelsMaxPixels: 4096,
+    viewFocusPadding: 0.15,
     sdfPreviewScale: 2.5,
     sdfCompile: true,
     sdfCompileChunkNodes: 120,

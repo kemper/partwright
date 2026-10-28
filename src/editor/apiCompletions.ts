@@ -204,6 +204,8 @@ const API_MEMBERS: Completion[] = [
   fn('intersects', '(a, b)', 'true iff Manifolds a and b have non-zero volumetric overlap (bbox fast-reject).'),
   fn('contains', '(outer, inner)', 'true iff outer fully contains inner (inner − outer is empty).'),
   fn('pointInside', '(m, [x,y,z])', 'true iff the point is inside the solid (tiny-probe-cube method).'),
+  fn('raycast', '(m, origin, direction, {all?, maxDistance?})', 'First surface hit {point, normal, distance, triangle, entering} of a ray against m, or null. all: every crossing, nearest first.'),
+  fn('closestPoint', '(m, [x,y,z])', 'Nearest surface point {point, normal, distance, triangle, inside} on m to the given point.'),
   fn('bbox', '(m)', 'Bounding box info: { min, max, size, center } for the Manifold.'),
   fn('componentBounds', '(m)', 'Per-connected-component info: [{ index, volume, triangleCount, bbox }]. Largest volume first.'),
   fn('volumeDelta', '(a, b)', 'b.volume() − a.volume(). Handy for "did this op grow or shrink the part?".'),
