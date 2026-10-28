@@ -65,7 +65,7 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
     tools: [
       'getMeshSummary', 'findFaces', 'probePixel', 'probePixels', 'probeRay', 'getFeatureCentroids',
       'sliceAtZVisual', 'renderSection', 'getMeasurement', 'photoMatch', 'getViewState',
-      'setReferenceGeometry', 'clearReferenceGeometry',
+      'setReferenceGeometry', 'clearReferenceGeometry', 'thicknessMap',
     ],
   },
   {
@@ -76,6 +76,7 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
       'setObjectPartHidden', 'deleteObjectPart', 'restoreObjectPart', 'frameObjectPart',
       'isolateObjectPart', 'getObjectPartInfo', 'renameObjectPart', 'extractObjectPiece',
       'extractObjectParts', 'mergeObjects', 'reorderObjects', 'saveAllObjects', 'setObjectGroup',
+      'listExportItems', 'partAction', 'undoPartEdit',
     ],
   },
   {
