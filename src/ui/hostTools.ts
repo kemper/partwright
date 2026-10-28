@@ -48,6 +48,9 @@ export interface HostToolDeps {
     /** Model on screen and not a read-only shared preview. */
     canExport(): boolean;
     objectCount(): number;
+    /** The session's only object is several separate pieces (so even a
+     *  single-object export opens the picker, to offer the split). */
+    singleObjectCanSplit(): boolean;
     /** The session's objects (for validating `objects` up front). */
     objects(): { id: string; name: string; group?: string }[];
     /** Saved version indices of the active session (for `versions`). */
@@ -261,21 +264,22 @@ export function registerHostTools(deps: HostToolDeps): void {
     title: 'Export objects (pick objects + printer settings)',
     hint: 'Export',
     prefillSchema: {
-      format: { type: 'enum', values: ['3mf-bambu', '3mf', 'stl', 'obj', 'glb'], description: "Which export's object picker (default '3mf-bambu'). Non-Bambu formats need 2+ objects (a single object downloads directly)." },
+      format: { type: 'enum', values: ['3mf-bambu', '3mf', 'stl', 'obj', 'glb'], description: "Which export's object picker (default '3mf-bambu'). Non-Bambu formats need 2+ objects, or one object made of separate pieces (otherwise it downloads directly)." },
       objects: { type: 'list', of: 'string', maxItems: 500, description: 'Objects to tick, by name or id (default: the current object).' },
       printer: { type: 'string', description: 'Bambu printer id (3mf-bambu).' },
       nozzle: { type: 'string', description: 'Nozzle diameter as a string, e.g. "0.4" (3mf-bambu).' },
       filament: { type: 'string', description: 'Filament type id (3mf-bambu).' },
-      plateLayout: { type: 'enum', values: ['separate', 'grid', 'group'], description: 'Bambu plate layout.' },
+      plateLayout: { type: 'enum', values: ['separate', 'grid', 'group', 'custom'], description: "Bambu plate layout ('custom' = the user picks a plate per row)." },
       packStrategy: { type: 'enum', values: ['grid', 'horizontal', 'vertical'], description: '3MF packing.' },
+      split: { type: 'object', description: 'Object name or id → "whole" | "pieces" | "parts": one exported object per separate piece / labelled part. A split the object can\'t use falls back to whole once it is measured (listExportItems shows what applies).' },
     },
     enabled: () => deps.exports.canExport(),
     open: (prefill, ctx) => {
       const p = prefill ?? {};
       const format = (p.format as ExportObjectsFormat | undefined) ?? '3mf-bambu';
       if (!deps.exports.canExport()) return { error: 'nothing to export (no model on screen, or a read-only shared design)' };
-      if (format !== '3mf-bambu' && deps.exports.objectCount() < 2) {
-        return { error: `the ${format} export only shows an object picker for a session with 2+ objects (this one would download straight away) — use format "3mf-bambu", or runUiCommand("export-${format}") to export directly` };
+      if (format !== '3mf-bambu' && deps.exports.objectCount() < 2 && !deps.exports.singleObjectCanSplit()) {
+        return { error: `the ${format} export only shows an object picker for a session with 2+ objects, or one object of separate pieces (this one would download straight away) — use format "3mf-bambu", or runUiCommand("export-${format}") to export directly` };
       }
       if (isExportPartsOpen()) return { error: 'an export object picker is already open' };
       if (stagedFlowActive) return { error: STAGED_BUSY };
@@ -292,8 +296,12 @@ export function registerHostTools(deps: HostToolDeps): void {
           }
         }
       }
-      if (p.plateLayout === 'group' && format === '3mf-bambu' && !deps.exports.objects().some(o => o.group)) {
-        errors.push('plateLayout "group" needs grouped objects (this session has none)');
+      if (p.split !== undefined) {
+        const objs = deps.exports.objects();
+        for (const [want, mode] of Object.entries(p.split as Record<string, unknown>)) {
+          if (!objs.some(o => o.id === want || o.name.toLowerCase() === want.toLowerCase())) errors.push(`split: "${want}" is not an object of this session`);
+          if (mode !== 'whole' && mode !== 'pieces' && mode !== 'parts') errors.push(`split["${want}"] must be one of "whole", "pieces", "parts"`);
+        }
       }
       if (format === '3mf-bambu') {
         const c = deps.exports.bambuChoices();

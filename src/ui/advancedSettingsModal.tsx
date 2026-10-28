@@ -877,6 +877,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={1} max={16} integer
           onChange={v => set('renderer', 'exportPoolSize', v)}
         />
+        <Field cfgKey="renderer.exportMaxSplitItems"
+          label="Export split limit"
+          hint="Most pieces or parts one object can split into when exporting."
+          tooltip="The export picker can split one object into its separate pieces (connected solids) or its labelled parts, so each lands as its own object in the file. An object with more pieces or parts than this offers only Whole: thousands of loose shells aren't worth spreading over build plates."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.exportMaxSplitItems}
+          value={c.renderer.exportMaxSplitItems}
+          min={2} max={5000} integer
+          onChange={v => set('renderer', 'exportMaxSplitItems', v)}
+        />
         <Field cfgKey="renderer.assemblyGridGutter"
           label="Assembly grid gutter"
           unit="× cell"
@@ -1802,6 +1811,76 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.paintAdjacencyWorkerTimeoutMs}
           min={5_000} max={600_000} step={5_000} integer
           onChange={v => set('ui', 'paintAdjacencyWorkerTimeoutMs', v)}
+        />
+        <Field cfgKey="ui.partBoxSelectSamples"
+          label="Box-select samples per part"
+          unit="tris"
+          hint="How many of a part's triangles Shift-drag box select checks."
+          tooltip="Shift-dragging a box in the viewport selects every part with geometry inside it. Each part is tested by projecting up to this many of its triangle centres onto the screen; higher catches thin slivers of very big parts at the cost of a slower box select."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.partBoxSelectSamples}
+          value={c.ui.partBoxSelectSamples}
+          min={50} max={1_000_000} integer
+          onChange={v => set('ui', 'partBoxSelectSamples', v)}
+        />
+        <Field cfgKey="ui.partArrangeGapRatio"
+          label="Part arrange gap"
+          unit="× size"
+          hint="Gap between parts when the Parts panel arranges or copies them."
+          tooltip="Grid, pack, bed packing and copies leave this much space between parts, as a fraction of the parts' average footprint (0.2 = a fifth of a part's width). The Parts panel's gap box overrides it for one action."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.partArrangeGapRatio}
+          value={c.ui.partArrangeGapRatio}
+          min={0} max={5} step={0.05}
+          onChange={v => set('ui', 'partArrangeGapRatio', v)}
+        />
+        <Field cfgKey="ui.partSnapStep"
+          label="Part snap step"
+          unit="units"
+          hint="Grid step for the Parts panel's “Snap to grid”."
+          tooltip="“Snap to grid” moves each part's lower corner onto the nearest multiple of this step on X and Y."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.partSnapStep}
+          value={c.ui.partSnapStep}
+          min={0.001} max={10_000} step={0.5}
+          onChange={v => set('ui', 'partSnapStep', v)}
+        />
+        <Field cfgKey="ui.partNudgeStep"
+          label="Part nudge step"
+          unit="units"
+          hint="How far an arrow key moves the selected parts."
+          tooltip="With the Parts panel open, the arrow keys move the selected parts by this much on X and Y (PageUp/PageDown on Z). Hold Shift for ten times the step."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.partNudgeStep}
+          value={c.ui.partNudgeStep}
+          min={0.001} max={10_000} step={0.5}
+          onChange={v => set('ui', 'partNudgeStep', v)}
+        />
+        <Field cfgKey="ui.partNudgeSaveDelayMs"
+          label="Part nudge save delay"
+          unit="ms"
+          hint="How long after the last arrow-key nudge it is saved as a version."
+          tooltip="Holding an arrow key moves the selected parts step by step, but the whole move is saved as one version (and one Undo step) once the keys have been idle for this long."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.partNudgeSaveDelayMs}
+          value={c.ui.partNudgeSaveDelayMs}
+          min={100} max={30_000} step={100} integer
+          onChange={v => set('ui', 'partNudgeSaveDelayMs', v)}
+        />
+        <Field cfgKey="ui.partEditUndoDepth"
+          label="Part edit undo depth"
+          unit="edits"
+          hint="How many part edits the Parts panel can undo."
+          tooltip="Each arrange, copy or group action remembers the code before it so Undo can put it back. Past this many, the oldest are forgotten."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.partEditUndoDepth}
+          value={c.ui.partEditUndoDepth}
+          min={1} max={500} integer
+          onChange={v => set('ui', 'partEditUndoDepth', v)}
+        />
+        <Field cfgKey="ui.partMaxCopies"
+          label="Max part copies"
+          unit="copies"
+          hint="Most copies one duplicate or array action makes."
+          tooltip="Duplicate, array and grid array refuse to make more copies than this in one step, so a typo can't freeze the app."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.partMaxCopies}
+          value={c.ui.partMaxCopies}
+          min={1} max={10_000} integer
+          onChange={v => set('ui', 'partMaxCopies', v)}
         />
         <Field cfgKey="ui.maxPendingAppliedNotes"
           label="AI applied-notes kept"

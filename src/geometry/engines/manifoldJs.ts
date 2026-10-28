@@ -28,6 +28,7 @@ import { wasmFaultHint } from '../workerFaults';
 import { assertModelCodeRealm } from '../workerLockdown';
 import { MAX_PAINT_PATTERN_ANCHORS, MAX_PAINT_PATTERN_COLORS, type ApiPaintDescriptorKind } from '../apiPaintSpec';
 import { withoutPiecesAt } from '../removePieces';
+import { applyPartOps, PartOpError, type PartOp } from '../partOps';
 import { assertNumber, assertNumberTuple, ValidationError } from '../../validation/apiValidation';
 
 /** Marker the sandbox attaches to render-only proxies (see `renderMesh` below).
@@ -424,6 +425,51 @@ export const manifoldJsEngine: Engine = {
         throw new Error('api.removePiece(point): point must be [x, y, z] — a point on or inside the separate piece to remove.');
       }
       removedPieces.push(point as [number, number, number]);
+    };
+
+    // Part edits declared in code — what the Parts panel writes (arrange,
+    // copies, grouping): `api.movePart('a', [x, y, z])`, `rotatePart`,
+    // `scalePart`, `mirrorPart`, `copyPart`, `groupParts`, `cutWithPart`.
+    // Recorded in order and applied to the returned model AFTER the code
+    // runs (src/geometry/partOps.ts), by moving the part's own triangles — so
+    // they work on any labelled part (api.label, an import's parts, BREP
+    // labels) that is a separate solid, wherever the lines sit in the code.
+    const partOps: PartOp[] = [];
+    const partName = (fn: string, name: unknown): string => {
+      if (typeof name !== 'string' || name.length === 0) throw new Error(`api.${fn}(name, …): name must be a non-empty string naming a part (see listObjectParts).`);
+      return name;
+    };
+    const vec3 = (fn: string, v: unknown, what: string): [number, number, number] => {
+      if (!Array.isArray(v) || v.length !== 3 || v.some(n => typeof n !== 'number' || !Number.isFinite(n))) {
+        throw new Error(`api.${fn}: ${what} must be [x, y, z] (three finite numbers).`);
+      }
+      return [v[0], v[1], v[2]];
+    };
+    const movePart = (name: unknown, offset: unknown): void => {
+      partOps.push({ kind: 'move', part: partName('movePart', name), offset: vec3('movePart', offset, 'offset') });
+    };
+    const rotatePart = (name: unknown, degrees: unknown): void => {
+      partOps.push({ kind: 'rotate', part: partName('rotatePart', name), degrees: vec3('rotatePart', degrees, 'degrees') });
+    };
+    const scalePart = (name: unknown, factor: unknown): void => {
+      const f = typeof factor === 'number' ? [factor, factor, factor] : factor;
+      const v = vec3('scalePart', f, 'factor (a number, or [x, y, z])');
+      if (v.some(n => n <= 0)) throw new Error('api.scalePart: factors must be greater than 0 (use mirrorPart to flip).');
+      partOps.push({ kind: 'scale', part: partName('scalePart', name), factor: v });
+    };
+    const mirrorPart = (name: unknown, axis: unknown): void => {
+      if (axis !== 'x' && axis !== 'y' && axis !== 'z') throw new Error("api.mirrorPart(name, axis): axis must be 'x', 'y' or 'z'.");
+      partOps.push({ kind: 'mirror', part: partName('mirrorPart', name), axis });
+    };
+    const copyPart = (name: unknown, as: unknown, offset: unknown = [0, 0, 0]): void => {
+      partOps.push({ kind: 'copy', part: partName('copyPart', name), as: partName('copyPart', as), offset: vec3('copyPart', offset, 'offset') });
+    };
+    const groupParts = (names: unknown, as: unknown): void => {
+      if (!Array.isArray(names) || names.length < 2) throw new Error("api.groupParts(names, as): names must be an array of 2+ part names, e.g. api.groupParts(['lid', 'hinge'], 'lid assembly').");
+      partOps.push({ kind: 'group', parts: names.map(n => partName('groupParts', n)), as: partName('groupParts', as) });
+    };
+    const cutWithPart = (name: unknown): void => {
+      partOps.push({ kind: 'cut', part: partName('cutWithPart', name) });
     };
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -943,6 +989,13 @@ export const manifoldJsEngine: Engine = {
       labeledUnion,
       removePart,
       removePiece,
+      movePart,
+      rotatePart,
+      scalePart,
+      mirrorPart,
+      copyPart,
+      groupParts,
+      cutWithPart,
       paint,
       surface,
       material,
@@ -1056,6 +1109,49 @@ export const manifoldJsEngine: Engine = {
       // provenance (through any booleans) exactly like `api.label` ones.
       for (const registry of consumeBrepToManifoldLabels()) {
         for (const [id, name] of registry) labelRegistry.set(id, name);
+      }
+
+      // Part edits (api.movePart & co.): move the parts' own triangles, then
+      // subtract any cutter parts. Copies and groups keep their source's colour.
+      // An edit of a part deleted with api.removePart (or of a copy / group
+      // made from one) has nothing left to act on: skip it rather than fail.
+      const gone = new Set(removedParts);
+      const liveOps: PartOp[] = [];
+      for (const op of partOps) {
+        if (op.kind === 'group') {
+          const parts = op.parts.filter(n => !gone.has(n));
+          if (parts.length < 2) gone.add(op.as);
+          else liveOps.push(parts.length === op.parts.length ? op : { ...op, parts });
+        } else if (gone.has(op.part) || (op.kind === 'copy' && gone.has(op.as))) {
+          // (A removed copy: api.removePart names the copy itself.)
+          if (op.kind === 'copy') gone.add(op.as);
+        } else {
+          liveOps.push(op);
+        }
+      }
+      if (liveOps.length > 0) {
+        const mg = result.getMesh();
+        let edited;
+        try {
+          edited = applyPartOps(
+            { numProp: mg.numProp, vertProperties: mg.vertProperties, triVerts: mg.triVerts, runIndex: mg.runIndex, runOriginalID: mg.runOriginalID, mergeFromVert: mg.mergeFromVert, mergeToVert: mg.mergeToVert },
+            labelRegistry, liveOps, (n) => Manifold.reserveIDs(n),
+          );
+        } catch (e) {
+          if (e instanceof PartOpError) throw new Error(e.message);
+          throw e;
+        }
+        labelRegistry.clear();
+        for (const [id, name] of edited.labels) labelRegistry.set(id, name);
+        for (const op of liveOps) {
+          if (op.kind === 'copy' && labelColors.has(op.part) && !labelColors.has(op.as)) labelColors.set(op.as, labelColors.get(op.part)!);
+          if (op.kind === 'group' && !labelColors.has(op.as)) {
+            const first = op.parts.find(n => labelColors.has(n));
+            if (first) labelColors.set(op.as, labelColors.get(first)!);
+          }
+        }
+        result = Manifold.ofMesh(edited.mesh);
+        for (const cutter of edited.cutters) result = result.subtract(Manifold.ofMesh(cutter));
       }
 
       // Labels present before api.removePiece drops pieces — a label that lived

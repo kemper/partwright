@@ -66,6 +66,10 @@ interface MeshImportModalOptions {
      *  first object, when it makes several — in any mode, and that's the
      *  default destination. */
     currentIsEmpty?: boolean;
+    /** The session's objects: "An existing object" then offers a picker
+     *  (default: the current one). */
+    objects?: { id: string; name: string }[];
+    currentObjectId?: string;
   };
 }
 
@@ -74,6 +78,8 @@ interface MeshImportModalResult {
   /** Indices into `items`, in list order. */
   selected: number[];
   destination: MeshImportDestination;
+  /** With destination 'current-object': the object picked (absent = the open one). */
+  objectId?: string;
   /** Multi-file imports only. */
   layout?: MultiFileLayout;
   convert?: boolean;
@@ -128,7 +134,7 @@ function modeText(opts: MeshImportModalOptions, mode: ImportSplitMode): ModeText
 
 // Body and footer are separate Preact trees (modalShell owns both slots), so
 // they share the choice through this tiny store.
-interface State { mode: ImportSplitMode; selected: boolean[]; destination: MeshImportDestination; layout: MultiFileLayout; convert: boolean }
+interface State { mode: ImportSplitMode; selected: boolean[]; destination: MeshImportDestination; layout: MultiFileLayout; convert: boolean; objectId: string }
 function createStore(initial: State) {
   let state = initial;
   const listeners = new Set<() => void>();
@@ -420,16 +426,29 @@ function Body(props: { opts: MeshImportModalOptions; store: Store }) {
               enabled: true,
             } : {
               value: 'current-object',
-              title: `The current object${opts.destinations.currentObjectName ? ` — "${opts.destinations.currentObjectName}"` : ''}`,
+              title: (opts.destinations.objects?.length ?? 0) > 1 ? 'An existing object' : `The current object${opts.destinations.currentObjectName ? ` — "${opts.destinations.currentObjectName}"` : ''}`,
               desc: st.mode !== 'none'
                 ? 'Only when importing everything as one object.'
-                : st.convert ? 'Not with Convert to editable code — it would rebuild this object’s own code too.'
-                : opts.destinations.canAddToCurrent ? 'Combine it with the geometry already in this object.' : 'This mesh can’t be combined into an existing object.',
+                : st.convert ? 'Not with Convert to editable code — it would rebuild that object’s own code too.'
+                : opts.destinations.canAddToCurrent ? 'Each model becomes a named part of it, beside its geometry. A JavaScript object keeps its code.' : 'This mesh can’t be combined into an existing object.',
               enabled: st.mode === 'none' && !st.convert && opts.destinations.canAddToCurrent,
             },
           ]}
           onChange={setDestination}
         />
+      )}
+      {opts.destinations && !opts.destinations.currentIsEmpty && st.destination === 'current-object' && (opts.destinations.objects?.length ?? 0) > 1 && (
+        <label class="flex items-center gap-2 text-[11px] text-zinc-400 pl-7 -mt-1">
+          Object
+          <select
+            data-import-object
+            class="flex-1 min-w-0 min-h-[44px] md:min-h-0 px-2 py-1 rounded bg-zinc-800 border border-zinc-700 text-zinc-200 text-[11px]"
+            value={st.objectId}
+            onChange={e => store.set({ objectId: (e.target as HTMLSelectElement).value })}
+          >
+            {opts.destinations.objects!.map(o => <option key={o.id} value={o.id}>{o.name}{o.id === opts.destinations!.currentObjectId ? ' (open)' : ''}</option>)}
+          </select>
+        </label>
       )}
     </>
   );
@@ -477,6 +496,7 @@ export function showMeshImportModal(opts: MeshImportModalOptions): Promise<MeshI
       destination: opts.destinations ? (opts.destinations.currentIsEmpty ? 'current-object' : 'this-session') : 'new-session',
       layout: opts.initialLayout ?? opts.layouts?.[0] ?? 'keep',
       convert: false,
+      objectId: opts.destinations?.currentObjectId ?? '',
     });
     mountPreactModal(
       {
@@ -498,6 +518,7 @@ export function showMeshImportModal(opts: MeshImportModalOptions): Promise<MeshI
                 mode: st.mode,
                 selected: selectedIndices(st.selected),
                 destination: st.destination,
+                ...(st.destination === 'current-object' && st.objectId ? { objectId: st.objectId } : {}),
                 ...(opts.layouts ? { layout: st.layout } : {}),
                 ...(opts.offerConvert ? { convert: st.convert } : {}),
               };
