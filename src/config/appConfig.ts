@@ -477,6 +477,9 @@ export interface AppConfig {
     partSnapStep: number;
     /** Parts panel arrow-key nudge step (model units; Shift = ×10). */
     partNudgeStep: number;
+    /** Parts panel: how long (ms) after the last arrow-key nudge the edit is
+     *  saved as a version (a held key saves once, not per step). */
+    partNudgeSaveDelayMs: number;
     /** Parts panel Undo: part edits remembered per tab. */
     partEditUndoDepth: number;
     /** Most copies one Parts panel duplicate/array action may make. */
@@ -846,6 +849,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     partArrangeGapRatio: 0.2,
     partSnapStep: 5,
     partNudgeStep: 1,
+    partNudgeSaveDelayMs: 1000,
     partEditUndoDepth: 30,
     partMaxCopies: 100,
     maxPendingAppliedNotes: 6,

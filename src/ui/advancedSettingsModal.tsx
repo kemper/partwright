@@ -1833,6 +1833,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0.001} max={10_000} step={0.5}
           onChange={v => set('ui', 'partNudgeStep', v)}
         />
+        <Field cfgKey="ui.partNudgeSaveDelayMs"
+          label="Part nudge save delay"
+          unit="ms"
+          hint="How long after the last arrow-key nudge it is saved as a version."
+          tooltip="Holding an arrow key moves the selected parts step by step, but the whole move is saved as one version (and one Undo step) once the keys have been idle for this long."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.partNudgeSaveDelayMs}
+          value={c.ui.partNudgeSaveDelayMs}
+          min={100} max={30_000} step={100} integer
+          onChange={v => set('ui', 'partNudgeSaveDelayMs', v)}
+        />
         <Field cfgKey="ui.partEditUndoDepth"
           label="Part edit undo depth"
           unit="edits"

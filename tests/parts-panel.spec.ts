@@ -102,7 +102,10 @@ return api.label(Manifold.cube([10, 10, 10]), 'x').add(api.label(Manifold.cube([
     expect(bed.error).toBeUndefined();
     expect(bed.message).toContain('onto the bed');
     expect(await pw(page, 'partAction', 'spin')).toMatchObject({ error: expect.stringContaining('partAction(action)') });
+    // A part with copies made from it can't be deleted on its own.
+    expect((await pw<{ error?: string }>(page, 'partAction', 'duplicate', { parts: ["d"] })).error).toBeUndefined();
+    expect(await pw(page, 'deleteObjectPart', 'd')).toMatchObject({ error: expect.stringContaining('"d 2"') });
     const geo = await pw<{ isManifold: boolean; componentCount: number }>(page, 'getGeometryData');
-    expect(geo).toMatchObject({ isManifold: true, componentCount: 4 });
+    expect(geo).toMatchObject({ isManifold: true, componentCount: 5 });
   });
 });

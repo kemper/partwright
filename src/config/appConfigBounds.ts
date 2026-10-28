@@ -198,6 +198,7 @@ export const APP_CONFIG_FIELD_BOUNDS: { [S in ConfigSection]: Partial<Record<key
     partArrangeGapRatio: { min: 0, max: 5 },
     partSnapStep: { min: 0.001, max: 10_000 },
     partNudgeStep: { min: 0.001, max: 10_000 },
+    partNudgeSaveDelayMs: { min: 100, max: 30_000, integer: true },
     partEditUndoDepth: { min: 1, max: 500, integer: true },
     partMaxCopies: { min: 1, max: 10_000, integer: true },
     maxPendingAppliedNotes: { min: 1, max: 50, integer: true },

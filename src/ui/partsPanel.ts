@@ -42,6 +42,8 @@ export interface PartsPanelApi {
   /** The configured nudge / snap steps (Advanced settings). */
   nudgeStep(): number;
   snapStep(): number;
+  /** A free name for a new group ("Group 1", "Group 2"…). */
+  suggestGroupName(): string;
 }
 
 let api: PartsPanelApi | null = null;
@@ -68,7 +70,7 @@ const fields = {
 };
 
 const ACTION_BTN = 'px-1.5 py-1 min-h-[44px] md:min-h-0 rounded text-[11px] leading-tight text-zinc-300 bg-zinc-800 border border-zinc-700 [@media(hover:hover)]:hover:bg-zinc-700 [@media(hover:hover)]:hover:text-zinc-100 disabled:opacity-40 disabled:pointer-events-none text-left truncate';
-const INPUT = 'w-full min-w-0 px-1.5 py-1 rounded bg-zinc-900 border border-zinc-700 text-[11px] text-zinc-200 tabular-nums focus:outline-none focus:border-blue-500/70';
+const INPUT = 'w-full min-w-0 min-h-[44px] md:min-h-0 px-1.5 py-1 rounded bg-zinc-900 border border-zinc-700 text-[11px] text-zinc-200 tabular-nums focus:outline-none focus:border-blue-500/70';
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text?: string): HTMLElementTagNameMap[K] {
   const n = document.createElement(tag);
@@ -140,7 +142,9 @@ async function act(action: string, opts: Record<string, unknown> = {}): Promise<
   busy = true;
   render();
   try {
-    const r = await api.run(action, opts);
+    // The selected parts — the API acts on every part unless told otherwise.
+    const selected = getSelectedPartKeys().filter(k => k.startsWith('part:')).map(k => k.slice(5));
+    const r = await api.run(action, { ...(selected.length > 0 && !opts.parts ? { parts: selected } : {}), ...opts });
     if ('error' in r) { showToast(r.error, { variant: 'warn' }); return false; }
     showToast(r.message, { variant: 'success' });
     return true;
@@ -156,14 +160,14 @@ function nudge(d: Vec3): void {
     pendingNudge = pendingNudge ? [pendingNudge[0] + d[0], pendingNudge[1] + d[1], pendingNudge[2] + d[2]] : d;
     return;
   }
-  void act('move', { offset: d });
+  void act('move', { offset: d, nudge: true });
 }
 
 function flushNudge(): void {
   if (!pendingNudge || busy) return;
   const d = pendingNudge;
   pendingNudge = null;
-  void act('move', { offset: d });
+  void act('move', { offset: d, nudge: true });
 }
 
 function nudgeStep(): number {
@@ -288,7 +292,7 @@ function render(): void {
         dataAction: 'set-part-color',
         onPick: (hex) => a.setPartColor(part.name, hex),
       });
-      row.appendChild(swatch.el);
+      row.appendChild(swatchHit(swatch.el));
       row.appendChild(el('span', 'flex-1 min-w-0 truncate text-zinc-400', part.colorSource === 'painted' ? 'Painted over the code colour' : 'Colour'));
       if (part.colorSource === 'painted') {
         const reset = el('button', 'px-1.5 py-0.5 min-h-[44px] md:min-h-0 rounded text-[10px] text-zinc-300 [@media(hover:hover)]:hover:bg-zinc-700', '↺ Reset');
@@ -309,15 +313,16 @@ function render(): void {
         dataAction: 'set-parts-color',
         onPick: (hex) => { for (const n of selectedParts) a.setPartColor(n, hex); },
       });
-      row.appendChild(swatch.el);
+      row.appendChild(swatchHit(swatch.el));
       row.appendChild(el('span', 'flex-1 min-w-0 truncate text-zinc-400', 'Colour them all'));
       sel.appendChild(row);
     }
     const g = grid(sel);
     btn(g, 'isolate', isIsolated ? '◑ Show all' : '◐ Isolate', isIsolated ? 'Show the whole object again' : 'Ghost everything else so only the selection is drawn solid', () => a.isolate(isIsolated ? null : keys), { pressed: isIsolated });
-    btn(g, 'hide-selection', '◌ Hide', 'Hide in the viewport (view only — the code and exports keep it). Shift-H shows hidden parts again.', () => a.hideMany(keys));
+    const unlabeled = single === 'unlabeled';
+    if (!unlabeled) btn(g, 'hide-selection', '◌ Hide', 'Hide in the viewport (view only — the code and exports keep it). Shift-H shows hidden parts again.', () => a.hideMany(keys));
     const blocked = keys.map(k => a.getDelete(k)).find(d => !d.show || d.reason);
-    btn(g, 'delete-selection', '✕ Delete', blocked?.reason ?? 'Delete — adds removal lines to the top of the code (recoverable from Recover deleted)', () => { void (single ? a.deletePart(single) : a.deleteMany(keys)); }, { disabled: !!blocked });
+    if (!unlabeled) btn(g, 'delete-selection', '✕ Delete', blocked?.reason ?? 'Delete — adds removal lines to the top of the code (recoverable from Recover deleted)', () => { void (single ? a.deletePart(single) : a.deleteMany(keys)); }, { disabled: !!blocked });
     if (part) {
       btn(g, 'go-to-code', '⌖ Code', `Show where "${part.name}" is labelled in the code`, () => a.goToCode(part.name));
       btn(g, 'rename', '✎ Rename', `Rename "${part.name}" in the code, its paint and its texture scopes`, () => {
@@ -447,7 +452,7 @@ function render(): void {
     btn(scaleRow, 'scale', '⤢ Scale', 'Scale the parts by the factor, about their base', () => { void act('scale', { factor: num(fields.scale, 1) }); });
     g4.appendChild(scaleRow);
 
-    const cp = section('Copies', 'Copies are code lines too (api.copyPart): delete a copy to remove its line');
+    const cp = section('Copies', 'Copies are code lines too (api.copyPart). Deleting a copy removes it; Undo takes the copy back out of the code.');
     const g5 = el('div', 'grid grid-cols-[auto_1fr_auto] gap-1 items-center');
     btn(g5, 'duplicate', '⧉ Duplicate', 'Make one copy of each part beside it', () => { void act('duplicate', gapOpt()); });
     g5.appendChild(el('span'));
@@ -467,7 +472,7 @@ function render(): void {
     const gp = section('Group', 'A group is one part made of several (api.groupParts) — it moves, copies and colours as one');
     const g6 = grid(gp, 3);
     btn(g6, 'group', '⊕ Group', 'Join the selected parts into one named part', () => {
-      void promptDialog(`Name for the group of ${n} parts:`, { title: 'Group parts', initialValue: 'Group 1', confirmLabel: 'Group' }).then((name) => {
+      void promptDialog(`Name for the group of ${n} parts:`, { title: 'Group parts', initialValue: api?.suggestGroupName() ?? 'Group 1', confirmLabel: 'Group' }).then((name) => {
         const v = name?.trim();
         if (v) void act('group', { name: v });
       });
@@ -498,6 +503,14 @@ function render(): void {
   footer.appendChild(undo);
 
   if (focusedField) body.querySelector<HTMLElement>(`[data-field="${CSS.escape(focusedField)}"]`)?.focus();
+}
+
+/** A small colour swatch inside a 44 px tap target on touch screens. */
+function swatchHit(swatch: HTMLElement): HTMLElement {
+  const hit = el('span', 'shrink-0 flex items-center justify-center min-w-[44px] min-h-[44px] md:min-w-0 md:min-h-0 cursor-pointer');
+  hit.addEventListener('click', (e) => { if (e.target === hit) { e.stopPropagation(); swatch.click(); } });
+  hit.appendChild(swatch);
+  return hit;
 }
 
 function gapOpt(): Record<string, unknown> {
@@ -540,13 +553,13 @@ export function initPartsPanel(panelApi: PartsPanelApi): void {
   });
 
   const mount = () => {
-    if (document.getElementById('parts-viewport-toggle')) return;
+    if (document.getElementById('parts-panel-toggle')) return;
     const styleRef = document.getElementById('paint-toggle');
     const host = document.getElementById('viewport-tools-menu') ?? styleRef?.parentElement;
     if (!host) return;
     const btnCls = (styleRef?.className ?? '').split(' ').filter(c => c !== 'hidden').join(' ') || BUTTON_SMALL_SECONDARY;
     const b = el('button', btnCls, '▦ Parts');
-    b.id = 'parts-viewport-toggle';
+    b.id = 'parts-panel-toggle';
     b.title = 'Arrange, copy, group and edit the parts of this object';
     b.addEventListener('click', () => (shell ? closePartsPanel() : openPartsPanel()));
     host.appendChild(b);
@@ -554,7 +567,7 @@ export function initPartsPanel(panelApi: PartsPanelApi): void {
   let tries = 0;
   const timer = setInterval(() => {
     mount();
-    if (document.getElementById('parts-viewport-toggle') || ++tries > 20) clearInterval(timer);
+    if (document.getElementById('parts-panel-toggle') || ++tries > 20) clearInterval(timer);
   }, 250);
   mount();
 }

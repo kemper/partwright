@@ -19,12 +19,17 @@ describe('composeImportIntoCode', () => {
       'api.movePart("a", [1, 0, 0]);',
       'const __partwrightBase = (() => {',
       '',
-      '  const { Manifold } = api;',
-      "  return api.label(Manifold.cube(10), 'a');",
+      'const { Manifold } = api;',
+      "return api.label(Manifold.cube(10), 'a');",
       '})();',
       'return api.Manifold.compose([__partwrightBase, api.importWithParts(2)]);',
       '',
     ]);
+  });
+
+  it('keeps a block-comment header on top', () => {
+    const out = composeImportIntoCode('/* header\n * more */\napi.movePart("a", [1, 0, 0]);\nreturn x;', 0);
+    expect(out.split('\n').slice(0, 4)).toEqual(['/* header', ' * more */', 'api.movePart("a", [1, 0, 0]);', 'const __partwrightBase = (() => {']);
   });
 
   it('extends the compose list on a second import', () => {

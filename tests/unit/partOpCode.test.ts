@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addPartOps, findPartOpLines, formatPartOp, parsePartOpLine, partsCreatedByOps, removeCreatedPart, renamePartInOps } from '../../src/editor/partOpCode';
+import { addPartOps, findPartOpLines, formatPartOp, parsePartOpLine, partsCreatedByOps, removeCreatedPart, renamePartInOps, reservedPartNames, ungroupInCode, derivedParts } from '../../src/editor/partOpCode';
 import type { PartOp } from '../../src/geometry/partOps';
 
 const BODY = `// Imported from kit.3mf
@@ -24,6 +24,11 @@ describe('formatPartOp / parsePartOpLine', () => {
     expect(formatPartOp(ops[0])).toBe('api.movePart("a", [1, -2.5, 0]);');
     expect(formatPartOp(ops[2])).toBe('api.scalePart("c", 2);');
     expect(formatPartOp(ops[6])).toBe('api.groupParts(["a", "b"], "ab");');
+  });
+  it('round-trips names with apostrophes, and a comment holding a parenthesis', () => {
+    const op: PartOp = { kind: 'copy', part: "Bob's arm", as: "Bob's arm 2", offset: [10, 0, 0] };
+    expect(parsePartOpLine(formatPartOp(op))).toEqual(op);
+    expect(parsePartOpLine("api.movePart('a', [1, 0, 0]); // nudge (x)")).toEqual({ kind: 'move', part: 'a', offset: [1, 0, 0] });
   });
   it('reads single quotes and ignores other code', () => {
     expect(parsePartOpLine("api.movePart('a', [1, 2, 3]); // nudge")).toEqual({ kind: 'move', part: 'a', offset: [1, 2, 3] });
@@ -65,6 +70,9 @@ describe('addPartOps', () => {
     expect(findPartOpLines(code).map(x => x.op)).toEqual([{ kind: 'rotate', part: 'a', degrees: [0, 0, 180] }]);
     code = addPartOps(code, [{ kind: 'rotate', part: 'a', degrees: [0, 0, 180] }]);
     expect(findPartOpLines(code)).toEqual([]);
+    // An oblique turn moves the box centre the next one pivots on: no folding.
+    const oblique = addPartOps(addPartOps(BODY, [{ kind: 'rotate', part: 'b', degrees: [0, 0, 30] }]), [{ kind: 'rotate', part: 'b', degrees: [0, 0, 30] }]);
+    expect(findPartOpLines(oblique).length).toBe(2);
     // Different axes stay separate lines.
     code = addPartOps(code, [{ kind: 'rotate', part: 'a', degrees: [90, 0, 0] }, { kind: 'rotate', part: 'a', degrees: [0, 90, 0] }]);
     expect(findPartOpLines(code).length).toBe(2);
@@ -95,5 +103,41 @@ describe('renamePartInOps / removeCreatedPart', () => {
     const out = removeCreatedPart(code, 'bc');
     expect(findPartOpLines(out).map(x => x.op.kind)).toEqual(['copy', 'move', 'copy']);
     expect(removeCreatedPart(code, 'nope')).toBe(code);
+  });
+});
+
+describe('reservedPartNames / ungroupInCode', () => {
+  it('reserves deleted names and names the edit lines create', () => {
+    const code = `api.removePart("leg 2");\napi.removePart('old');\napi.copyPart("leg", "leg 3", [1, 0, 0]);\nreturn x;`;
+    expect(reservedPartNames(code)).toEqual(new Set(['leg 3', 'leg 2', 'old']));
+  });
+
+  it('ungroup turns group moves into member moves', () => {
+    const code = addPartOps(BODY, [{ kind: 'group', parts: ['a', 'b'], as: 'G' }, { kind: 'move', part: 'G', offset: [50, 0, 0] }]);
+    const out = ungroupInCode(code, 'G');
+    expect(typeof out).toBe('string');
+    expect(findPartOpLines(out as string).map(x => x.op)).toEqual([
+      { kind: 'move', part: 'a', offset: [50, 0, 0] },
+      { kind: 'move', part: 'b', offset: [50, 0, 0] },
+    ]);
+    expect(ungroupInCode(code, 'nope')).toBeNull();
+  });
+
+  it('ungroup refuses when a later edit turns the group as a whole', () => {
+    const code = addPartOps(BODY, [{ kind: 'group', parts: ['a', 'b'], as: 'G' }, { kind: 'rotate', part: 'G', degrees: [0, 0, 90] }]);
+    expect(ungroupInCode(code, 'G')).toMatchObject({ error: expect.stringContaining('rotate') });
+  });
+});
+
+describe('derivedParts', () => {
+  it('follows copies of copies and groups', () => {
+    const code = addPartOps(BODY, [
+      { kind: 'copy', part: 'a', as: 'a 2', offset: [1, 0, 0] },
+      { kind: 'copy', part: 'a 2', as: 'a 3', offset: [1, 0, 0] },
+      { kind: 'group', parts: ['a 3', 'b'], as: 'G' },
+      { kind: 'copy', part: 'c', as: 'c 2', offset: [1, 0, 0] },
+    ]);
+    expect(derivedParts(code, ['a'])).toEqual(['a 2', 'a 3', 'G']);
+    expect(derivedParts(code, ['d'])).toEqual([]);
   });
 });

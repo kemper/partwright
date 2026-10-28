@@ -34,7 +34,7 @@ export function formatPartOp(op: PartOp): string {
   }
 }
 
-const LINE_RE = /^api\.(movePart|rotatePart|scalePart|mirrorPart|copyPart|groupParts|cutWithPart)\((.*)\)\s*;?\s*(?:\/\/.*)?$/;
+const LINE_RE = /^api\.(movePart|rotatePart|scalePart|mirrorPart|copyPart|groupParts|cutWithPart)\((.*?)\)\s*;?\s*(?:\/\/.*)?$/;
 
 /** Parse one trimmed line written by {@link formatPartOp} (or a hand-written
  *  equivalent in the same JSON-friendly form). Null when it isn't one. */
@@ -43,11 +43,15 @@ export function parsePartOpLine(line: string): PartOp | null {
   if (!m) return null;
   let args: unknown[];
   try {
-    // Single-quoted strings → JSON strings (no escapes inside, the common case).
-    const json = `[${m[2].replace(/'([^'\\]*)'/g, (_, s: string) => JSON.stringify(s))}]`;
-    args = JSON.parse(json) as unknown[];
+    // As written by formatPartOp (JSON), so names may hold apostrophes…
+    args = JSON.parse(`[${m[2]}]`) as unknown[];
   } catch {
-    return null;
+    try {
+      // …else hand-written single-quoted strings (no escapes inside).
+      args = JSON.parse(`[${m[2].replace(/'([^'\\]*)'/g, (_, s: string) => JSON.stringify(s))}]`) as unknown[];
+    } catch {
+      return null;
+    }
   }
   const isVec = (v: unknown): v is Vec3 => Array.isArray(v) && v.length === 3 && v.every(n => typeof n === 'number');
   const isName = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
@@ -78,7 +82,7 @@ export function findPartOpLines(code: string): { index: number; op: PartOp }[] {
 }
 
 /** Names an op reads or writes. */
-function namesOf(op: PartOp): string[] {
+export function partOpNames(op: PartOp): string[] {
   if (op.kind === 'group') return [...op.parts, op.as];
   if (op.kind === 'copy') return [op.part, op.as];
   return [op.part];
@@ -122,7 +126,7 @@ export function addPartOps(code: string, ops: readonly PartOp[]): string {
     if (op.kind === 'move' || op.kind === 'rotate') {
       // The last line touching this part, if it's the same kind and nothing
       // later reads or writes the part.
-      const touching = existing.filter(x => namesOf(x.op).includes(op.part));
+      const touching = existing.filter(x => partOpNames(x.op).includes(op.part));
       const last = touching[touching.length - 1];
       if (last && last.op.kind === op.kind && last.op.part === op.part) {
         if (op.kind === 'move' && last.op.kind === 'move') {
@@ -131,8 +135,11 @@ export function addPartOps(code: string, ops: readonly PartOp[]): string {
           else lines[last.index] = formatPartOp({ ...last.op, offset: sum });
           folded = true;
         } else if (op.kind === 'rotate' && last.op.kind === 'rotate') {
+          // Only quarter turns: they keep the bounding-box centre the turns
+          // pivot on, so two in a row equal their sum.
           const ax = singleAxis(op.degrees);
-          if (ax >= 0 && singleAxis(last.op.degrees) === ax) {
+          const quarter = (d: Vec3) => d.every(v => Math.abs(v / 90 - Math.round(v / 90)) < 1e-9);
+          if (ax >= 0 && singleAxis(last.op.degrees) === ax && quarter(op.degrees) && quarter(last.op.degrees)) {
             let deg = (last.op.degrees[ax] + op.degrees[ax]) % 360;
             if (deg > 180) deg -= 360;
             if (deg <= -180) deg += 360;
@@ -157,7 +164,7 @@ export function renamePartInOps(code: string, from: string, to: string): string 
   const rn = (n: string) => (n === from ? to : n);
   return code.split('\n').map((raw) => {
     const op = parsePartOpLine(raw);
-    if (!op || !namesOf(op).includes(from)) return raw;
+    if (!op || !partOpNames(op).includes(from)) return raw;
     const indent = raw.slice(0, raw.length - raw.trimStart().length);
     const next: PartOp = op.kind === 'group' ? { ...op, parts: op.parts.map(rn), as: rn(op.as) }
       : op.kind === 'copy' ? { ...op, part: rn(op.part), as: rn(op.as) }
@@ -193,4 +200,56 @@ export function removeCreatedPart(code: string, name: string): string {
     if (x.op.kind === 'copy' || x.op.kind === 'group') gone.add(x.op.as);
   }
   return lines.filter((_, i) => !drop.has(i)).join('\n');
+}
+
+/** Part names the code reserves besides its live parts: those it deletes
+ *  (`api.removePart` lines — a new part with that name would be removed too)
+ *  and those its edit lines create. New names must avoid them. */
+export function reservedPartNames(code: string): Set<string> {
+  const out = partsCreatedByOps(code);
+  for (const m of code.matchAll(/api\.removePart\(\s*(?:"((?:[^"\\]|\\.)*)"|'([^'\\]*)')\s*\)/g)) {
+    if (m[1] !== undefined) {
+      try { out.add(JSON.parse(`"${m[1]}"`) as string); } catch { /* malformed — skip */ }
+    } else out.add(m[2]);
+  }
+  return out;
+}
+
+/** `code` with group `name` (an `api.groupParts` line) split back into its
+ *  parts. Later moves of the group become moves of each member; anything else
+ *  that reads the group (a turn, scale or mirror about its centre, a copy, a
+ *  cut, an outer group) can't be split without changing the result, so that
+ *  returns an error. Null when no line creates `name` as a group. */
+export function ungroupInCode(code: string, name: string): string | { error: string } | null {
+  const lines = code.split('\n');
+  const ops = findPartOpLines(code);
+  const creator = ops.find(x => x.op.kind === 'group' && x.op.as === name);
+  if (!creator || creator.op.kind !== 'group') return null;
+  const members = creator.op.parts;
+  const replace = new Map<number, string[]>([[creator.index, []]]);
+  for (const x of ops) {
+    if (x.index <= creator.index || !partOpNames(x.op).includes(name)) continue;
+    if (x.op.kind !== 'move') {
+      return { error: `"${name}" has later edits that act on it as a whole (${x.op.kind}) — undo those first, or keep it grouped.` };
+    }
+    const indent = lines[x.index].slice(0, lines[x.index].length - lines[x.index].trimStart().length);
+    const offset = x.op.offset;
+    replace.set(x.index, members.map(part => indent + formatPartOp({ kind: 'move', part, offset })));
+  }
+  const out: string[] = [];
+  lines.forEach((l, i) => { const r = replace.get(i); if (r) out.push(...r); else out.push(l); });
+  return out.join('\n');
+}
+
+/** The parts the code's edit lines derive from `names` — copies and groups
+ *  made from them, and from those, transitively — which go when they do. */
+export function derivedParts(code: string, names: Iterable<string>): string[] {
+  const from = new Set(names);
+  const out: string[] = [];
+  for (const { op } of findPartOpLines(code)) {
+    if (op.kind !== 'copy' && op.kind !== 'group') continue;
+    const reads = op.kind === 'group' ? op.parts : [op.part];
+    if (reads.some(n => from.has(n)) && !from.has(op.as)) { from.add(op.as); out.push(op.as); }
+  }
+  return out;
 }

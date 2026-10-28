@@ -34,15 +34,19 @@ export function composeImportIntoCode(code: string, importIndex: number): string
   }
   // Keep the header comments, removal lines and part-edit lines on top.
   let i = 0;
+  let inBlock = false;
   for (; i < lines.length; i++) {
     const t = lines[i].trim();
+    if (inBlock) { if (t.includes('*/')) inBlock = false; continue; }
     if (t === '' || t.startsWith('//')) continue;
+    if (t.startsWith('/*')) { if (!t.includes('*/')) inBlock = true; continue; }
     if (/^api\.(removePart|removePiece)\(/.test(t) || parsePartOpLine(t)) continue;
     break;
   }
   while (i > 0 && lines[i - 1].trim() === '') i--;
   const head = lines.slice(0, i);
-  const body = lines.slice(i).map(l => (l.trim() === '' ? '' : `  ${l}`));
+  // Not re-indented: that would change multi-line template literals.
+  const body = lines.slice(i);
   return [
     ...head,
     `const ${BASE} = (() => {`,

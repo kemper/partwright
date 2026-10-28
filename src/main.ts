@@ -234,10 +234,10 @@ import { updatePaintMesh, setOnRegionPainted, setTriangleToBaseMapper } from './
 import { baseTriangleOf } from './color/baseRemap';
 import { Vector3 } from 'three';
 import { gridLayout, packLayout, bedLayout, alignLayout, distributeLayout, dropToPlate, centerOnOrigin, snapToGrid, arrayOffsets, gridArrayOffsets, freeOffset, layFlatRotation, rotatedMinZ, xyzPositions, type PartBox } from './insert/partLayout';
-import { addPartOps, findPartOpLines, removeCreatedPart, renamePartInOps } from './editor/partOpCode';
+import { addPartOps, findPartOpLines, renamePartInOps, partOpNames, reservedPartNames, ungroupInCode, derivedParts } from './editor/partOpCode';
 import type { PartOp } from './geometry/partOps';
 import { pickFace } from './color/facePicker';
-import { initPartsPanel, openPartsPanel, refreshPartsPanel } from './ui/partsPanel';
+import { initPartsPanel, openPartsPanel, refreshPartsPanel, isPartsPanelOpen } from './ui/partsPanel';
 import { installPartBoxSelect } from './ui/partBoxSelect';
 import { initAnnotateUI, isAnnotateOpen, closeMenu as closeAnnotateMenu, setAnnotateSubMode, getAnnotateSubMode } from './annotations/annotateUI';
 import { isActive as isSelectActive, getSelectedId as getSelectedAnnotationId } from './annotations/selectMode';
@@ -6587,8 +6587,14 @@ async function main() {
     // The object's own language (an import may have switched the editor's).
     const { currentVersion, session } = getState();
     const lang = currentVersion ? effectiveVersionLanguage(currentVersion, session) : getActiveLanguage();
-    if (lang !== 'manifold-js' || getActiveLanguage() !== 'manifold-js' || !baseMesh || currentPartIsExpendable()) return composeMeshIntoCurrentPart(mesh, seedRegions, opts);
-    const parts = importAsParts(mesh, name, currentObjectPartsSummary()?.parts.map(p => p.name) ?? []);
+    if (lang !== 'manifold-js' || getActiveLanguage() !== 'manifold-js' || !baseMesh || currentPartIsExpendable()) {
+      const ok = await composeMeshIntoCurrentPart(mesh, seedRegions, opts);
+      const warn = ok && lang !== 'manifold-js' ? engineBakeWarning(lang, 'manifold-js') : null;
+      if (warn && !opts.silent) showToast(`${warn} (Adding ${name} combined it into a mesh; the version history keeps the code.)`, { variant: 'warn', source: 'import' });
+      return ok;
+    }
+    // Names the code deletes (api.removePart) or edit lines create are taken too.
+    const parts = importAsParts(mesh, name, [...(currentObjectPartsSummary()?.parts.map(p => p.name) ?? []), ...reservedPartNames(getValue())]);
     const base = vertexBox(baseMesh.vertProperties, baseMesh.numProp);
     const add = vertexBox(mesh.vertProperties, mesh.numProp);
     const gap = base && add ? Math.max(base.max[0] - base.min[0], add.max[0] - add.min[0]) * getConfig().ui.partArrangeGapRatio : 0;
@@ -6615,7 +6621,8 @@ async function main() {
       const out = currentMeshData;
       seedImportRegions(seedRegions({ ...out, vertProperties: translatedVerts(out.vertProperties, out.numProp, [-d[0], -d[1], -d[2]]) }));
     }
-    await saveCurrentVersion(`add ${name}`, { importedMeshes: imports });
+    const saved = await saveCurrentVersion(`add ${name}`, { importedMeshes: imports });
+    if ('error' in saved && !opts.silent) showToast(`Added ${name}, but saving the version failed: ${saved.error}`, { variant: 'warn', source: 'import' });
     selectObjectParts(parts.names.map(n => `part:${n}`));
     return true;
   }
@@ -8233,7 +8240,16 @@ async function main() {
     // A group made in the Parts panel (api.groupParts) is deleted through its
     // members: once they're all removed the engine drops the group too.
     const members = new Set<string>();
-    if (lang === 'manifold-js') targets = expandGroupTargets(previousCode, targets, members);
+    if (lang === 'manifold-js') {
+      targets = expandGroupTargets(previousCode, targets, members);
+      // Copies and groups made from a part go with it — say so rather than
+      // dropping them silently; deleting them too (select them all) is fine.
+      const names = targets.flatMap(x => ('part' in x ? [x.part] : []));
+      const extra = derivedParts(previousCode, names).filter(n => !names.includes(n));
+      if (extra.length > 0) {
+        return { error: `${extra.map(n => `"${n}"`).join(', ')} ${extra.length === 1 ? 'was' : 'were'} made from ${names.length === 1 ? `"${names[0]}"` : 'these parts'} (a copy or group) and would go too — select ${extra.length === 1 ? 'it' : 'them'} as well to delete them together.` };
+      }
+    }
     const pieceTargets = targets.filter((x): x is { piece: number } => 'piece' in x);
     if (pieceTargets.length > 0 && summary.pieces.length < 2) return { error: 'This object is a single piece — delete the object instead.' };
     if (pieceTargets.length > 0 && new Set(pieceTargets.map(x => x.piece)).size >= summary.pieces.length) {
@@ -8315,14 +8331,19 @@ async function main() {
     rows?: number;
     name?: string;
     pattern?: string;
+    /** Internal (the Parts panel's arrow keys): hold the version save until
+     *  the keys go idle. */
+    nudge?: boolean;
   };
   type PartActionResult = { ok: true; message: string; parts: string[]; version?: { id: string; index: number; label: string }; saveWarning?: string } | { error: string };
 
   /** Undo stack of part edits: the code (and imports) before each one. */
-  const partEditUndo: { objectId: string; code: string; imports: ImportedMesh[]; label: string }[] = [];
+  type PaintRekey = { id: number; before: RegionDescriptor; after: RegionDescriptor; triangles: Set<number>; perTriColors: ReturnType<typeof getRegions>[number]['perTriColors'] };
+  const partEditUndo: { objectId: string; code: string; imports: ImportedMesh[]; label: string; after: string; rekeys?: PaintRekey[] }[] = [];
 
-  /** The parts an action applies to: `parts` when given, else the selected
-   *  parts, else every part of the open object. */
+  /** The parts an action applies to: `parts` when given, else every part of
+   *  the open object. (The Parts panel passes the user's selection; a UI
+   *  selection never narrows an API call on its own.) */
   function partActionTargets(parts: string[] | undefined): string[] | { error: string } {
     const summary = currentObjectPartsSummary();
     if (!summary) return { error: 'No geometry loaded — run the code first.' };
@@ -8333,9 +8354,7 @@ async function main() {
       if (missing.length > 0) return { error: `No part named ${missing.map(n => `"${n}"`).join(', ')} — see listObjectParts().` };
       return [...new Set(parts)];
     }
-    const selected = getSelectedPartKeys();
-    if (selected.some(k => !k.startsWith('part:'))) return { error: 'Part edits work on named parts — the selection includes pieces or unlabeled geometry. Select parts instead.' };
-    return selected.length > 0 ? selected.map(k => k.slice(5)) : existing;
+    return existing;
   }
 
   /** The parts' bounding boxes on the label mesh. */
@@ -8379,10 +8398,10 @@ async function main() {
   }
 
   /** A part name not yet used in the object (or by `taken`). */
-  function freshPartName(base: string, taken: Set<string>): string {
-    const used = new Set([...(currentObjectPartsSummary()?.parts.map(p => p.name) ?? []), ...taken]);
+  function freshPartName(base: string, taken: Set<string>, start = 2): string {
+    const used = new Set([...(currentObjectPartsSummary()?.parts.map(p => p.name) ?? []), ...reservedPartNames(getValue()), ...taken]);
     const stem = base.replace(/ \d+$/, '');
-    for (let n = 2; ; n++) {
+    for (let n = start; ; n++) {
       const name = `${stem} ${n}`;
       if (!used.has(name)) { taken.add(name); return name; }
     }
@@ -8398,9 +8417,22 @@ async function main() {
   /** Write `next` (code, and optionally imports) for the open object, run it,
    *  and save a version labelled `label`. Restores the previous code when the
    *  run fails. */
-  async function commitPartEdit(next: string, label: string, imports?: ImportedMesh[]): Promise<{ ok: true; version?: { id: string; index: number; label: string }; saveWarning?: string } | { error: string }> {
+  /** A part edit whose version save is held back (arrow-key nudges): saved
+   *  once the keys go idle, or before the next edit. */
+  let pendingPartSave: { objectId: string; label: string; timer: ReturnType<typeof setTimeout> } | null = null;
+  async function flushPartSave(): Promise<void> {
+    const p = pendingPartSave;
+    if (!p) return;
+    pendingPartSave = null;
+    clearTimeout(p.timer);
+    // Switched away meanwhile: the switch already saved the object's edits.
+    if (getState().currentPart?.id === p.objectId) await saveCurrentVersion(p.label);
+  }
+
+  async function commitPartEdit(next: string, label: string, imports?: ImportedMesh[], extra: { rekeys?: PaintRekey[]; deferSave?: boolean } = {}): Promise<{ ok: true; version?: { id: string; index: number; label: string }; saveWarning?: string } | { error: string }> {
     if (isReadOnlyViewer()) return { error: 'This tab is a read-only viewer of the session.' };
     if (isSharedPreview()) return { error: SHARED_PREVIEW_REFUSAL };
+    if (!extra.deferSave) await flushPartSave();
     const objectId = getState().currentPart?.id;
     if (!objectId) return { error: 'No object is open.' };
     const previousCode = getValue();
@@ -8417,8 +8449,20 @@ async function main() {
     if (!(await runCodeSync(next))) return restore(runFailedMessage());
     const geo = getGeometryDataObj() as { status?: string; error?: string } | null;
     if (geo?.status === 'error') return restore(`That didn't work: ${geo.error ?? 'run error'}.`);
-    partEditUndo.push({ objectId, code: previousCode, imports: previousImports, label });
-    if (partEditUndo.length > getConfig().ui.partEditUndoDepth) partEditUndo.shift();
+    const last = partEditUndo[partEditUndo.length - 1];
+    if (extra.deferSave && pendingPartSave?.objectId === objectId && last?.objectId === objectId && last.label === label && last.after === previousCode) {
+      // The same burst of nudges: one undo step and one version for all of it.
+      last.after = next;
+    } else {
+      partEditUndo.push({ objectId, code: previousCode, imports: previousImports, label, after: next, ...(extra.rekeys ? { rekeys: extra.rekeys } : {}) });
+      if (partEditUndo.length > getConfig().ui.partEditUndoDepth) partEditUndo.shift();
+    }
+    if (extra.deferSave) {
+      if (pendingPartSave) clearTimeout(pendingPartSave.timer);
+      pendingPartSave = { objectId, label, timer: setTimeout(() => { void flushPartSave(); }, getConfig().ui.partNudgeSaveDelayMs) };
+      refreshPartsPanel();
+      return { ok: true };
+    }
     const saved = await saveCurrentVersion(label, imports ? { importedMeshes: imports } : {});
     refreshPartsPanel();
     return {
@@ -8428,16 +8472,27 @@ async function main() {
     };
   }
 
-  /** Undo the open object's last part edit (its code before it). */
+  /** Undo the open object's last part edit (its code before it). Refused when
+   *  the code changed since (a hand edit, the AI, another tool) — putting the
+   *  old code back would throw that away; the version history still can. */
   async function undoPartEdit(): Promise<{ ok: true; undone: string } | { error: string }> {
     const objectId = getState().currentPart?.id;
     const i = partEditUndo.map(u => u.objectId).lastIndexOf(objectId ?? '');
     if (!objectId || i < 0) return { error: 'No part edit to undo in this object.' };
-    const [entry] = partEditUndo.splice(i, 1);
+    await flushPartSave();
+    const entry = partEditUndo[i];
+    if (getValue() !== entry.after) return { error: `The code changed since “${entry.label}”, so Undo would lose that change — go back with the version history (Versions) instead.` };
+    partEditUndo.splice(i, 1);
+    for (const k of entry.rekeys ?? []) setRegionDescriptor(k.id, k.before, k.triangles, k.perTriColors);
     const r = await commitPartEdit(entry.code, `Undo ${entry.label}`, entry.imports);
+    if ('error' in r) {
+      for (const k of entry.rekeys ?? []) setRegionDescriptor(k.id, k.after, k.triangles, k.perTriColors);
+      partEditUndo.splice(i, 0, entry);
+      return r;
+    }
     // commitPartEdit pushed the undone state; an undo isn't itself undoable here.
-    if ('ok' in r) partEditUndo.pop();
-    return 'error' in r ? r : { ok: true, undone: entry.label };
+    partEditUndo.pop();
+    return { ok: true, undone: entry.label };
   }
 
   /** Rename part `from` → `to` everywhere it is named: its label in the code,
@@ -8468,9 +8523,9 @@ async function main() {
         : null;
     };
     const moves = (map: Map<string, Vec3>): PartOp[] => [...map].filter(([, d]) => d.some(v => Math.abs(v) > 1e-9)).map(([part, offset]) => ({ kind: 'move', part, offset }));
-    const finish = async (ops: PartOp[], label: string, message: string, next = addPartOps(code, ops), imports?: ImportedMesh[]): Promise<PartActionResult> => {
+    const finish = async (ops: PartOp[], label: string, message: string, next = addPartOps(code, ops), imports?: ImportedMesh[], rekeys?: PaintRekey[]): Promise<PartActionResult> => {
       if (ops.length === 0 && next === code && !imports) return { ok: true, message: `${message} — already in place.`, parts: targets };
-      const r = await commitPartEdit(next, label, imports);
+      const r = await commitPartEdit(next, label, imports, { rekeys, deferSave: opts.nudge === true });
       return 'error' in r ? r : { ...r, message, parts: targets };
     };
     const boxes = () => partBoxesOf(targets);
@@ -8598,9 +8653,13 @@ async function main() {
       }
       case 'group': {
         if (targets.length < 2) return { error: 'Select 2 or more parts to group them.' };
-        const name = opts.name?.trim() || freshPartName('Group 1', new Set());
-        if (!targets.includes(name) && currentObjectPartsSummary()!.parts.some(p => p.name === name)) return { error: `There's already a part named "${name}".` };
-        const r = await finish([{ kind: 'group', parts: targets, as: name }], `Group parts as ${name}`, `Grouped ${what} as "${name}"`);
+        const name = opts.name?.trim() || freshPartName('Group', new Set(), 1);
+        if (!targets.includes(name) && (currentObjectPartsSummary()!.parts.some(p => p.name === name) || reservedPartNames(code).has(name))) return { error: `The name "${name}" is taken (a part, or one the code deletes or creates) — pick another.` };
+        // The members' own labels give way to the group's: paint, colours and
+        // texture scopes keyed to a member stop matching.
+        const keyed = targets.filter(n => getRegions().some(r => descriptorPartLabel(r.descriptor) === n));
+        const note = keyed.length > 0 ? ` — paint on ${keyed.map(n => `"${n}"`).join(', ')} now shows under Unmatched paint (reassign it to "${name}")` : '';
+        const r = await finish([{ kind: 'group', parts: targets, as: name }], `Group parts as ${name}`, `Grouped ${what} as "${name}"${note}`);
         if ('ok' in r) selectObjectParts([`part:${name}`]);
         return r;
       }
@@ -8608,7 +8667,11 @@ async function main() {
         const groups = targets.filter(n => findPartOpLines(code).some(x => x.op.kind === 'group' && x.op.as === n));
         if (groups.length === 0) return { error: `${what} ${targets.length === 1 ? 'isn’t a group' : 'aren’t groups'} made in the Parts panel (api.groupParts).` };
         let next = code;
-        for (const g of groups) next = removeCreatedPart(next, g);
+        for (const g of groups) {
+          const r = ungroupInCode(next, g);
+          if (r && typeof r === 'object') return r;
+          if (typeof r === 'string') next = r;
+        }
         return finish([], 'Ungroup parts', `Ungrouped ${groups.map(n => `"${n}"`).join(', ')}`, next);
       }
       case 'rename': {
@@ -8616,7 +8679,7 @@ async function main() {
         if (!pattern) return { error: "rename needs a pattern, e.g. 'bracket {n}' ({n} = 1, 2, 3…; without {n} a number is appended)." };
         const names = targets.map((_, i) => (pattern.includes('{n}') ? pattern.split('{n}').join(String(i + 1)) : targets.length === 1 ? pattern : `${pattern} ${i + 1}`));
         if (new Set(names).size !== names.length) return { error: 'The pattern gives two parts the same name — add {n}.' };
-        const others = currentObjectPartsSummary()!.parts.map(p => p.name).filter(n => !targets.includes(n));
+        const others = [...currentObjectPartsSummary()!.parts.map(p => p.name), ...reservedPartNames(code)].filter(n => !targets.includes(n));
         const clash = names.find(n => others.includes(n));
         if (clash) return { error: `There's already a part named "${clash}".` };
         // Through temporary names, so a → b, b → c can't collide midway.
@@ -8632,17 +8695,17 @@ async function main() {
           importsChanged ||= r.importsChanged;
         }
         // Paint keyed to a part follows its new name (put back if the run fails).
-        const rekeyed: { id: number; before: RegionDescriptor; triangles: Set<number>; perTriColors: ReturnType<typeof getRegions>[number]['perTriColors'] }[] = [];
+        const rekeyed: PaintRekey[] = [];
         targets.forEach((from, i) => {
           for (const reg of getRegions()) {
             const d = reg.descriptor;
             if (descriptorPartLabel(d) !== from) continue;
-            rekeyed.push({ id: reg.id, before: d, triangles: reg.triangles, perTriColors: reg.perTriColors });
             const nd: RegionDescriptor = d.kind === 'byLabel' ? { ...d, label: names[i] } : { ...d, withinPart: names[i] };
+            rekeyed.push({ id: reg.id, before: d, after: nd, triangles: reg.triangles, perTriColors: reg.perTriColors });
             setRegionDescriptor(reg.id, nd, reg.triangles, reg.perTriColors);
           }
         });
-        const r = await finish([], 'Rename parts', `Renamed ${what}`, next, importsChanged ? imports : undefined);
+        const r = await finish([], 'Rename parts', `Renamed ${what}`, next, importsChanged ? imports : undefined, rekeyed);
         if ('ok' in r) selectObjectParts(names.map(n => `part:${n}`));
         else for (const k of rekeyed) setRegionDescriptor(k.id, k.before, k.triangles, k.perTriColors);
         return r;
@@ -9299,6 +9362,7 @@ async function main() {
     groups: () => new Set(findPartOpLines(getValue()).flatMap(x => (x.op.kind === 'group' ? [x.op.as] : []))),
     nudgeStep: () => getConfig().ui.partNudgeStep,
     snapStep: () => getConfig().ui.partSnapStep,
+    suggestGroupName: () => freshPartName('Group', new Set(), 1),
   });
 
   // Parts rail — IDE-style list of the session's parts.
@@ -12216,7 +12280,11 @@ async function main() {
     return key;
   };
   // Click-driven tools own the viewport while they're on.
-  const viewportToolActive = () => isPaintOpen() || apiIsArrangeActive() || isAnnotateOpen() || isAssemblyViewOpen();
+  // Click-driven tools own Shift-clicks, Shift-drags and keys while they're on —
+  // and so may any docked tool panel other than Parts (Part Detection's
+  // Shift-drag selection, Surface's pick mode…), so those block part selection.
+  const viewportToolActive = () => isPaintOpen() || apiIsArrangeActive() || isAnnotateOpen() || isAssemblyViewOpen()
+    || getMeasureState().active || (!!getActiveViewportPanel() && !isPartsPanelOpen());
   // Double-click the model to select the part under the cursor (or the piece,
   // when that geometry isn't labelled); double-click empty space to clear.
   // Ctrl/⌘-double-click adds it to (or takes it out of) the selection; a
@@ -12258,6 +12326,11 @@ async function main() {
     const t = e.target as HTMLElement | null;
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.closest('.cm-editor'))) return;
     if (document.querySelector('[aria-modal="true"]')) return;
+    // Only with focus on the page itself, the viewport, the object list or the
+    // Parts panel — not a button in the AI panel or another tab.
+    const viewportPane = getCanvas().parentElement;
+    if (t && t !== document.body && !(viewportPane?.contains(t) || t.closest('#parts-rail, #parts-panel'))) return;
+    if (!getCanvas().isConnected || getCanvas().offsetParent === null) return;
     const mod = e.metaKey || e.ctrlKey;
     const key = e.key.toLowerCase();
     const selected = getSelectedPartKeys();
@@ -16950,7 +17023,7 @@ async function main() {
       // A part named by part-edit lines (a copy, a group) or an import's parts
       // is renamed there too — the Parts panel's rename does all of it.
       if (getActiveLanguage() === 'manifold-js'
-        && (findPartOpLines(getValue()).some(x => JSON.stringify(x.op).includes(JSON.stringify(from)))
+        && (findPartOpLines(getValue()).some(x => partOpNames(x.op).includes(from))
           || getActiveImports().some(m => m.parts?.names.includes(from)))) {
         const r = await runPartAction('rename', { parts: [from], pattern: to });
         return 'error' in r ? { error: `renameObjectPart: ${r.error}` } : { ...r, renamed: { from, to } };
@@ -16987,10 +17060,11 @@ async function main() {
         if (opts.axis !== undefined) assertEnum(opts.axis, ['x', 'y', 'z'] as const, 'partAction(opts.axis)');
         if (opts.mode !== undefined) assertEnum(opts.mode, ['min', 'center', 'max'] as const, 'partAction(opts.mode)');
         for (const k of ['gap', 'count', 'cols', 'rows'] as const) if (opts[k] !== undefined) assertNumber(opts[k], `partAction(opts.${k})`);
+        if (typeof opts.gap === 'number' && opts.gap < 0) throw new ValidationError('partAction(opts.gap): must be 0 or more.');
         for (const k of ['offset', 'degrees'] as const) if (opts[k] !== undefined) assertNumberTuple(opts[k], 3, `partAction(opts.${k})`);
-        for (const k of ['step', 'factor'] as const) {
-          if (opts[k] !== undefined && typeof opts[k] !== 'number') assertNumberTuple(opts[k], k === 'step' && action === 'gridArray' ? 2 : 3, `partAction(opts.${k})`);
-        }
+        // step: a number for snap, [x, y] for gridArray, [x, y, z] for array.
+        if (opts.step !== undefined && !(action === 'snap' && typeof opts.step === 'number')) assertNumberTuple(opts.step, action === 'gridArray' ? 2 : 3, 'partAction(opts.step)');
+        if (opts.factor !== undefined && typeof opts.factor !== 'number') assertNumberTuple(opts.factor, 3, 'partAction(opts.factor)');
         for (const k of ['name', 'pattern'] as const) if (opts[k] !== undefined) assertString(opts[k], `partAction(opts.${k})`, { allowEmpty: false });
         return true;
       });
@@ -22504,7 +22578,7 @@ async function main() {
         'setObjectPartColor': { signature: "setObjectPartColor(name, '#rrggbb' | [r,g,b]) -- Fill a whole part (recolours its fill in place, else adds a byLabel region) -> {id, name, triangles}", docs: '/ai.md#editing-parts-from-the-objects-list' },
         'resetObjectPartColor': { signature: 'resetObjectPartColor(name) -- Remove the paint filling a part (back to its code colour) -> {ok, removed}', docs: '/ai.md#editing-parts-from-the-objects-list' },
         'goToObjectPart': { signature: 'goToObjectPart(name) -- Reveal the part\'s label in the code editor -> {ok, line}', docs: '/ai.md#editing-parts-from-the-objects-list' },
-        'partAction': { signature: "await partAction(action, {parts?, axis?, mode?, gap?, step?, offset?, degrees?, factor?, count?, cols?, rows?, name?, pattern?}) -- Arrange / copy / group parts as api.movePart-style code lines (grid, pack, bed, align, distribute, drop, center, snap, move, rotate, layFlat, mirror, scale, duplicate, array, gridArray, group, ungroup, rename, cut); parts default to the selection, else all; runAndSave -> {ok, message, parts, version}", docs: '/ai.md#arranging-copying-and-grouping-parts' },
+        'partAction': { signature: "await partAction(action, {parts?, axis?, mode?, gap?, step?, offset?, degrees?, factor?, count?, cols?, rows?, name?, pattern?}) -- Arrange / copy / group parts as api.movePart-style code lines (grid, pack, bed, align, distribute, drop, center, snap, move, rotate, layFlat, mirror, scale, duplicate, array, gridArray, group, ungroup, rename, cut); parts = opts.parts, else every part; runAndSave -> {ok, message, parts, version}", docs: '/ai.md#arranging-copying-and-grouping-parts' },
         'undoPartEdit': { signature: 'await undoPartEdit() -- Undo the open object\'s last partAction -> {ok, undone}', docs: '/ai.md#arranging-copying-and-grouping-parts' },
         'renameObjectPart': { signature: 'await renameObjectPart(from, to) -- Rename a part in code literals + its paint, then runAndSave -> {...runAndSave, renamed}', docs: '/ai.md#editing-parts-from-the-objects-list' },
         'bakeObjectPartColor': { signature: "await bakeObjectPartColor(name) -- Write the part's colour into code as api.paint.label (manifold-js), drop its paint fill, runAndSave -> {...runAndSave, baked}", docs: '/ai.md#editing-parts-from-the-objects-list' },

@@ -804,7 +804,7 @@ api.cutWithPart('hole');                    // subtract part "hole" from everyth
 
 They run in order, so a line can act on a copy or group an earlier line made. **Only separate solids can move**: a part fused to other geometry throws a clear error — move it in the code that builds it instead. An edit of a part removed with `api.removePart` (or of a copy / group made from one) is skipped.
 
-Drive it with `partwright.partAction(action, opts)` (in chat: the `partAction` tool) — it writes the lines (folding repeated moves of one part into one line), runs, and saves a version; `undoPartEdit()` puts the previous code back. Parts default to `opts.parts`, else the user's selection, else **every part**:
+Drive it with `partwright.partAction(action, opts)` (in chat: the `partAction` tool) — it writes the lines (folding repeated moves of one part into one line), runs, and saves a version; `undoPartEdit()` puts the previous code back (refused once the code has changed since — use the version history then). It acts on `opts.parts`, else on **every part** — pass the user's selection (`getSelectedObjectPart()`, or the `[Selected in the Objects list …]` chat prefix) when they mean it:
 
 | action | opts | does |
 |---|---|---|
