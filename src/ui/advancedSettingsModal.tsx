@@ -17,8 +17,8 @@ import {
 import { showUninstallModal } from './uninstallModal';
 import {
   ENGINE_SANDBOX_MODES,
-  configuredSandboxOrigin,
   defaultEngineSandboxMode,
+  engineSandboxOriginAvailable,
   getEngineSandboxMode,
   isEngineSandboxMode,
   setEngineSandboxMode,
@@ -172,14 +172,13 @@ function Section({ title, children }: SectionProps) {
 // ─── engine sandbox (per-browser setting, not part of AppConfig) ─────────────
 
 const SANDBOX_MODE_LABELS: Record<EngineSandboxMode, string> = {
-  off: 'Off — run model code in a plain Worker (default)',
-  opaque: 'Opaque origin — sandboxed iframe on this site',
-  origin: 'Separate origin — iframe on the configured sandbox host',
+  off: 'Off — run model code in a plain Worker',
+  origin: 'Separate origin — iframe on the sandbox host',
 };
 
 function SandboxModeField() {
   const mode = useSignal<EngineSandboxMode>(getEngineSandboxMode());
-  const origin = configuredSandboxOrigin();
+  const originAvailable = engineSandboxOriginAvailable();
   const status = getEngineSandboxStatus();
   const def = defaultEngineSandboxMode();
   return (
@@ -204,14 +203,15 @@ function SandboxModeField() {
         }}
       >
         {ENGINE_SANDBOX_MODES.map(m => (
-          <option value={m} disabled={m === 'origin' && !origin}>
-            {SANDBOX_MODE_LABELS[m]}{m === 'origin' && !origin ? ' (not configured in this build)' : ''}
+          <option value={m} disabled={m === 'origin' && !originAvailable}>
+            {SANDBOX_MODE_LABELS[m]}{m === def ? ' (default)' : ''}{m === 'origin' && !originAvailable ? ' (not configured for this site)' : ''}
           </option>
         ))}
       </select>
       <p class="text-[10px] text-zinc-500 leading-snug">
-        Runs model code (yours, the AI's, or an imported session's) in a hidden iframe on a different origin, so it
-        can't read this site's saved sessions or AI keys, and its network access is blocked. Reload to apply.
+        Runs model code (yours, the AI's, or an imported session's) in a hidden iframe on a separate origin, so it
+        can't read this site's saved sessions or AI keys, and its network access is blocked. On by default where this
+        site has a sandbox host; "Off" is the kill switch. Reload to apply.
         This tab: <span class="text-zinc-300" data-engine-sandbox-status="">{status.active}
           {status.state === 'unavailable' ? ` — unavailable (${status.unavailableReason})` : ''}
           {status.state === 'bypassed' ? ' — bypassed for this tab' : ''}</span>
@@ -815,6 +815,33 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0} max={50_000_000} step={50_000} integer
           onChange={v => set('renderer', 'thumbnailMaxTriangles', v)}
         />
+        <Field cfgKey="renderer.containmentSamples"
+          label="Enclosed-piece samples"
+          hint="Points tested per piece when checking big models for pieces sealed inside others."
+          tooltip="For big models the engine checks whether a separate piece sits entirely inside another (an internal part, a sealed cavity) by testing a few points of it. Enclosed pieces don't trigger the floating-part warning. More points catch odd shapes that poke out between samples, at a small cost in speed."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.containmentSamples}
+          value={c.renderer.containmentSamples}
+          min={1} max={256} integer
+          onChange={v => set('renderer', 'containmentSamples', v)}
+        />
+        <Field cfgKey="renderer.modelLogMaxLines"
+          label="Model log lines"
+          hint="console.log lines from model code kept per run."
+          tooltip="Model code's console.log / warn / error output is captured and returned as `logs` by run and runAndSave (and the AI's runCode tool), so an agent can debug without throwing errors. Lines past this limit are counted, not kept."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.modelLogMaxLines}
+          value={c.renderer.modelLogMaxLines}
+          min={0} max={10_000} integer
+          onChange={v => set('renderer', 'modelLogMaxLines', v)}
+        />
+        <Field cfgKey="renderer.modelLogMaxChars"
+          label="Model log characters"
+          hint="Characters of model-code console output kept per run."
+          tooltip="Caps the total size of the captured console output of one run, so a log in a loop can't flood the result an agent reads."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.modelLogMaxChars}
+          value={c.renderer.modelLogMaxChars}
+          min={0} max={1_000_000} step={1000} integer
+          onChange={v => set('renderer', 'modelLogMaxChars', v)}
+        />
         <Field cfgKey="renderer.gridRoomFactor"
           label="Grid room factor"
           unit="× model"
@@ -1005,6 +1032,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0} max={20_000_000} integer
           onChange={v => set('renderer', 'surfaceTexturePersistMaxTriangles', v)}
         />
+        <Field cfgKey="renderer.storedArrayBlobMinKB"
+          label="Store big arrays as files from"
+          unit="KB"
+          hint="Mesh data at least this big is saved as a Blob, so saving and opening big versions doesn't freeze the app."
+          tooltip="A saved version's mesh arrays (an imported model's vertices and triangles, a persisted texture, detected parts) are copied on the main thread when written to or read from browser storage as plain arrays — about half a second for a 3.7M-triangle import. Arrays at least this big are stored as Blobs instead, which the browser writes and reads in the background. 0 stores every array as a Blob. Versions saved either way load the same."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.storedArrayBlobMinKB}
+          value={c.renderer.storedArrayBlobMinKB}
+          min={0} max={1_048_576} integer
+          onChange={v => set('renderer', 'storedArrayBlobMinKB', v)}
+        />
         <Field cfgKey="renderer.paintRefinePersistMaxTriangles"
           label="Cache smooth-paint mesh up to"
           unit="tris"
@@ -1103,6 +1140,54 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.import.maxSplitObjects}
           min={2} max={1000} integer
           onChange={v => set('import', 'maxSplitObjects', v)}
+        />
+        <Field cfgKey="import.maxImportFiles"
+          label="Max files per import"
+          unit="files"
+          hint="Most STL / 3MF files you can import at once."
+          tooltip="Choosing or dropping several STL and 3MF files imports them together. Every file is read before the import dialog opens, so very large batches take a while and hold all their meshes in memory; past this many the import is refused with a notice."
+          defaultValue={APP_CONFIG_DEFAULTS.import.maxImportFiles}
+          value={c.import.maxImportFiles}
+          min={2} max={1000} integer
+          onChange={v => set('import', 'maxImportFiles', v)}
+        />
+        <Field cfgKey="import.multiImportGridGap"
+          label="Grid gap"
+          unit="× size"
+          hint="Space between models when a multi-file import arranges them in a grid."
+          tooltip="A fraction of the models' average footprint size: 0.2 leaves a fifth of a typical model's width between neighbours."
+          defaultValue={APP_CONFIG_DEFAULTS.import.multiImportGridGap}
+          value={c.import.multiImportGridGap}
+          min={0} max={5} step={0.05}
+          onChange={v => set('import', 'multiImportGridGap', v)}
+        />
+        <Field cfgKey="import.maxImportTotalTriangles"
+          label="Max triangles per multi-file import"
+          unit="tris"
+          hint="Most triangles all the files imported together may hold."
+          tooltip="Files imported together are merged into one mesh (plus a laid-out copy) before their objects are cut out, so a batch of big files needs several times their size in memory. Past this many triangles in total the import is refused with a notice; import the files in smaller batches."
+          defaultValue={APP_CONFIG_DEFAULTS.import.maxImportTotalTriangles}
+          value={c.import.maxImportTotalTriangles}
+          min={10_000} max={200_000_000} integer
+          onChange={v => set('import', 'maxImportTotalTriangles', v)}
+        />
+        <Field cfgKey="import.multiImportOverlapRatio"
+          label="Grid suggestion: overlap"
+          hint="How much two models must overlap for a multi-file import to suggest the grid layout."
+          tooltip="A fraction of the smaller model's footprint. Separately made parts are usually modelled around the origin, so they overlap almost completely; parts of an assembly sit side by side. Above this overlap (between models of similar size, below) the dialog starts on Arrange in a grid instead of Keep file positions."
+          defaultValue={APP_CONFIG_DEFAULTS.import.multiImportOverlapRatio}
+          value={c.import.multiImportOverlapRatio}
+          min={0} max={1} step={0.05}
+          onChange={v => set('import', 'multiImportOverlapRatio', v)}
+        />
+        <Field cfgKey="import.multiImportSimilarSizeRatio"
+          label="Grid suggestion: similar size"
+          hint="How close in size two overlapping models must be for the grid to be suggested."
+          tooltip="The smaller footprint as a fraction of the bigger. A small part inside a big one (a pin in a case) overlaps it fully but is an assembly, so below this ratio the dialog keeps the file positions."
+          defaultValue={APP_CONFIG_DEFAULTS.import.multiImportSimilarSizeRatio}
+          value={c.import.multiImportSimilarSizeRatio}
+          min={0} max={1} step={0.05}
+          onChange={v => set('import', 'multiImportSimilarSizeRatio', v)}
         />
         <Field cfgKey="import.voxelDefaultMaxSize"
           label="Voxel default max size"
@@ -1384,6 +1469,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.geometry.engineHeapHighPct}
           min={10} max={100} integer
           onChange={v => set('geometry', 'engineHeapHighPct', v)}
+        />
+        <Field
+          label="Undeclared-name check limit"
+          unit="characters"
+          hint="Longer model code skips the 'X is not defined' check."
+          tooltip="Model code runs in a hardened sandbox where an undeclared name would read as undefined; before each run the code is scanned so a typo throws 'X is not defined' like normal JavaScript. The scan costs about half a millisecond per KB of code on every run, so code longer than this skips it (undeclared names then read as undefined). Applies to geometry engines started after the change."
+          defaultValue={APP_CONFIG_DEFAULTS.geometry.sesUndeclaredCheckMaxChars}
+          value={c.geometry.sesUndeclaredCheckMaxChars}
+          min={0} max={10_000_000} integer
+          onChange={v => set('geometry', 'sesUndeclaredCheckMaxChars', v)}
         />
       </Section>
 

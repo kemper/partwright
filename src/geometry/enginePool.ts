@@ -16,6 +16,7 @@
 // `disposeEnginePool()` when the Assembly view closes, so we don't hold N extra
 // WASM heaps resident while the user is back in the single-part editor.
 
+import { engineInitMessage } from './sesSandboxFlag';
 import { getDefaultCircularSegments } from './qualitySettings';
 import { getConfig } from '../config/appConfig';
 import type { Language } from './engines/types';
@@ -124,7 +125,7 @@ function spawnWorker(): PoolWorker {
     failWorker(pw, new Error('Assembly build worker crashed'));
   };
   // Boot manifold-3d WASM; the worker replies `ready` when execute is safe.
-  worker.postMessage({ type: 'init' });
+  worker.postMessage(engineInitMessage());
   return pw;
 }
 

@@ -1,4 +1,5 @@
 import type { MeshData, MeshResult } from './types';
+import { engineInitMessage } from './sesSandboxFlag';
 import type { Engine, Language, ValidateResult } from './engines/types';
 import { DEFAULT_LANGUAGE, isLanguage } from './engines/types';
 import { manifoldJsEngine, getManifoldModule } from './engines/manifoldJs';
@@ -9,6 +10,7 @@ import { cloneImportForWorker, getActiveImports, type ImportedMesh } from '../im
 import { getCompanionFiles } from '../import/companionFiles';
 import { getDefaultCircularSegments } from './qualitySettings';
 import { getConfig } from '../config/appConfig';
+import type { ManifoldFacts } from './manifoldFacts';
 import { errorLog } from '../diagnostics/errorLog';
 import {
   registerWorker,
@@ -106,6 +108,8 @@ const pendingStepBrepImports = new Map<string, { resolve: (filename: string) => 
 const pendingStepMeshImports = new Map<string, { resolve: (mesh: MeshData) => void; reject: (e: Error) => void }>();
 const pendingClearBrepImports = new Map<string, { resolve: () => void; reject: (e: Error) => void }>();
 const pendingClearBrepShapes = new Map<string, { resolve: () => void; reject: (e: Error) => void }>();
+/** Dev-only engine-realm reports (inspectEngineRealm). */
+const pendingRealmInspections = new Map<string, { resolve: (r: Record<string, unknown>) => void; reject: (e: Error) => void }>();
 const pendingSimplifies  = new Map<string, {
   resolve: (r: SimplifyWorkerResult | null) => void;
   reject: (e: Error) => void;
@@ -130,6 +134,7 @@ function geometryInFlight(): number {
     pendingStepMeshImports.size +
     pendingClearBrepImports.size +
     pendingClearBrepShapes.size +
+    pendingRealmInspections.size +
     pendingSimplifies.size +
     pendingEnhances.size
   );
@@ -193,6 +198,7 @@ function rejectAllPending(err: Error): void {
   for (const p of pendingStepMeshImports.values()) p.reject(err);
   for (const p of pendingClearBrepImports.values()) p.reject(err);
   for (const p of pendingClearBrepShapes.values()) p.reject(err);
+  for (const p of pendingRealmInspections.values()) p.reject(err);
   for (const p of pendingSimplifies.values()) p.reject(err);
   for (const p of pendingEnhances.values()) p.reject(err);
   pendingExecutions.clear();
@@ -204,6 +210,7 @@ function rejectAllPending(err: Error): void {
   pendingStepMeshImports.clear();
   pendingClearBrepImports.clear();
   pendingClearBrepShapes.clear();
+  pendingRealmInspections.clear();
   pendingSimplifies.clear();
   pendingEnhances.clear();
 }
@@ -400,7 +407,17 @@ function initEngineWorker(): void {
     // eslint-disable-next-line no-console
     console.debug('[EngineWorker] messageerror', ev);
   };
-  engineWorker.postMessage({ type: 'init' });
+  engineWorker.postMessage(engineInitMessage());
+}
+
+/** What the current geometry Worker reported when it became ready: its init
+ *  time (SES lockdown + manifold-3d init + global audit), which model-code
+ *  compiler it runs (`'ses-compartment'`, or `'function'` with the SES kill
+ *  switch on), and how long SES took. Null until the first Worker is ready.
+ *  Read by the e2e tier and the perf measurements in docs/engine-sandbox.md. */
+let engineWorkerReadyInfo: { initMs: number | null; compiler: string | null; sesMs: number | null } | null = null;
+export function getEngineWorkerReadyInfo(): typeof engineWorkerReadyInfo {
+  return engineWorkerReadyInfo;
 }
 
 /** The engine Worker runs untrusted model code, which can post its own
@@ -437,6 +454,11 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
   if (msg.type === 'ready') {
     // Ready signal for tooling/benchmarks (scripts/bench-engine-sandbox.mjs).
     performance.mark('partwright:engine-worker-ready');
+    engineWorkerReadyInfo = {
+      initMs: typeof msg.initMs === 'number' ? msg.initMs : null,
+      compiler: typeof msg.compiler === 'string' ? msg.compiler : null,
+      sesMs: typeof msg.sesMs === 'number' ? msg.sesMs : null,
+    };
     workerReadyResolve?.();
     workerReadyResolve = null;
     return;
@@ -513,6 +535,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       // The validator's normalized schema (re-run through normalizeParamSchema),
       // never the Worker's raw array.
       paramsSchema: check.paramsSchema,
+      logs: (msg.logs as string[] | null) ?? undefined,
       engineHeapBytes: msg.engineHeapBytes as number | undefined,
       manifoldFacts: (msg.manifoldFacts as MeshResult['manifoldFacts']) ?? undefined,
       voxelCount: msg.voxelCount as number | undefined,
@@ -622,6 +645,15 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     return;
   }
 
+  if (msg.type === 'inspect_realm_result') {
+    const callId = msg.callId as string;
+    const pending = pendingRealmInspections.get(callId);
+    if (!pending) return;
+    pendingRealmInspections.delete(callId);
+    pending.resolve(msg.report as Record<string, unknown>);
+    return;
+  }
+
   if (msg.type === 'clearBrepShape_result') {
     const callId = msg.callId as string;
     const pending = pendingClearBrepShapes.get(callId);
@@ -660,6 +692,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       mesh: msg.mesh as MeshData,
       triangleCount: msg.triangleCount as number,
       tolerance: msg.tolerance as number,
+      ...meshOpFacts(msg),
     });
     return;
   }
@@ -693,6 +726,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     pending.resolve({
       mesh: msg.mesh as MeshData,
       triangleCount: msg.triangleCount as number,
+      ...meshOpFacts(msg),
     });
     return;
   }
@@ -724,6 +758,8 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       pendingClearBrepImports.delete(callId ?? '');
       pendingClearBrepShapes.get(callId)?.reject(err);
       pendingClearBrepShapes.delete(callId ?? '');
+      pendingRealmInspections.get(callId)?.reject(err);
+      pendingRealmInspections.delete(callId ?? '');
       pendingSimplifies.get(callId)?.reject(err);
       pendingSimplifies.delete(callId ?? '');
       pendingEnhances.get(callId)?.reject(err);
@@ -790,7 +826,7 @@ export async function executeCodeAsync(
     // figures rough out fast. The Worker further gates on the source actually
     // doing an SDF `.build()`, so non-SDF code never pays for a second pass.
     const sdfPreviewScale = (onPreview && l === 'manifold-js') ? getConfig().renderer.sdfPreviewScale : undefined;
-    worker.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, manifoldFactsMinTriangles: getConfig().renderer.lazyManifoldMinTriangles, voxelSdfMaxSamples: getConfig().import.voxelSdfMaxSamples, ...(sdfPreviewScale ? { sdfPreviewScale } : {}), ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
+    worker.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, manifoldFactsMinTriangles: getConfig().renderer.lazyManifoldMinTriangles, voxelSdfMaxSamples: getConfig().import.voxelSdfMaxSamples, containmentSamples: getConfig().renderer.containmentSamples, modelLog: { maxLines: getConfig().renderer.modelLogMaxLines, maxChars: getConfig().renderer.modelLogMaxChars }, ...(sdfPreviewScale ? { sdfPreviewScale } : {}), ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
   });
 }
 
@@ -985,6 +1021,23 @@ export async function clearBrepImports(): Promise<void> {
   });
 }
 
+/** Dev builds only: ask the geometry Worker for a report on its ENGINE realm
+ *  after lockdown — the names left on its global's prototype chain and on
+ *  navigator's (workerLockdown `enumerateChain` entries), the URL blob-registry
+ *  statics, which compiler model code runs under, and whether the shared
+ *  intrinsics are frozen. Model code can't produce this itself under SES (it
+ *  can't name the Worker global); tests/engine-lockdown.spec.ts runs the
+ *  #1119 allowlist planner on it. */
+export async function inspectEngineRealm(): Promise<Record<string, unknown>> {
+  if (!import.meta.env.DEV) throw new Error('inspectEngineRealm is only available in dev builds');
+  const worker = ensureClaim(await claimAndWait());
+  const callId = `inspect-${++callIdCounter}`;
+  return new Promise((resolve, reject) => {
+    pendingRealmInspections.set(callId, { resolve, reject });
+    worker.postMessage({ type: 'inspect_realm', callId });
+  });
+}
+
 /** Drop (and free) the retained STEP-export shape from the most recent
  *  replicad run. Called when leaving a replicad session (switch/close) or
  *  switching the active language away from replicad, so a later exportSTEP
@@ -1008,7 +1061,21 @@ export async function clearBrepShape(): Promise<void> {
 
 // ── Simplify Worker client ──────────────────────────────────────────────────
 
-export interface SimplifyWorkerResult {
+/** Worker-side stats for a big simplify / enhance result (see
+ *  `MeshResult.manifoldFacts`), or why the result isn't a valid solid. */
+function meshOpFacts(msg: Record<string, unknown>): MeshOpFacts {
+  return {
+    ...(msg.manifoldFacts ? { manifoldFacts: msg.manifoldFacts as ManifoldFacts } : {}),
+    ...(typeof msg.manifoldError === 'string' ? { manifoldError: msg.manifoldError } : {}),
+  };
+}
+
+export interface MeshOpFacts {
+  manifoldFacts?: ManifoldFacts;
+  manifoldError?: string;
+}
+
+export interface SimplifyWorkerResult extends MeshOpFacts {
   mesh: MeshData;
   triangleCount: number;
   tolerance: number;
@@ -1087,6 +1154,7 @@ export async function simplifyInWorker(
     const transfer: Transferable[] = [meshCopy.vertProperties.buffer, meshCopy.triVerts.buffer];
     worker.postMessage(
       { type: 'simplify', callId, mesh: meshCopy, targetTriangles, maxTolerance,
+        manifoldFactsMinTriangles: getConfig().renderer.lazyManifoldMinTriangles, containmentSamples: getConfig().renderer.containmentSamples,
         ...(directTolerance && directTolerance > 0 ? { tolerance: directTolerance } : {}) },
       transfer,
     );
@@ -1095,7 +1163,7 @@ export async function simplifyInWorker(
 
 // ── Enhance Worker client ───────────────────────────────────────────────────
 
-export interface EnhanceWorkerResult {
+export interface EnhanceWorkerResult extends MeshOpFacts {
   /** The refined mesh, or null when the result was refused for exceeding the
    *  hard triangle cap (see `exceeded`). */
   mesh: MeshData | null;
@@ -1170,6 +1238,7 @@ export async function enhanceInWorker(
     const maxTriangles = getConfig().renderer.enhanceMaxTriangles;
     worker.postMessage(
       { type: 'enhance', callId, mesh: meshCopy, targetTriangles, maxEdgeLength, maxTriangles,
+        manifoldFactsMinTriangles: getConfig().renderer.lazyManifoldMinTriangles, containmentSamples: getConfig().renderer.containmentSamples,
         ...(directEdgeLength && directEdgeLength > 0 ? { edgeLength: directEdgeLength } : {}) },
       transfer,
     );

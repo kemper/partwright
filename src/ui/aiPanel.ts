@@ -27,7 +27,8 @@ import { confirmUnpricedModel } from './unpricedModelGate';
 import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiReviewModal } from './aiReviewModal';
 import { gatherReviewContext, runReview } from '../ai/review';
-import { PLAN_APPROVED_TEXT, PLAN_FIRST_PREFIX, PLAN_REFINE_PREFIX } from '../ai/userWords';
+import { PLAN_FIRST_PREFIX, PLAN_REFINE_PREFIX, planApprovalText, planTurn } from '../ai/userWords';
+import { ASK_USER_TOOL, CARD_TOOL_ACK, PROPOSE_PLAN_TOOL, answersText, type AskUserQuestion, derivePendingPlan, latestPlanReply, parseAskUser, parseProposedPlan, pendingAskUser, planMarkdown } from '../ai/planReply';
 import { buildFixPrompt, countModelChangingCalls, latestUserRequest, overSpendCap, parseReviewVerdict, requestText, resolveReviewer, shouldActOnReview, shouldAutoReview, userConversation } from '../ai/autoReview';
 import { buildToolList, isModelChangingTool, confirmToolLabel } from '../ai/tools';
 import { DEFAULT_CUSTOM_CONTEXT, REDUCED_TOOLS_NOTE, customContextWindow, resolveCustomPromptTier, toolsForCustomTier } from '../ai/customContext';
@@ -45,7 +46,7 @@ import { getState, setSessionAiPreference, refreshCurrentSession } from '../stor
 import { onTabSync, publishTabSync } from '../storage/tabSync';
 import { onOwnershipChange } from '../storage/sessionLock';
 import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
-import { activeModel, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Preset, type Provider, type TurnOutcomeReason } from '../ai/types';
+import { activeModel, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolCall, type PersistedToolResult, type Preset, type Provider, type TurnOutcomeReason } from '../ai/types';
 import { matchSlashCommands, parseSlashCommand, slashMenuPrefix, type SlashCommandName, type SlashCommandSpec } from '../ai/slashCommands';
 import { repairToolHistory, hasOrphanedToolCalls, isToolHistoryMismatchError } from '../ai/historyRepair';
 import { cancelCurrentExecution } from '../geometry/engine';
@@ -74,8 +75,8 @@ interface PanelState {
    *  Cleared when the user sends a new message (conversation has diverged). */
   rewindStack: ChatMessage[][];
   /** Set when planFirst mode has generated a plan and is awaiting user
-   *  approval. Cleared on approve (which fires the real execution turn) or
-   *  reject (which removes planning messages from history and restores the
+   *  approval. Cleared on Build (which fires the real execution turn) or
+   *  Discard (which removes planning messages from history and restores the
    *  original input). null when no plan is pending. */
   pendingPlanApproval: {
     originalText: string;
@@ -631,7 +632,26 @@ export function setAiPanelRouteActive(active: boolean): void {
 
 async function loadHistoryForCurrentSession(): Promise<void> {
   state.history = await listMessages(state.sessionId);
+  // Mid-turn reloads (auto-compaction, stall retries) can run before this
+  // turn's plan request is persisted; the turn re-syncs when it ends.
+  if (!state.inFlight) syncPendingPlanFromHistory();
   updateRewindButtons();
+}
+
+/** The plan awaiting a decision is read from the transcript, so the plan bar
+ *  comes back after a reload or when this tab takes control of the session.
+ *  Only while the Plan pill is on: turning it off is how the user leaves plan
+ *  mode and keeps the conversation (Discard deletes it). */
+function syncPendingPlanFromHistory(): void {
+  const pending = loadSettings().toggles.planFirst ? derivePendingPlan(state.history) : null;
+  state.pendingPlanApproval = pending
+    ? {
+      originalText: splitPartSelectionContext(pending.requestWords).rest,
+      originalImages: pending.requestImages,
+      historyLengthBefore: pending.requestIndex,
+    }
+    : null;
+  renderPlanApprovalBar();
 }
 
 // === Per-session AI preference ===
@@ -795,6 +815,9 @@ function applyOwnership(owned: boolean): void {
   // The whole-screen viewer overlay (viewerMode.ts) is the single "locked" UI
   // now; the send-disable + sendMessage guard stay as a backstop.
   if (sendBtnRef) sendBtnRef.disabled = !writeOwner;
+  // The plan bar and question cards are owner-only controls.
+  renderPlanApprovalBar();
+  refreshAskUserCards();
   // Becoming a viewer mid-turn (another tab took control): stop our run.
   if (!writeOwner) stopActiveTurn();
   // Gaining write-ownership of a real session — "Take control" in a new tab —
@@ -1654,9 +1677,12 @@ function renderToggleStrip(): void {
   primary.appendChild(togglePill(
     '📋 Plan',
     toggles.planFirst,
-    'Plan first: when ON, the AI writes a step-by-step plan before doing any work. You approve or reject the plan before execution starts. Useful for complex requests where you want to review the approach first.',
+    'Plan first: when ON, the AI writes a step-by-step plan (or asks its questions) before doing any work. Answer or revise by typing; nothing is built until you click Build. Useful for complex requests where you want to review the approach first.',
     () => {
       applyToggleChange({ planFirst: !toggles.planFirst });
+      // Off leaves plan mode (a pending plan's bar goes; its messages stay);
+      // on picks a pending plan back up from the transcript.
+      if (!state.inFlight) syncPendingPlanFromHistory();
       renderToggleStrip();
     },
   ));
@@ -2039,60 +2065,90 @@ function formatDuration(ms: number): string {
 
 function renderPlanApprovalBar(): void {
   if (!planApprovalBarEl) return;
-  if (!state.pendingPlanApproval || state.inFlight) {
+  // A tab only viewing the session can't build or discard its plan.
+  if (!state.pendingPlanApproval || state.inFlight || !writeOwner) {
     planApprovalBarEl.classList.add('hidden');
     return;
   }
   planApprovalBarEl.classList.remove('hidden');
   planApprovalBarEl.replaceChildren();
+  planApprovalBarEl.title = 'Turn off 📋 Plan to leave plan mode and keep the conversation.';
+
+  // A planning turn either ends on a plan or on questions the model needs
+  // answered first. Questions lead with "answer below" — Build stays on offer
+  // (the model then picks its own defaults), but as the quieter choice.
+  const { awaitingAnswers } = latestPlanReply(state.history, state.pendingPlanApproval.historyLengthBefore);
+  planApprovalBarEl.dataset.planState = awaitingAnswers ? 'questions' : 'plan';
 
   const label = document.createElement('span');
   label.className = 'text-[11px] text-amber-200 flex-1';
-  label.textContent = '📋 Plan mode — type to refine, or approve/reject.';
+  label.textContent = awaitingAnswers
+    ? '❓ The AI has questions — answer below to keep planning.'
+    : '📋 Plan ready — type below to revise it, or build it.';
   planApprovalBarEl.appendChild(label);
 
-  const approveBtn = document.createElement('button');
-  approveBtn.className = 'shrink-0 px-2 py-1 rounded text-[11px] font-medium bg-blue-600 hover:bg-blue-500 text-white';
-  approveBtn.textContent = '✓ Approve';
-  approveBtn.title = 'Approve this plan and start building.';
-  approveBtn.addEventListener('click', () => { void approvePlan(); });
-  planApprovalBarEl.appendChild(approveBtn);
+  const primary = 'shrink-0 px-2 py-1 rounded text-[11px] font-medium bg-blue-600 hover:bg-blue-500 text-white';
+  const secondary = 'shrink-0 px-2 py-1 rounded text-[11px] text-zinc-300 bg-zinc-700 hover:bg-zinc-600';
 
-  const rejectBtn = document.createElement('button');
-  rejectBtn.className = 'shrink-0 px-2 py-1 rounded text-[11px] text-zinc-300 bg-zinc-700 hover:bg-zinc-600';
-  rejectBtn.textContent = '✗ Reject';
-  rejectBtn.title = 'Reject this plan and edit your request.';
-  rejectBtn.addEventListener('click', () => { void rejectPlan(); });
-  planApprovalBarEl.appendChild(rejectBtn);
+  const buildBtn = document.createElement('button');
+  buildBtn.className = awaitingAnswers ? secondary : primary;
+  buildBtn.textContent = awaitingAnswers ? 'Build anyway' : '✓ Build it';
+  buildBtn.title = awaitingAnswers
+    ? 'Skip the questions: the AI picks sensible defaults and starts building.'
+    : 'Approve this plan and start building.';
+  buildBtn.addEventListener('click', () => { void approvePlan(); });
+  planApprovalBarEl.appendChild(buildBtn);
+
+  const discardBtn = document.createElement('button');
+  discardBtn.className = secondary;
+  discardBtn.textContent = '✗ Discard plan';
+  discardBtn.title = 'Drop this plan and put your request back in the input to edit.';
+  discardBtn.addEventListener('click', () => { void rejectPlan(); });
+  planApprovalBarEl.appendChild(discardBtn);
 }
 
+/** Set while Build is between its click and the build turn starting, so a
+ *  double click can't start two build turns. */
+let approvingPlan = false;
+
 async function approvePlan(): Promise<void> {
-  if (!state.pendingPlanApproval) return;
+  if (!state.pendingPlanApproval || approvingPlan || !writeOwner) return;
   // The automatic review grades the built result against the ORIGINAL
-  // request, not this turn's "Plan approved" message.
+  // request, not this turn's approval message.
   const reviewRequest = state.pendingPlanApproval.originalText;
-  state.pendingPlanApproval = null;
-  renderPlanApprovalBar();
+  // The approval carries the plan the user is approving, so the build turn is
+  // anchored to it (and the hand-off from planning is explicit).
+  const plan = latestPlanReply(state.history, state.pendingPlanApproval.historyLengthBefore).text;
 
   const settings = loadSettings();
-  const apiKey = await preflightTurn(settings, () => { void approvePlan(); });
-  if (apiKey === PREFLIGHT_ABORT) return;
+  // Preflight may open the key modal and retry this later, so the plan stays
+  // pending until we know the build turn will run.
+  approvingPlan = true;
+  let apiKey: Awaited<ReturnType<typeof preflightTurn>>;
+  try {
+    apiKey = await preflightTurn(settings, () => { void approvePlan(); });
+  } finally {
+    approvingPlan = false;
+  }
+  if (apiKey === PREFLIGHT_ABORT || !state.pendingPlanApproval) return;
+  state.pendingPlanApproval = null;
+  renderPlanApprovalBar();
 
   state.rewindStack = [];
   progressState.retryCount = 0;
   stalledByWatchdog = false;
   pinTranscriptToBottom();
   // Approval is the hand-off from planning to building: force planFirst off for
-  // this turn so the model actually receives the tool list. Leaving it on would
-  // make buildToolList return [] and emit the "do NOT call any tools" suffix, so
-  // the approved turn could only re-plan, never execute.
+  // this turn so the model actually receives the full tool list. Leaving it on
+  // would keep the read-only plan-mode list, so the approved turn could only
+  // re-plan, never execute.
   await runTurnWithStallRetry(apiKey, { ...settings.toggles, planFirst: false }, [
-    { type: 'text', text: PLAN_APPROVED_TEXT },
+    { type: 'text', text: planApprovalText(plan) },
   ], { reviewRequest });
 }
 
 async function rejectPlan(): Promise<void> {
-  if (!state.pendingPlanApproval) return;
+  if (!state.pendingPlanApproval || !writeOwner) return;
   const { originalText, originalImages, historyLengthBefore } = state.pendingPlanApproval;
 
   const msgsToRemove = state.history.slice(historyLengthBefore);
@@ -2221,7 +2277,7 @@ function renderQueuedPreview(): HTMLElement {
     if (b.type === 'text' && b.text.trim().length > 0) {
       const bubble = document.createElement('div');
       bubble.className = 'max-w-[90%] px-3 py-2 rounded-lg text-sm whitespace-pre-wrap leading-snug bg-blue-600/70 text-white border border-amber-400/50 ring-1 ring-amber-400/30';
-      bubble.textContent = b.text;
+      bubble.textContent = planTurn(b.text)?.words ?? b.text;
       bubble.title = 'Queued — will be delivered to the AI at the next pause.';
       wrap.appendChild(bubble);
     } else if (b.type === 'image') {
@@ -2245,6 +2301,8 @@ function renderMessage(msg: ChatMessage): HTMLElement {
   // Tool results (user role) get rendered as collapsed bubbles
   if (msg.role === 'user' && msg.toolResults && msg.toolResults.length > 0) {
     for (const tr of msg.toolResults) {
+      // A card tool's acknowledgement: the card above already shows it.
+      if (!tr.isError && tr.content === CARD_TOOL_ACK) continue;
       wrap.appendChild(renderToolResultBubble(tr));
     }
   }
@@ -2292,7 +2350,20 @@ function renderMessage(msg: ChatMessage): HTMLElement {
         wrap.appendChild(line);
         continue;
       }
-      const bubble = renderTextBubble(msg.role, b.text, msg.compacted);
+      // Plan-mode turns: show the user's own words under a small chip, not
+      // the instructions the app wraps them in. The approval carries the plan
+      // for the model's benefit; on screen it's a one-line marker (the plan
+      // is the reply right above it).
+      const plan = msg.role === 'user' ? planTurn(b.text) : null;
+      if (plan?.kind === 'approved') {
+        const line = document.createElement('div');
+        line.className = 'max-w-[90%] text-[11px] text-blue-300/80';
+        line.dataset.planApproved = '';
+        line.textContent = '✓ Plan approved — building';
+        wrap.appendChild(line);
+        continue;
+      }
+      const bubble = renderTextBubble(msg.role, plan ? plan.words : b.text, msg.compacted, plan ? PLAN_TURN_CHIP[plan.kind] : undefined);
       if (isEmpty && msg.role === 'assistant') {
         // Live streaming placeholder: kept bare (no copy wrapper) so
         // onAssistantText can rewrite its textContent and the thinking-box
@@ -2301,7 +2372,7 @@ function renderMessage(msg: ChatMessage): HTMLElement {
         bubble.dataset.liveBubble = msg.id;
         wrap.appendChild(bubble);
       } else if (b.text.trim().length > 0) {
-        wrap.appendChild(withCopyButton(bubble, msg.role, () => bubble.textContent ?? ''));
+        wrap.appendChild(withCopyButton(bubble, msg.role, () => (plan ? plan.words : bubble.textContent ?? '')));
       }
     } else if (b.type === 'image') {
       wrap.appendChild(renderImageBubble(b.source));
@@ -2314,7 +2385,9 @@ function renderMessage(msg: ChatMessage): HTMLElement {
 
   if (msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0) {
     for (const tc of msg.toolCalls) {
-      wrap.appendChild(renderToolCallChip(tc.name, tc.input));
+      if (tc.name === ASK_USER_TOOL) wrap.appendChild(renderAskUserCard(msg.id, tc));
+      else if (tc.name === PROPOSE_PLAN_TOOL) wrap.appendChild(renderPlanCard(tc));
+      else wrap.appendChild(renderToolCallChip(tc.name, tc.input));
     }
   }
 
@@ -2612,7 +2685,22 @@ function renderAutoResumeDivider(): HTMLElement {
   return el;
 }
 
-function renderTextBubble(role: 'user' | 'assistant', text: string, compacted?: boolean): HTMLElement {
+const PLAN_TURN_CHIP: Record<'request' | 'refine', string> = {
+  request: '📋 Plan first',
+  refine: '📋 Plan revision',
+};
+
+/** A small context line at the top of a user bubble (plan-mode turn, the
+ *  selected part). */
+function appendBubbleChip(bubble: HTMLElement, text: string): HTMLElement {
+  const chip = document.createElement('div');
+  chip.className = 'mb-1 text-[11px] text-blue-100/80 not-italic';
+  chip.textContent = text;
+  bubble.appendChild(chip);
+  return chip;
+}
+
+function renderTextBubble(role: 'user' | 'assistant', text: string, compacted?: boolean, planChip?: string): HTMLElement {
   const bubble = document.createElement('div');
   const baseClass = 'max-w-[90%] px-3 py-2 rounded-lg text-sm whitespace-pre-wrap leading-snug';
   if (compacted) {
@@ -2622,19 +2710,12 @@ function renderTextBubble(role: 'user' | 'assistant', text: string, compacted?: 
   } else {
     bubble.className = `${baseClass} bg-zinc-800 text-zinc-100`;
   }
+  if (planChip) appendBubbleChip(bubble, planChip).dataset.planChip = '';
   // The Objects-list selection rides along as a context line; show it as a
   // chip rather than raw "[Selected in …]" text in the user's own bubble.
   const { context, rest } = role === 'user' ? splitPartSelectionContext(text) : { context: null, rest: text };
-  if (context) {
-    const chip = document.createElement('div');
-    chip.className = 'mb-1 text-[11px] text-blue-100/80 not-italic';
-    chip.title = 'The part selected in the Objects list was sent as context';
-    chip.textContent = `◎ ${context}`;
-    bubble.appendChild(chip);
-    bubble.appendChild(document.createTextNode(rest));
-  } else {
-    bubble.textContent = text;
-  }
+  if (context) appendBubbleChip(bubble, `◎ ${context}`).title = 'The part selected in the Objects list was sent as context';
+  bubble.appendChild(document.createTextNode(rest));
   return bubble;
 }
 
@@ -2744,6 +2825,164 @@ async function launchReview(): Promise<void> {
       setTransientStatus('Review posted to the chat.');
     },
   });
+}
+
+/** Per askUser card (`messageId:callId` — call ids alone repeat across
+ *  responses on Gemini and local): the option indices picked for each
+ *  question, kept across re-renders until the answers are sent. */
+const askSelections = new Map<string, number[][]>();
+
+/** The askUser card: each question with its options as chips. Only the card
+ *  the conversation is waiting on is interactive (and only in the tab that
+ *  owns the session). A lone single-choice question sends on click;
+ *  otherwise picks toggle and "Send answers" sends them (with anything typed
+ *  in the input) as the user's next message. */
+function renderAskUserCard(messageId: string, tc: PersistedToolCall): HTMLElement {
+  const questions = parseAskUser(tc.input);
+  if (questions.length === 0) return renderToolCallChip(tc.name, tc.input);
+  const key = `${messageId}:${tc.id}`;
+  const pending = pendingAskUser(state.history);
+  const live = writeOwner && !state.inFlight && pending?.messageId === messageId && pending.call.id === tc.id;
+  const selections = askSelections.get(key) ?? questions.map(() => []);
+  const quickSend = questions.length === 1 && !questions[0].multiSelect && questions[0].options.length > 0;
+
+  const card = document.createElement('div');
+  card.className = `max-w-[95%] w-full rounded-lg border border-sky-700/60 bg-sky-900/15 px-3 py-2 flex flex-col gap-2${live ? '' : ' opacity-75'}`;
+  card.dataset.askUserCard = tc.id;
+  card.dataset.messageId = messageId;
+  const head = document.createElement('div');
+  head.className = 'text-xs font-medium text-sky-200';
+  head.textContent = live ? '❓ The AI needs your input' : '❓ The AI asked';
+  card.appendChild(head);
+
+  questions.forEach((q, qi) => {
+    const qEl = document.createElement('div');
+    qEl.className = 'text-[13px] text-zinc-100 leading-snug';
+    qEl.textContent = questions.length > 1 ? `${qi + 1}. ${q.question}` : q.question;
+    card.appendChild(qEl);
+    if (q.options.length === 0) return;
+    const row = document.createElement('div');
+    row.className = 'flex flex-wrap gap-1.5';
+    row.setAttribute('role', 'group');
+    row.setAttribute('aria-label', q.question);
+    q.options.forEach((opt, oi) => {
+      const picked = selections[qi]?.includes(oi) ?? false;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.disabled = !live;
+      btn.dataset.option = `${qi}:${oi}`;
+      btn.setAttribute('aria-pressed', String(picked));
+      btn.className = `text-left px-2 py-1 min-h-[44px] md:min-h-0 rounded border text-[12px] leading-tight transition-colors ${picked
+        ? 'border-sky-400 bg-sky-600/40 text-white'
+        : 'border-zinc-600 bg-zinc-800 text-zinc-200'}${live ? ' [@media(hover:hover)]:hover:border-sky-400 [@media(hover:hover)]:hover:bg-zinc-700' : ' cursor-default'}`;
+      btn.textContent = opt.label;
+      if (opt.description) {
+        btn.title = opt.description;
+        const note = document.createElement('span');
+        note.className = 'block text-[10px] text-zinc-400';
+        note.textContent = opt.description;
+        btn.appendChild(note);
+      }
+      btn.addEventListener('click', () => {
+        if (quickSend) { void submitAskUserAnswers(key, questions, [[oi]]); return; }
+        const current = selections[qi] ?? [];
+        selections[qi] = q.multiSelect
+          ? (current.includes(oi) ? current.filter(x => x !== oi) : [...current, oi])
+          : (current.includes(oi) ? [] : [oi]);
+        askSelections.set(key, selections);
+        const next = renderAskUserCard(messageId, tc);
+        card.replaceWith(next);
+        // Keep keyboard focus on the chip that was toggled.
+        next.querySelector<HTMLButtonElement>(`[data-option="${qi}:${oi}"]`)?.focus();
+      });
+      row.appendChild(btn);
+    });
+    card.appendChild(row);
+  });
+
+  if (live) {
+    const foot = document.createElement('div');
+    foot.className = 'flex items-center gap-2';
+    const hint = document.createElement('span');
+    hint.className = 'text-[11px] text-zinc-400 flex-1';
+    hint.textContent = quickSend ? 'Pick one, or type your own answer below.' : 'Pick answers, or type your own below.';
+    foot.appendChild(hint);
+    if (!quickSend) {
+      const send = document.createElement('button');
+      send.type = 'button';
+      send.className = 'shrink-0 px-2 py-1 min-h-[44px] md:min-h-0 rounded text-[11px] font-medium bg-blue-600 [@media(hover:hover)]:hover:bg-blue-500 text-white';
+      send.textContent = 'Send answers';
+      send.addEventListener('click', () => { void submitAskUserAnswers(key, questions, selections); });
+      foot.appendChild(send);
+    }
+    card.appendChild(foot);
+  }
+  return card;
+}
+
+/** Re-render the question cards in the transcript: whether one is the live
+ *  card depends on the turn being over and on owning the session, which the
+ *  last render may not have known. */
+function refreshAskUserCards(): void {
+  if (!transcriptEl) return;
+  for (const el of transcriptEl.querySelectorAll<HTMLElement>('[data-ask-user-card]')) {
+    const messageId = el.dataset.messageId ?? '';
+    const tc = state.history.find(m => m.id === messageId)?.toolCalls?.find(c => c.id === el.dataset.askUserCard);
+    if (tc) el.replaceWith(renderAskUserCard(messageId, tc));
+  }
+}
+
+/** Send a question card's answers (plus anything typed) as the user's next
+ *  message — through sendMessage, so plan mode and queueing apply as usual. */
+async function submitAskUserAnswers(key: string, questions: AskUserQuestion[], selections: number[][]): Promise<void> {
+  if (!inputEl || state.inFlight || !writeOwner) return;
+  const text = answersText(questions, selections, inputEl.value);
+  if (!text) { inputEl.focus(); return; }
+  inputEl.value = text;
+  inputEl.dispatchEvent(new Event('input'));
+  askSelections.delete(key);
+  await sendMessage();
+}
+
+/** The proposePlan card: summary, numbered steps, assumptions. Build / Discard
+ *  live in the plan bar, which reads this card. */
+function renderPlanCard(tc: PersistedToolCall): HTMLElement {
+  const plan = parseProposedPlan(tc.input);
+  if (!plan) return renderToolCallChip(tc.name, tc.input);
+  const card = document.createElement('div');
+  card.className = 'max-w-[95%] w-full rounded-lg border border-amber-700/60 bg-amber-900/10 px-3 py-2 flex flex-col gap-1.5 text-[13px] text-zinc-100 leading-snug';
+  card.dataset.planCard = tc.id;
+  const head = document.createElement('div');
+  head.className = 'text-xs font-medium text-amber-200';
+  head.textContent = '📋 Plan';
+  card.appendChild(head);
+  const summary = document.createElement('div');
+  summary.className = 'whitespace-pre-wrap';
+  summary.textContent = plan.summary;
+  card.appendChild(summary);
+  const steps = document.createElement('ol');
+  steps.className = 'list-decimal pl-5 flex flex-col gap-0.5';
+  for (const step of plan.steps) {
+    const li = document.createElement('li');
+    li.textContent = step;
+    steps.appendChild(li);
+  }
+  card.appendChild(steps);
+  if (plan.assumptions.length > 0) {
+    const label = document.createElement('div');
+    label.className = 'mt-1 text-[11px] uppercase tracking-wide text-zinc-400';
+    label.textContent = 'Assumptions';
+    card.appendChild(label);
+    const list = document.createElement('ul');
+    list.className = 'list-disc pl-5 text-zinc-300 flex flex-col gap-0.5';
+    for (const a of plan.assumptions) {
+      const li = document.createElement('li');
+      li.textContent = a;
+      list.appendChild(li);
+    }
+    card.appendChild(list);
+  }
+  return withCopyButton(card, 'assistant', () => planMarkdown(plan));
 }
 
 function renderToolCallChip(name: string, input: Record<string, unknown>): HTMLElement {
@@ -3030,7 +3269,10 @@ function queueCurrentInput(): void {
   const text = inputEl.value.trim();
   if (text.length === 0 && state.pendingImages.length === 0) return;
   const blocks: ChatBlock[] = [];
-  if (text.length > 0) blocks.push({ type: 'text', text });
+  // Typed while a plan is being written: it's a revision of that plan, and
+  // marked as one so the pending plan survives in the transcript.
+  if (state.pendingPlanApproval) blocks.push({ type: 'text', text: PLAN_REFINE_PREFIX + text });
+  else if (text.length > 0) blocks.push({ type: 'text', text });
   for (const img of state.pendingImages) blocks.push({ type: 'image', source: img });
   state.queuedBlocks.push(...blocks);
   // Relay newly-queued blocks into the Worker so its drain hook picks them
@@ -3060,7 +3302,7 @@ function renderQueuedBadge(): void {
   // which message they queued at a glance (handy if they queued more than
   // one before the agent paused).
   const preview = textBlocks.length > 0 && textBlocks[0].type === 'text'
-    ? textBlocks[0].text.split('\n')[0].slice(0, 80)
+    ? (planTurn(textBlocks[0].text)?.words ?? textBlocks[0].text).split('\n')[0].slice(0, 80)
     : `${imageCount} image${imageCount === 1 ? '' : 's'}`;
   const more = state.queuedBlocks.length > 1 ? ` (+${state.queuedBlocks.length - 1} more)` : '';
 
@@ -3129,6 +3371,8 @@ async function rewindTurn(): Promise<void> {
   // "step back and start over" wouldn't actually recover. Repair the exposed
   // history and persist it so the post-rewind state is always sendable.
   await persistToolHistoryRepair();
+  // The transcript changed under the plan: re-read whether one is pending.
+  syncPendingPlanFromHistory();
   renderTranscript();
   updateRewindButtons();
 }
@@ -3159,6 +3403,8 @@ async function fastForwardTurn(): Promise<void> {
     if (insertAt === -1) state.history.push(msg);
     else state.history.splice(insertAt, 0, msg);
   }
+  // The transcript changed under the plan: re-read whether one is pending.
+  syncPendingPlanFromHistory();
   renderTranscript();
   updateRewindButtons();
 }
@@ -3463,7 +3709,8 @@ async function sendMessage(): Promise<void> {
   // The Objects-list selection is chat context: "make it red" means the part
   // the user has selected.
   const partKeys = getSelectedPartKeys();
-  if (capturedText.length > 0) blocks.push({ type: 'text', text: partKeys.length > 0 ? `${partSelectionChatContext(partKeys)}\n\n${capturedText}` : capturedText });
+  const textWithContext = partKeys.length > 0 ? `${partSelectionChatContext(partKeys)}\n\n${capturedText}` : capturedText;
+  if (capturedText.length > 0) blocks.push({ type: 'text', text: textWithContext });
   // Only attach images the user added if vision is on. Iso views are
   // user-initiated via Show AI; pending images get sent regardless because
   // the user's intent is explicit when they attached them.
@@ -3482,7 +3729,10 @@ async function sendMessage(): Promise<void> {
   // if they had been scrolled up reading earlier history.
   pinTranscriptToBottom();
 
-  if (settings.toggles.planFirst || state.pendingPlanApproval) {
+  // Answering a question card the AI asked mid-build continues that build,
+  // even with the Plan pill on — it isn't a new request to plan.
+  const answeringCard = !state.pendingPlanApproval && pendingAskUser(state.history) !== null;
+  if ((settings.toggles.planFirst && !answeringCard) || state.pendingPlanApproval) {
     // Plan-first mode or an in-flight plan refinement: keep tools off so the
     // model can't execute anything until the user approves. If this is a
     // follow-up (pendingPlanApproval is already set), the user is replying to
@@ -3490,10 +3740,8 @@ async function sendMessage(): Promise<void> {
     // message as-is; the planning prefix is only for the very first turn.
     const planToggles: ChatToggles = {
       ...settings.toggles,
-      // The pending-approval state is the source of truth for "we're planning,"
-      // not the live Plan pill — force planFirst on so a refinement turn keeps
-      // its empty tool list and plan-mode suffix even if the user toggled the
-      // pill off while a plan was pending.
+      // A pending plan implies the pill is on (turning it off clears the
+      // plan), but keep this turn in plan mode explicitly.
       planFirst: true,
       scope: { runCode: false, saveVersions: false, paintFaces: false, sessionNotes: false },
       autoResume: false,
@@ -3507,13 +3755,14 @@ async function sendMessage(): Promise<void> {
       // switch to execution mode when it receives the information it asked for.
       // Read-only inspection tools are still available; mutating/execution
       // tools are hidden until approval.
-      planBlocks = [...uiNoteBlocks];
-      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: PLAN_REFINE_PREFIX + capturedText });
+      // The prefix goes on even with no text (images only): it is what marks
+      // the message as part of the plan when the state is re-read from the
+      // transcript.
+      planBlocks = [...uiNoteBlocks, { type: 'text', text: PLAN_REFINE_PREFIX + textWithContext }];
       for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
     } else {
       // First planning turn: prefix with the planning instruction.
-      planBlocks = [...uiNoteBlocks];
-      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: PLAN_FIRST_PREFIX + capturedText });
+      planBlocks = [...uiNoteBlocks, { type: 'text', text: PLAN_FIRST_PREFIX + textWithContext }];
       for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
       state.pendingPlanApproval = {
         originalText: capturedText,
@@ -3523,11 +3772,12 @@ async function sendMessage(): Promise<void> {
     }
 
     await runTurnWithStallRetry(apiKey, planToggles, planBlocks);
-    renderPlanApprovalBar();
+    syncPendingPlanFromHistory();
     return;
   }
 
-  await runTurnWithStallRetry(apiKey, settings.toggles, blocks);
+  // Only a card answer reaches here with the pill on; it builds with full tools.
+  await runTurnWithStallRetry(apiKey, { ...settings.toggles, planFirst: false }, blocks);
 }
 
 /** Wraps runTurn with: in-progress indicator, stall watchdog, and bounded
@@ -3551,6 +3801,8 @@ function formatTurnOutcome(o: TurnOutcome): string {
   const tools = o.toolCalls > 0 ? `, ${o.toolCalls} tool call${o.toolCalls === 1 ? '' : 's'}` : '';
   switch (o.reason) {
     case 'end_turn':
+      if (o.detail === ASK_USER_TOOL) return `❓ waiting for your answers · ${cost} · ${iters}${tools}`;
+      if (o.detail === PROPOSE_PLAN_TOOL) return `📋 plan ready · ${cost} · ${iters}${tools}`;
       return `✓ done · ${cost} · ${iters}${tools}`;
     case 'empty_final':
       return `⚠ model exited without a final message · ${cost} · ${iters}${tools} — last visible content is above`;
@@ -3894,6 +4146,7 @@ async function runTurnWithStallRetry(
     state.inFlightController = null;
     setSendButtonMode('send');
     updateRewindButtons();
+    refreshAskUserCards();
 
     // Bug fix — reunite a conversation split by a mid-turn session switch.
     // chatLoop stamps every message of a turn with the session active when the
@@ -3973,6 +4226,7 @@ async function runTurnWithStallRetry(
       reason: finalOutcome.reason,
       modelChangingToolCalls: countModelChangingCalls(state.history, roundStartedAt, isModelChangingTool),
       planning: toggles.planFirst || state.pendingPlanApproval !== null,
+      awaitingAnswers: pendingAskUser(state.history) !== null,
       hadError: state.history.some(m => m.errored),
       spentUsd: totalCost(state.history),
       spendCapUsd: SPEND_CAP_USD[toggles.maxSpend],
@@ -4122,6 +4376,7 @@ async function runAutoReview(toggles: ChatToggles, roundsUsed: number, request: 
     state.inFlightController = null;
     setSendButtonMode('send');
     updateRewindButtons();
+    refreshAskUserCards();
   }
 }
 
@@ -4320,6 +4575,9 @@ function triggerStallRetry(): void {
  *                   exchange. Best when full history doesn't matter —
  *                   like driving the modeler. */
 async function maybeAutoCompact(): Promise<void> {
+  // A pending plan is anchored by its position in the history; compacting
+  // would shift it (and could fold the plan itself into a summary).
+  if (state.pendingPlanApproval) return;
   const settings = loadSettings();
   const mode = settings.autoCompactMode;
   if (mode === 'off' || mode === 'conservative') return;
@@ -4392,6 +4650,10 @@ async function maybeAutoCompact(): Promise<void> {
 async function runCompact(): Promise<void> {
   if (state.inFlight) {
     setTransientStatus('Wait for the current turn to finish before compacting.');
+    return;
+  }
+  if (state.pendingPlanApproval) {
+    setTransientStatus('Build or discard the pending plan before compacting.');
     return;
   }
   const settings = loadSettings();

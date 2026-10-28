@@ -34,6 +34,9 @@ test-results/
 playwright-report/
 playwright/.cache/
 
+# tests/ses-bench.spec.ts output (opt-in SES catalog sweep / perf; #1127)
+/.ses-bench/
+
 # scripts/snap.mjs temp specs (deleted after each run; ignored as a safety net)
 /tests/_snap-*.spec.ts
 

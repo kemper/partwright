@@ -5,14 +5,14 @@
 // `reconstruct/reconstructWorker.ts`: progress messages while running, one
 // `done`/`error` terminal message per request.
 
-import { probeSTL, type ManifoldTrial } from './stlProbe';
+import { probeIndexed, probeSTL, type ManifoldTrial } from './stlProbe';
 import type { MeshData } from '../geometry/types';
 
-interface ProbeMsg {
-  type: 'probe';
-  bytes: Uint8Array;
-  configuredTolerance: number;
-}
+type ProbeMsg =
+  | { type: 'probe'; bytes: Uint8Array; configuredTolerance: number }
+  /** An already-indexed mesh (3MF) that failed the quick check on the main
+   *  thread: run the exact ofMesh weld ladder here. */
+  | { type: 'probeIndexed'; mesh: MeshData; configuredTolerance: number };
 
 type ManifoldModule = {
   Manifold: { ofMesh(m: { numProp: number; vertProperties: Float32Array; triVerts: Uint32Array }): { isEmpty(): boolean; delete(): void } };
@@ -55,11 +55,14 @@ self.onmessage = async (e: MessageEvent<ProbeMsg>) => {
   const msg = e.data;
   try {
     const mod = await loadManifold();
-    const result = probeSTL(msg.bytes, {
-      configuredTolerance: msg.configuredTolerance,
-      tryManifold: (mesh) => tryManifold(mod, mesh),
-      onProgress: (fraction, message) => self.postMessage({ type: 'progress', fraction, message }),
-    });
+    const tryM = (mesh: MeshData) => tryManifold(mod, mesh);
+    const result = msg.type === 'probeIndexed'
+      ? probeIndexed(msg.mesh, { configuredTolerance: msg.configuredTolerance, tryManifold: tryM })
+      : probeSTL(msg.bytes, {
+        configuredTolerance: msg.configuredTolerance,
+        tryManifold: tryM,
+        onProgress: (fraction, message) => self.postMessage({ type: 'progress', fraction, message }),
+      });
     const transfer = result ? [result.mesh.vertProperties.buffer, result.mesh.triVerts.buffer] : [];
     self.postMessage({ type: 'done', result }, { transfer });
   } catch (err) {

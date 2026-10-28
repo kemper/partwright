@@ -45,9 +45,8 @@ export function sandboxHostAction(
   }
   const isProduction = here.origin === PRODUCTION_SANDBOX_ORIGIN;
   if (here.origin !== parseSandboxOrigin(sandboxOrigin) && !isProduction) return null;
-  // allowedParentOrigins adds its first argument; pass '' so only the
-  // configured list comes back, then never "redirect" to this host itself.
-  const [configured] = [...allowedParentOrigins('', appOrigins)].filter(o => o !== here.origin);
+  // Never "redirect" to this host itself.
+  const [configured] = [...allowedParentOrigins(appOrigins)].filter(o => o !== here.origin);
   const app = configured ?? (isProduction ? PRODUCTION_APP_ORIGIN : undefined);
   if (!app) return { kind: 'block' };
   return { kind: 'redirect', url: app + here.pathname + here.search + here.hash };

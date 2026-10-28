@@ -7,6 +7,7 @@
 
 import type { MeshData } from '../geometry/types';
 import { DEFAULT_STL_WELD_TOLERANCE, parseSTLSoup, weldSoup } from './parsers/stl';
+import { weldMesh } from '../geometry/weldPositions';
 
 export type ManifoldTrial = { ok: true } | { ok: false; error: string };
 
@@ -75,6 +76,31 @@ export function probeSTL(bytes: Uint8Array, opts: STLProbeOptions): STLProbeResu
     bestMesh = mesh;
   }
   return { mesh: bestMesh, isManifold: false, manifoldError, maxTried, triCount: probe.numTri, vertCount: probe.numVert };
+}
+
+export type IndexedProbeResult =
+  /** `welded` false: `mesh` is the input as-is (the caller can keep its own). */
+  | { mesh: MeshData; isManifold: true; welded: boolean }
+  | { mesh: MeshData; isManifold: false; manifoldError: string | null; maxTried: number };
+
+/** The probe for an already-indexed mesh (a 3MF, or one object cut out of
+ *  one): the raw mesh first, then each rung of the weld-tolerance ladder.
+ *  Welding keeps triangle order, so per-triangle data stays aligned with the
+ *  returned mesh. When nothing passes, `mesh` is the raw mesh. */
+export function probeIndexed(raw: MeshData, opts: Omit<STLProbeOptions, 'onProgress'>): IndexedProbeResult {
+  const trial = (m: MeshData): ManifoldTrial => isOrientedEdgeManifold(m) ? { ok: true } : opts.tryManifold(m);
+  const first = trial(raw);
+  if (first.ok) return { mesh: raw, isManifold: true, welded: false };
+  let manifoldError: string | null = first.error;
+  let maxTried = 0;
+  for (const tol of weldToleranceLadder(raw, opts.configuredTolerance)) {
+    const welded = weldMesh(raw, tol);
+    const t = trial(welded);
+    if (t.ok) return { mesh: welded, isManifold: true, welded: true };
+    manifoldError = t.error;
+    if (tol > maxTried) maxTried = tol;
+  }
+  return { mesh: raw, isManifold: false, manifoldError, maxTried };
 }
 
 /** A cheap stand-in for "would `Manifold.ofMesh` accept this mesh?" that

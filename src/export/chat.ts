@@ -5,6 +5,7 @@
 
 import type { ChatMessage, PersistedToolCall, PersistedToolResult } from '../ai/types';
 import { downloadBlob, getExportFilename } from './download';
+import { planTurn } from '../ai/userWords';
 
 function fmtTimestamp(ms: number): string {
   const d = new Date(ms);
@@ -48,7 +49,12 @@ function renderMessage(msg: ChatMessage): string {
 
   for (const block of msg.blocks) {
     if (block.type === 'text') {
-      const text = block.text.trim();
+      // Plan-mode turns: the user's words, not the app's instructions (the
+      // approval also repeats the plan, which is already in the reply above).
+      const plan = msg.role === 'user' ? planTurn(block.text) : null;
+      const text = plan
+        ? (plan.kind === 'approved' ? '_✓ Plan approved — building_' : `_📋 ${plan.kind === 'request' ? 'Plan first' : 'Plan revision'}:_ ${plan.words}`)
+        : block.text.trim();
       if (text) parts.push(text);
     } else if (block.type === 'image') {
       parts.push(`_[image${block.source.label ? `: ${block.source.label}` : ''}]_`);
