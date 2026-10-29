@@ -359,6 +359,40 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ai.extendedCacheForDeepThinking}
           onChange={v => set('ai', 'extendedCacheForDeepThinking', v)}
         />
+        <ToggleField cfgKey="ai.delegateToWorker"
+          label="Delegate sub-tasks to a cheaper worker"
+          hint="Lets the agent hand a measurable sub-task (tune until a score or gate passes) to a cheaper model of the same provider — Sonnet under Opus, GPT-5 mini, Gemini Flash. The worker runs in its own fresh context and only its report comes back, so the main conversation stays small."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.delegateToWorker}
+          value={c.ai.delegateToWorker}
+          onChange={v => set('ai', 'delegateToWorker', v)}
+        />
+        <Field cfgKey="ai.workerMaxSteps"
+          label="Worker step limit"
+          unit="steps"
+          hint="Most agent steps one delegated worker may take."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.workerMaxSteps}
+          value={c.ai.workerMaxSteps}
+          min={1} max={60} integer
+          onChange={v => set('ai', 'workerMaxSteps', v)}
+        />
+        <Field cfgKey="ai.workerMaxSpendUsd"
+          label="Worker spend limit"
+          unit="USD"
+          hint="Most one delegated worker may spend. Also capped by what's left of the session's $ budget."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.workerMaxSpendUsd}
+          value={c.ai.workerMaxSpendUsd}
+          min={0.05} max={20} step={0.05}
+          onChange={v => set('ai', 'workerMaxSpendUsd', v)}
+        />
+        <Field cfgKey="ai.workerReportMaxChars"
+          label="Worker report length"
+          unit="chars"
+          hint="Longest worker report passed back to the main agent."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.workerReportMaxChars}
+          value={c.ai.workerReportMaxChars}
+          min={500} max={20000} integer
+          onChange={v => set('ai', 'workerReportMaxChars', v)}
+        />
         <Field cfgKey="ai.cachedImageLimit"
           label="Render images before a trim (cached providers)"
           unit="images"

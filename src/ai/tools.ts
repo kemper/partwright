@@ -3047,7 +3047,8 @@ export function isModelChangingTool(name: string, input?: Record<string, unknown
   if (name === 'renameVersion') return false;
   // editPalette is paint-gated but edits the spool list, not the model.
   if (name === 'editPalette') return false;
-  return name === 'runCode' || name === 'setCode' || name === 'setParams' || SAVE_GATED.has(name) || PAINT_GATED.has(name);
+  // A delegated worker edits and saves the model on the main agent's behalf.
+  return name === 'delegateTask' || name === 'runCode' || name === 'setCode' || name === 'setParams' || SAVE_GATED.has(name) || PAINT_GATED.has(name);
 }
 
 /** Where the AI's importFromUrl lands when the model names no target: a new

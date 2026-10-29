@@ -68,6 +68,22 @@ Turning **off** is byte-for-byte the old behavior — no `finish` tool, no nudge
 
 Both share dangling-tool-call repair, image handling, and review serialization. Non-tool helpers (`validateKey`/`listModels`/`summarize`) always use Chat Completions.
 
+## Worker delegation (`delegateTask`)
+
+On hosted providers (not in plan mode, `ai.delegateToWorker` on), the main agent is offered `delegateTask` (`src/ai/delegate.ts` for the schema and pure helpers; `turnToolList` in `chatLoop.ts` adds it). The call hands one self-contained, measurable sub-task (`task` + `acceptance` + optional `context`/`maxSteps`) to a **worker**.
+
+The worker is a nested `runTurn` in the same agent loop context. `executeAllWithRetry` answers the tool itself, as it does `loadTools`, because the worker needs the API key and the loop.
+
+- **Model.** The provider's cheaper default (`resolveWorkerModel`: Sonnet 5.5 / GPT-5 mini / Gemini Flash). It falls back to the main model when that is no more expensive or is unpriced.
+- **Toggles.** The main chat's, at Medium thinking, with auto-continue, plan mode and auto-review off (`workerToggles`).
+- **History.** Empty: the worker's only user message is `buildWorkerBrief`. The main chat's loaded tool groups are preloaded.
+- **Persistence.** None: `persist: false` keeps its steps out of IndexedDB and the transcript.
+- **Tools.** Never `delegateTask`, `askUser` or `proposePlan` (`WORKER_EXCLUDED_TOOLS`).
+- **Caps.** `maxIterationsOverride` (≤ `ai.workerMaxSteps`) and `spendCapUsd`, which is min(`ai.workerMaxSpendUsd`, what's left of the session $ budget). The last two steps get a countdown note appended to the tool-result turn via `onDrainQueuedBlocks`, so the cache-friendly history still gets a report written in time.
+- **Result.** The worker's final reply, headed `[Worker <model> finished · N steps · M tool calls · $X]` (`formatWorkerReport`, capped at `ai.workerReportMaxChars`), plus its last render image. Its cost is added to the turn and stored as `costUsd` on the tool-result message, so `totalCost(history)` and the $ cap include it.
+- **Progress.** Its progress is relayed as the `tool` phase (`worker · <model> · step n/N · …`), which the panel's stall watchdog ignores, so a slow worker call can't abort and re-run the whole delegation.
+- **Auto-review.** `isModelChangingTool('delegateTask')` is true, so auto-review covers delegated work.
+
 ## Context size: tool groups, Custom endpoints and stale tool payloads
 
 **Custom endpoint context profile** (`src/ai/customContext.ts`). The full hosted payload is about 100k tokens before the conversation starts (PREAMBLE + `ai.md` ≈ 39k, 160+ tool schemas ≈ 60k). That breaks a local model behind llama.cpp / vLLM / LM Studio / Ollama: the request is rejected, or truncated past Ollama's `num_ctx`. Each saved endpoint therefore carries a `context` profile (`SavedEndpoint.context` → `ChatToggles.customContext`):

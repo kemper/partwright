@@ -72,6 +72,12 @@ function pricingFor(provider: string, model: string): CatalogPricing | null {
   return getPricing(provider as Provider, model) ?? KNOWN_MODEL_PRICING[`${provider}/${model}`] ?? null;
 }
 
+/** A model's base output rate (USD per 1M tokens), or null when unpriced.
+ *  Used to tell whether a candidate worker model is actually cheaper. */
+export function outputRateUsd(provider: string, model: string): number | null {
+  return pricingFor(provider, model)?.output ?? null;
+}
+
 /** Local (WebGPU) and custom (self-hosted OpenAI-compatible endpoint) turns
  *  are free at the API level — the user paid for the hardware/electricity. */
 function isFreeProvider(provider: string): boolean {
