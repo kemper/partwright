@@ -31,6 +31,9 @@ import { getPricing, pricingTierFor, type CatalogPricing } from './catalog';
 
 const CACHE_READ_MULTIPLIER = 0.1;
 const CACHE_WRITE_MULTIPLIER = 1.25;
+/** Anthropic bills 1-hour cache writes at 2× base input (5-minute: 1.25×).
+ *  The catalog's `cache_write` rate is the 5-minute one. */
+const CACHE_WRITE_1H_MULTIPLIER = 2;
 
 /** Explicit prices for known cheap models the build-time catalog snapshot
  *  doesn't carry (it's filtered to the last year of releases, so an
@@ -106,7 +109,9 @@ export function turnCostUsd(provider: string, model: string, usage: TurnUsage): 
   const cacheReadRate = rate.cacheRead ?? rate.input * CACHE_READ_MULTIPLIER;
   const cacheWriteRate = rate.cacheWrite ?? rate.input * CACHE_WRITE_MULTIPLIER;
   const cacheReadCost = (usage.cacheReadInputTokens * cacheReadRate) / 1_000_000;
-  const cacheWriteCost = (usage.cacheCreationInputTokens * cacheWriteRate) / 1_000_000;
+  const oneHourWrite = Math.min(usage.cacheCreation1hInputTokens ?? 0, usage.cacheCreationInputTokens);
+  const cacheWriteCost = ((usage.cacheCreationInputTokens - oneHourWrite) * cacheWriteRate
+    + oneHourWrite * rate.input * CACHE_WRITE_1H_MULTIPLIER) / 1_000_000;
   return inputCost + cacheReadCost + cacheWriteCost + outputCost;
 }
 

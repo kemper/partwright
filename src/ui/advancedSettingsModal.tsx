@@ -352,6 +352,13 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ai.cacheConversationHistory}
           onChange={v => set('ai', 'cacheConversationHistory', v)}
         />
+        <ToggleField cfgKey="ai.extendedCacheForDeepThinking"
+          label="1-hour cache for High+ thinking (Anthropic)"
+          hint="At High, XHigh or Max thinking a single step can think for more than 5 minutes, which expires Anthropic's default cache — the next step then re-writes the whole conversation at 1.25× input. The 1-hour cache costs 2× input to write but survives long thinking and pauses between messages."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.extendedCacheForDeepThinking}
+          value={c.ai.extendedCacheForDeepThinking}
+          onChange={v => set('ai', 'extendedCacheForDeepThinking', v)}
+        />
         <Field cfgKey="ai.cachedImageLimit"
           label="Render images before a trim (cached providers)"
           unit="images"

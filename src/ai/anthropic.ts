@@ -18,7 +18,7 @@ import type {
 } from './types';
 import type { ToolDefinition } from './tools';
 import { repairToolHistory } from './historyRepair';
-import { withHistoryCacheBreakpoints } from './anthropicCache';
+import { cacheControlFor, withHistoryCacheBreakpoints, type CacheTtl } from './anthropicCache';
 import { getLimits } from './catalog';
 import {
   anthropicCannotDisable,
@@ -195,6 +195,9 @@ export interface RequestSpec {
   /** Put prompt-cache breakpoints on the conversation history (see
    *  withHistoryCacheBreakpoints). Omitted = off. */
   cacheHistory?: boolean;
+  /** Lifetime of every cache breakpoint in the request (system, tools,
+   *  history). Omitted = '5m', the API default. See cacheTtlForThinking. */
+  cacheTtl?: CacheTtl;
 }
 
 
@@ -213,8 +216,12 @@ export async function streamTurn(
   // the large stable prefix (the full ai.md body) while leaving the small
   // toggle-aware suffix uncached. See shared/prompt-caching.md for the
   // prefix-match invariant.
+  // One TTL for every breakpoint: the API requires longer-lived entries to
+  // precede shorter ones in the prefix, so mixing them per block would 400.
+  const cacheTtl = spec.cacheTtl ?? '5m';
+  const cacheControl = cacheControlFor(cacheTtl);
   const system: Anthropic.TextBlockParam[] = [
-    { type: 'text', text: spec.systemPrompt, cache_control: { type: 'ephemeral' } },
+    { type: 'text', text: spec.systemPrompt, cache_control: cacheControl },
   ];
   if (spec.systemSuffix.trim().length > 0) {
     system.push({ type: 'text', text: spec.systemSuffix });
@@ -229,14 +236,14 @@ export async function streamTurn(
     name: t.name,
     description: t.description,
     input_schema: t.input_schema,
-    ...(i === arr.length - 1 ? { cache_control: { type: 'ephemeral' } } : {}),
+    ...(i === arr.length - 1 ? { cache_control: cacheControl } : {}),
   }));
 
   const params: Anthropic.MessageStreamParams = {
     model: spec.model,
     max_tokens: baseMax,
     system,
-    messages: spec.cacheHistory ? withHistoryCacheBreakpoints(spec.apiMessages) : spec.apiMessages,
+    messages: spec.cacheHistory ? withHistoryCacheBreakpoints(spec.apiMessages, cacheTtl) : spec.apiMessages,
   };
   // Omit tools entirely when the list is empty — passing tools:[] causes the
   // API to return malformed_function_call if the model tries to use a tool
@@ -338,6 +345,8 @@ async function runStream(
       partialUsage.outputTokens = u.output_tokens ?? 0;
       partialUsage.cacheCreationInputTokens = u.cache_creation_input_tokens ?? 0;
       partialUsage.cacheReadInputTokens = u.cache_read_input_tokens ?? 0;
+      const oneHour = u.cache_creation?.ephemeral_1h_input_tokens ?? 0;
+      if (oneHour > 0) partialUsage.cacheCreation1hInputTokens = oneHour;
     } else if (event.type === 'message_delta') {
       if (event.usage?.output_tokens != null) partialUsage.outputTokens = event.usage.output_tokens;
     }
@@ -411,11 +420,13 @@ function collectResult(message: Anthropic.Message): StreamResult {
       });
     }
   }
+  const oneHourWrite = message.usage.cache_creation?.ephemeral_1h_input_tokens ?? 0;
   const usage: TurnUsage = {
     inputTokens: message.usage.input_tokens,
     outputTokens: message.usage.output_tokens,
     cacheCreationInputTokens: message.usage.cache_creation_input_tokens ?? 0,
     cacheReadInputTokens: message.usage.cache_read_input_tokens ?? 0,
+    ...(oneHourWrite > 0 ? { cacheCreation1hInputTokens: oneHourWrite } : {}),
   };
   return {
     text,

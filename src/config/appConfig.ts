@@ -89,6 +89,11 @@ export interface AppConfig {
      *  rate (~10% of input) instead of full price. OpenAI and Gemini cache a
      *  repeated prefix automatically. */
     cacheConversationHistory: boolean;
+    /** Use Anthropic's 1-hour prompt cache (2× input to write, vs 1.25× for
+     *  the default 5 minutes) on turns at the High, XHigh or Max thinking
+     *  level. Those steps can think for over 5 minutes, which expires the
+     *  default cache and makes the next step re-write the whole conversation. */
+    extendedCacheForDeepThinking: boolean;
     /** Render images allowed to accumulate in the request before a trim, for
      *  providers that cache the history (Anthropic with history caching on,
      *  OpenAI, Gemini). Cached images are cheap to re-send, and trimming edits
@@ -761,6 +766,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     imageTokenEstimate: 1500,
     keepRecentToolImages: 3,
     cacheConversationHistory: true,
+    extendedCacheForDeepThinking: true,
     cachedImageLimit: 15,
     cachedImageTrimTo: 8,
     autoCompactMaxTokens: 150_000,
