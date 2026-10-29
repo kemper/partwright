@@ -1996,6 +1996,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={1} max={365} integer
           onChange={v => set('ui', 'deletedObjectRetentionDays', v)}
         />
+        <Field cfgKey="ui.annotationViewMaxWidth"
+          label="Annotation view width"
+          unit="px"
+          hint="Widest a saved annotation view's captured frame is stored at."
+          tooltip="Saving an annotation view captures the viewport as a JPEG. Wider viewports are scaled down to this width. Larger values give the AI a sharper picture but use more storage."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.annotationViewMaxWidth}
+          value={c.ui.annotationViewMaxWidth}
+          min={320} max={4096} integer
+          onChange={v => set('ui', 'annotationViewMaxWidth', v)}
+        />
         <Field cfgKey="ui.paneSlideMs"
           label="Pane slide"
           unit="ms"

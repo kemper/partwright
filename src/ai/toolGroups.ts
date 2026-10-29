@@ -61,11 +61,11 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
   },
   {
     id: 'inspect',
-    summary: 'mesh probing and measurement: findFaces, probeRay/probePixel, slices and sections, measurements, photoMatch, fitment ghost',
+    summary: 'mesh probing and measurement: findFaces, probeRay/probePixel, slices and sections, measurements, photoMatch, fitment ghost, saved annotation views',
     tools: [
       'getMeshSummary', 'findFaces', 'probePixel', 'probePixels', 'probeRay', 'getFeatureCentroids',
       'sliceAtZVisual', 'renderSection', 'getMeasurement', 'photoMatch', 'getViewState',
-      'setReferenceGeometry', 'clearReferenceGeometry', 'thicknessMap',
+      'setReferenceGeometry', 'clearReferenceGeometry', 'thicknessMap', 'viewAnnotationView',
     ],
   },
   {
@@ -143,6 +143,7 @@ export const DOC_TOOL_GROUPS: Readonly<Record<string, readonly string[]>> = {
   colors: ['paint', 'inspect'],
   'reference-images': ['inspect'],
   'visual-verification': ['inspect'],
+  annotations: ['inspect'],
   textures: ['textures'],
   figure: ['character'],
   segmentation: ['parts'],

@@ -10,6 +10,7 @@ import {
 export type { AttachedImage, SessionAttachment, AttachmentKind } from './attachment';
 import { packStoredArrays, unpackStoredArrays } from './storedArrays';
 import { getConfig } from '../config/appConfig';
+import type { AnnotationView } from '../annotations/annotationViewTypes';
 
 /** A version as written to the `versions` store: its big typed arrays (import
  *  meshes, persisted textures, detected parts) become Blobs, so the put does
@@ -234,7 +235,7 @@ const DB_NAME = 'partwright';
 const LEGACY_DB_NAME = 'mainifold';
 const LEGACY_MIGRATION_KEY = 'partwright-migrated-mainifold-db';
 const PARTS_MIGRATION_KEY = 'partwright-migrated-parts';
-const DB_VERSION = 11;
+const DB_VERSION = 12;
 
 /** Opens the partwright IndexedDB. Exposed so the AI subsystem can attach
  *  its own stores (`aiKeys`, `aiChats`) without duplicating the connection. */
@@ -362,6 +363,13 @@ function openDB(): Promise<IDBDatabase> {
       // src/ai/customEndpoints.ts.
       if (!db.objectStoreNames.contains('aiEndpoints')) {
         db.createObjectStore('aiEndpoints', { keyPath: 'id' });
+      }
+      // v12: annotation-view history — one row per saved Snapshot markup
+      // (camera + captured frame + marks + hits), indexed by sessionId. See
+      // src/annotations/annotationViews.ts.
+      if (!db.objectStoreNames.contains('annotationViews')) {
+        const store = db.createObjectStore('annotationViews', { keyPath: 'id' });
+        store.createIndex('sessionId', 'sessionId', { unique: false });
       }
     };
     req.onsuccess = () => {
@@ -730,6 +738,7 @@ export async function deleteSession(id: string): Promise<void> {
   if (db.objectStoreNames.contains('reliefSources')) stores.push('reliefSources');
   // `deletedObjects` (the object bin) only exists from v9.
   if (db.objectStoreNames.contains('deletedObjects')) stores.push('deletedObjects');
+  if (db.objectStoreNames.contains('annotationViews')) stores.push('annotationViews');
   const txn = db.transaction(stores, 'readwrite');
   txn.objectStore('sessions').delete(id);
   // The relief source blob is keyed by sessionId, so a direct key delete clears
@@ -763,6 +772,7 @@ export async function deleteSession(id: string): Promise<void> {
   ];
   if (db.objectStoreNames.contains('drafts')) cascades.push(deleteByIndex('drafts'));
   if (db.objectStoreNames.contains('deletedObjects')) cascades.push(deleteByIndex('deletedObjects'));
+  if (db.objectStoreNames.contains('annotationViews')) cascades.push(deleteByIndex('annotationViews'));
   await Promise.all(cascades);
   // Wait for the entire transaction to commit
   await txComplete(txn);
@@ -1367,6 +1377,7 @@ export async function clearAllData(): Promise<void> {
   if (db.objectStoreNames.contains('reliefSources')) stores.push('reliefSources');
   if (db.objectStoreNames.contains('deletedObjects')) stores.push('deletedObjects');
   if (db.objectStoreNames.contains('paintRefineCache')) stores.push('paintRefineCache');
+  if (db.objectStoreNames.contains('annotationViews')) stores.push('annotationViews');
   const txn = db.transaction(stores, 'readwrite');
   if (db.objectStoreNames.contains('paintRefineCache')) txn.objectStore('paintRefineCache').clear();
   txn.objectStore('sessions').clear();
@@ -1380,7 +1391,28 @@ export async function clearAllData(): Promise<void> {
   if (db.objectStoreNames.contains('drafts')) txn.objectStore('drafts').clear();
   if (db.objectStoreNames.contains('reliefSources')) txn.objectStore('reliefSources').clear();
   if (db.objectStoreNames.contains('deletedObjects')) txn.objectStore('deletedObjects').clear();
+  if (db.objectStoreNames.contains('annotationViews')) txn.objectStore('annotationViews').clear();
   await txComplete(txn);
+}
+
+// === Annotation views (per session) ===
+
+export async function putAnnotationView(view: AnnotationView): Promise<void> {
+  const store = await tx('annotationViews', 'readwrite');
+  store.put(view);
+  await txComplete(store.transaction);
+}
+
+export async function listAnnotationViews(sessionId: string): Promise<AnnotationView[]> {
+  const store = await tx('annotationViews', 'readonly');
+  const views = await reqToPromise(store.index('sessionId').getAll(IDBKeyRange.only(sessionId))) as AnnotationView[];
+  return views.sort((a, b) => a.createdAt - b.createdAt);
+}
+
+export async function deleteAnnotationView(id: string): Promise<void> {
+  const store = await tx('annotationViews', 'readwrite');
+  store.delete(id);
+  await txComplete(store.transaction);
 }
 
 // === Editor drafts (per session, per part, per language) ===

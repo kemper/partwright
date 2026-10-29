@@ -299,6 +299,7 @@ describe('AI tool dispatch', () => {
       listAnnotations: () => [{ id: 's1', color: [1, 0, 0], width: 4, pointCount: 50, points, camera: { position: [0, 0, 1], target: [0, 0, 0], up: [0, 1, 0] } }],
       listTextAnnotations: () => [{ id: 't1', text: 'shorter here', anchor: [1, 2, 3] }],
       getAnnotationCount: () => 2,
+      listAnnotationViews: () => [{ id: 'av_1', title: 'View 1', summary: '1 stroke · on handle', createdAt: 5, attachedAt: 9, camera: {}, hits: [] }],
     });
     const r = await executeTool('listAnnotations', { maxPointsPerStroke: 5 });
     expect(r.isError).toBe(false);
@@ -312,6 +313,7 @@ describe('AI tool dispatch', () => {
     expect(s.points[4]).toEqual([49, 0, 98]);
     expect(s.bbox).toEqual({ min: [0, 0, 0], max: [49, 0, 98] });
     expect(s.centroid).toEqual([24.5, 0, 49]);
+    expect(out.views).toEqual([{ id: 'av_1', title: 'View 1', summary: '1 stroke · on handle', createdAt: 5, attached: true }]);
 
     const none = JSON.parse((await executeTool('listAnnotations', { maxPointsPerStroke: 0 })).content);
     expect(none.strokes[0].points).toBeUndefined();

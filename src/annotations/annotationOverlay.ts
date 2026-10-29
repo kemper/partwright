@@ -15,6 +15,7 @@ import {
   getStrokes,
   getTexts,
   onChange,
+  type Annotation,
   type StrokeAnnotation,
   type TextAnnotation,
 } from './annotations';
@@ -103,6 +104,17 @@ export function buildStrokesGroup(resolution: THREE.Vector2): THREE.Group | null
   g.name = 'annotation-overlay-snapshot';
   for (const s of strokes) g.add(strokeToLine2(s, resolution, false));
   for (const t of texts) g.add(textToSprite(t, false));
+  return g;
+}
+
+/** Like {@link buildStrokesGroup}, but for an explicit annotation list (a
+ *  saved annotation view's marks) rather than the live store. Ignores the
+ *  global visibility toggle — the caller asked for these marks. */
+export function buildGroupFromAnnotations(list: readonly Annotation[], resolution: THREE.Vector2): THREE.Group | null {
+  if (list.length === 0) return null;
+  const g = new THREE.Group();
+  g.name = 'annotation-view-snapshot';
+  for (const a of list) g.add(a.type === 'stroke' ? strokeToLine2(a, resolution, false) : textToSprite(a, false));
   return g;
 }
 

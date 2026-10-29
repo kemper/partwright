@@ -14,6 +14,9 @@ export interface StrokeAnnotation {
   width: number; // line width in screen-space pixels
   camera: SessionCamera; // camera at time of creation (for restore-view)
   plane: SessionPlane;   // plane data (for select-mode drag)
+  /** Drawn in Snapshot style and not yet saved as an annotation view. Drafts
+   *  never persist on a version; see {@link setDraftScope}. */
+  draft?: boolean;
 }
 
 export interface TextAnnotation {
@@ -25,6 +28,7 @@ export interface TextAnnotation {
   fontSizePx: number;
   camera: SessionCamera;
   plane: SessionPlane;
+  draft?: boolean;
 }
 
 export type Annotation = StrokeAnnotation | TextAnnotation;
@@ -55,6 +59,55 @@ export type SerializedAnnotation =
 let annotations: Annotation[] = [];
 const listeners: Array<() => void> = [];
 
+// Two layers share this store. Floating marks (the default layer) are the
+// per-version annotations that persist and render in every view. Drafts are
+// Snapshot-style marks drawn on the frozen frame before "Save view" moves
+// them into the annotation-view history. While the draft scope is on, every
+// query and mutation below sees only drafts (and new marks become drafts);
+// while it is off, only floating marks. Version snapshots never include drafts.
+let draftScope = false;
+
+function inScope(a: Annotation): boolean {
+  return draftScope ? a.draft === true : a.draft !== true;
+}
+
+function scoped(): Annotation[] {
+  return annotations.filter(inScope);
+}
+
+/** Switch which layer the store exposes: drafts (true) or floating marks. */
+export function setDraftScope(on: boolean): void {
+  if (draftScope === on) return;
+  draftScope = on;
+  strokeRedoStack = [];
+  notifyRedo();
+  notify();
+}
+
+export function isDraftScope(): boolean {
+  return draftScope;
+}
+
+/** All draft marks, whichever layer is in scope. */
+export function getDrafts(): readonly Annotation[] {
+  return annotations.filter(a => a.draft === true);
+}
+
+/** Serialize the draft marks (the `draft` flag is dropped). */
+export function serializeDrafts(): SerializedAnnotation[] {
+  return serializeList(annotations.filter(a => a.draft === true));
+}
+
+/** Remove every draft mark. */
+export function clearDrafts(): void {
+  const before = annotations.length;
+  annotations = annotations.filter(a => a.draft !== true);
+  if (annotations.length !== before) {
+    if (draftScope) clearRedoStack();
+    notify();
+  }
+}
+
 // Redo stack — strokes that were removed via `removeLastStroke()`. Any other
 // mutation (new add, clear, specific delete, session load) drops the stack so
 // redo can never resurrect a stroke into a state where the user wouldn't
@@ -63,28 +116,30 @@ let strokeRedoStack: StrokeAnnotation[] = [];
 const redoListeners: Array<() => void> = [];
 
 export function getStrokes(): readonly StrokeAnnotation[] {
-  return annotations.filter((a): a is StrokeAnnotation => a.type === 'stroke');
+  return annotations.filter((a): a is StrokeAnnotation => a.type === 'stroke' && inScope(a));
 }
 
 export function getTexts(): readonly TextAnnotation[] {
-  return annotations.filter((a): a is TextAnnotation => a.type === 'text');
+  return annotations.filter((a): a is TextAnnotation => a.type === 'text' && inScope(a));
 }
 
 export function getAnnotationById(id: string): Annotation | null {
-  return annotations.find(a => a.id === id) ?? null;
+  return annotations.find(a => a.id === id && inScope(a)) ?? null;
 }
 
 export function getCount(): number {
-  return annotations.length;
+  return scoped().length;
 }
 
 export function addStroke(stroke: StrokeAnnotation): void {
+  if (draftScope) stroke.draft = true;
   annotations.push(stroke);
   clearRedoStack();
   notify();
 }
 
 export function addText(text: TextAnnotation): void {
+  if (draftScope) text.draft = true;
   annotations.push(text);
   clearRedoStack();
   notify();
@@ -109,7 +164,7 @@ export function updateTextAnchor(id: string, anchor: THREE.Vector3): boolean {
 export function removeLastStroke(): StrokeAnnotation | null {
   for (let i = annotations.length - 1; i >= 0; i--) {
     const a = annotations[i];
-    if (a.type === 'stroke') {
+    if (a.type === 'stroke' && inScope(a)) {
       annotations.splice(i, 1);
       strokeRedoStack.push(a);
       notifyRedo();
@@ -138,7 +193,9 @@ export function canRedoStroke(): boolean {
  *  the redo stack (like removeLastStroke) so redoLastStroke can bring it back;
  *  removing a text label is a different mutation, so it drops the stack. */
 export function removeLastAnnotation(): Annotation | null {
-  const popped = annotations.pop() ?? null;
+  let idx = -1;
+  for (let i = annotations.length - 1; i >= 0; i--) if (inScope(annotations[i])) { idx = i; break; }
+  const popped = idx >= 0 ? annotations.splice(idx, 1)[0] : null;
   if (popped) {
     if (popped.type === 'stroke') {
       strokeRedoStack.push(popped);
@@ -152,7 +209,7 @@ export function removeLastAnnotation(): Annotation | null {
 }
 
 export function removeAnnotationById(id: string): Annotation | null {
-  const i = annotations.findIndex(a => a.id === id);
+  const i = annotations.findIndex(a => a.id === id && inScope(a));
   if (i < 0) return null;
   const [removed] = annotations.splice(i, 1);
   clearRedoStack();
@@ -162,7 +219,7 @@ export function removeAnnotationById(id: string): Annotation | null {
 
 export function clearStrokes(): void {
   const before = annotations.length;
-  annotations = annotations.filter(a => a.type !== 'stroke');
+  annotations = annotations.filter(a => a.type !== 'stroke' || !inScope(a));
   if (annotations.length !== before) {
     clearRedoStack();
     notify();
@@ -171,7 +228,7 @@ export function clearStrokes(): void {
 
 export function clearTexts(): void {
   const before = annotations.length;
-  annotations = annotations.filter(a => a.type !== 'text');
+  annotations = annotations.filter(a => a.type !== 'text' || !inScope(a));
   if (annotations.length !== before) {
     clearRedoStack();
     notify();
@@ -179,15 +236,26 @@ export function clearTexts(): void {
 }
 
 export function clearAll(): void {
-  if (annotations.length === 0) return;
-  annotations = [];
+  const before = annotations.length;
+  annotations = annotations.filter(a => !inScope(a));
+  if (annotations.length === before) return;
   clearRedoStack();
   notify();
 }
 
-/** Snapshot all annotations as JSON-serializable plain objects. */
+/** Snapshot the floating annotations (never drafts) as JSON-serializable
+ *  plain objects — what a saved version persists. */
 export function serializeAll(): SerializedAnnotation[] {
-  return annotations.map((a): SerializedAnnotation => {
+  return serializeList(annotations.filter(a => a.draft !== true));
+}
+
+/** Serialize the annotations in the current scope (drafts while drafting). */
+export function serializeScoped(): SerializedAnnotation[] {
+  return serializeList(scoped());
+}
+
+function serializeList(list: Annotation[]): SerializedAnnotation[] {
+  return list.map((a): SerializedAnnotation => {
     if (a.type === 'stroke') {
       return {
         type: 'stroke',
@@ -212,10 +280,20 @@ export function serializeAll(): SerializedAnnotation[] {
   });
 }
 
-/** Replace all in-memory annotations with the given serialized snapshot. */
+/** Replace the floating annotations with the given serialized snapshot.
+ *  Unsaved drafts are kept (they belong to the frame being marked up, not to
+ *  a version). */
 export function loadFromSerialized(serialized: SerializedAnnotation[]): void {
   clearRedoStack();
-  annotations = serialized.map((s): Annotation => {
+  const drafts = annotations.filter(a => a.draft === true);
+  annotations = [...drafts, ...deserializeList(serialized)];
+  notify();
+}
+
+/** Rebuild live annotation objects from a serialized list (used for offscreen
+ *  rendering of a saved annotation view's marks). */
+export function deserializeList(serialized: readonly SerializedAnnotation[]): Annotation[] {
+  return serialized.map((s): Annotation => {
     if (s.type === 'stroke') {
       return {
         type: 'stroke',
@@ -238,7 +316,6 @@ export function loadFromSerialized(serialized: SerializedAnnotation[]): void {
       plane: s.plane,
     };
   });
-  notify();
 }
 
 export function onChange(fn: () => void): () => void {
