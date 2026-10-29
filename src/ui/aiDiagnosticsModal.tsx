@@ -18,6 +18,8 @@ import { showToast } from './toast';
 import { providerLabel } from '../ai/settings';
 import { mountPreactModal } from './preact/mount';
 import { confirmDialog } from './dialogs';
+import { BUTTON_PRIMARY } from './styleConstants';
+import { downloadAiSessionTrace } from '../export/aiTrace';
 
 type FilterMode = 'all' | 'error' | 'ok';
 
@@ -47,8 +49,9 @@ function DiagnosticsBody() {
 
   return (
     <>
+      <TraceSection />
       <p class="text-xs text-zinc-400 leading-snug">
-        Most recent AI provider calls, newest first. Use this when a turn ends with an opaque status like "ended (unknown)" — the full error and the request shape land here.
+        Most recent AI provider calls in <strong>this tab since the page loaded</strong>, newest first. Use this when a turn ends with an opaque status like "ended (unknown)" — the full error and the request shape land here. Calls from before a reload or from another tab aren't listed; the session trace above has them.
       </p>
       <div class="flex items-center justify-between gap-2 border-b border-zinc-800 pb-2">
         <span class="text-xs text-zinc-500">{statsText}</span>
@@ -92,12 +95,68 @@ function DiagnosticsBody() {
         {visible.length === 0
           ? <p class="text-zinc-500 text-xs italic">
               {events.value.length === 0
-                ? 'No AI calls have been made this session.'
+                ? 'No AI calls have been made in this tab since the page loaded.'
                 : 'No events match the current filter.'}
             </p>
           : visible.map(evt => <EventRow key={evt.id} evt={evt} />)}
       </div>
     </>
+  );
+}
+
+/** One-click download of the whole chat as a JSON trace (src/export/aiTrace.ts):
+ *  read from the persisted chat, so unlike the call log below it survives
+ *  reloads and covers the session's full history. */
+function TraceSection() {
+  const includeImages = useSignal(false);
+  const includeSystemPrompt = useSignal(false);
+  const busy = useSignal(false);
+  const status = useSignal('');
+  return (
+    <section class="rounded-lg border border-zinc-700 bg-zinc-900/60 p-3 flex flex-col gap-2">
+      <div class="text-sm font-medium text-zinc-100">Session trace</div>
+      <p class="text-xs text-zinc-400 leading-snug">
+        Everything in this chat as one JSON file: each prompt, thinking block, tool call and result, plus per-call tokens, cache hits, cost, latency and request size, with per-turn and per-tool rollups. Read from the saved chat, so it covers calls from before a reload. Give it to another AI to review spend, caching and how the agent went about the task.
+      </p>
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-300">
+        <label class="flex items-center gap-1.5 cursor-pointer">
+          <input type="checkbox" checked={includeImages.value} onChange={e => { includeImages.value = (e.currentTarget as HTMLInputElement).checked; }} />
+          Include images (much larger file)
+        </label>
+        <label class="flex items-center gap-1.5 cursor-pointer">
+          <input type="checkbox" checked={includeSystemPrompt.value} onChange={e => { includeSystemPrompt.value = (e.currentTarget as HTMLInputElement).checked; }} />
+          Include system prompt text
+        </label>
+      </div>
+      <div class="flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          class={BUTTON_PRIMARY}
+          disabled={busy.value}
+          onClick={async () => {
+            busy.value = true;
+            status.value = 'Building trace…';
+            try {
+              const r = await downloadAiSessionTrace({ includeImages: includeImages.value, includeSystemPrompt: includeSystemPrompt.value });
+              if (!r) {
+                status.value = 'This chat is empty — nothing to trace.';
+              } else {
+                const s = r.trace.summary;
+                const hit = s.cacheHitRate === null ? 'n/a' : `${Math.round(s.cacheHitRate * 100)}%`;
+                status.value = `Saved ${r.filename} (${(r.bytes / 1024).toFixed(0)} KB): ${s.apiCalls} API call(s), ${s.toolCalls} tool call(s), $${s.costUsd.toFixed(4)}, cache hit ${hit}.`;
+              }
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              status.value = '';
+              showToast(`Couldn't build the session trace: ${msg}`, { variant: 'warn', source: 'ai' });
+            } finally {
+              busy.value = false;
+            }
+          }}
+        >Download session trace</button>
+        {status.value && <span class="text-[11px] text-zinc-400 break-words min-w-0" data-testid="ai-trace-status">{status.value}</span>}
+      </div>
+    </section>
   );
 }
 

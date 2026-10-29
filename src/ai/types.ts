@@ -337,6 +337,63 @@ export interface ChatMessage {
   /** Cumulative model time in milliseconds across all API calls since the
    *  user triggered this turn (resets each time the user sends a message). */
   turnElapsedMs?: number;
+  /** What was sent and what came back for the API call that produced this
+   *  assistant message — provider/model, stop reason, request shape, transient
+   *  retries. Observability only: no request builder reads it. Feeds the
+   *  session-trace export (src/ai/sessionTrace.ts). Absent on messages written
+   *  before it existed. */
+  call?: ApiCallTrace;
+  /** On a compaction summary (`compacted: true`): totals of the messages the
+   *  summary replaced (they are deleted), so a session trace can still account
+   *  for their spend, plus the summarizer call's own usage. */
+  compaction?: CompactionTrace;
+}
+
+/** Per-request telemetry for one agent-loop API call. See ChatMessage.call. */
+export interface ApiCallTrace {
+  provider: Provider;
+  model: string;
+  /** Provider-canonical stop reason (end_turn / tool_use / max_tokens / …). */
+  stopReason: string;
+  thinking: ThinkingLevel;
+  /** 0-based agent-loop iteration within the user turn. */
+  iteration: number;
+  request: {
+    /** Messages in the request after image elision / payload pruning. */
+    messages: number;
+    /** Tool names offered on this request, in order. */
+    tools: string[];
+    /** JSON length of the tool definitions (a proxy for their token cost). */
+    toolSchemaChars: number;
+    systemPromptChars: number;
+    /** Per-turn toggle suffix appended to the system prompt. */
+    systemSuffixChars: number;
+    /** Text chars of the history as sent (blocks, tool inputs, tool results). */
+    historyChars: number;
+    /** Text chars removed from the history by stale-payload pruning. */
+    prunedChars: number;
+    /** Images in the request (user attachments + tool-result renders). */
+    imagesSent: number;
+    /** Images in the history that were elided from this request. */
+    imagesElided: number;
+  };
+  /** Transient failures retried before this call succeeded. */
+  retries?: { error: string; durationMs: number }[];
+}
+
+export interface CompactionTrace {
+  /** Messages deleted and replaced by this summary. */
+  droppedMessages: number;
+  /** Totals of the deleted messages (rolled up through nested compactions). */
+  dropped: {
+    apiCalls: number;
+    toolCalls: number;
+    toolErrors: number;
+    usage: TurnUsage;
+    costUsd: number;
+  };
+  /** The summarization call itself. */
+  summarizer?: { model: string; inputTokens: number; outputTokens: number; costUsd: number };
 }
 
 export type ChatBlock =
@@ -405,6 +462,10 @@ export interface PersistedToolResult {
    *  to the model as a multimodal content block AND rendered inline in the
    *  panel so the user sees what the agent saw. */
   image?: ImageSource;
+  /** Wall-clock ms the tool took, summed over retries (observability only). */
+  durationMs?: number;
+  /** Executions when the tool was auto-retried (absent = ran once). */
+  attempts?: number;
 }
 
 export interface TurnUsage {

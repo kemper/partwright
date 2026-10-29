@@ -47,6 +47,8 @@ export interface CompactionProposal {
   keep: ChatMessage[];
   /** Messages that will be deleted on accept. */
   drop: ChatMessage[];
+  /** Model that wrote the summary (recorded on the summary message). */
+  model: string;
   /** Cost of the compaction call itself, USD. */
   costUsd: number;
   /** Token usage of the compaction call. */
@@ -188,6 +190,7 @@ export async function proposeCompaction(
     proposedNotes: parsed.notes,
     keep,
     drop,
+    model: compactionModel,
     costUsd,
     usage,
   };

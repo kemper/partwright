@@ -23,6 +23,7 @@ export const SLASH_COMMANDS = [
   { name: 'repair', summary: 'Fix corrupted tool history (orphaned tool calls) so the chat can send again', aliases: ['fix'] },
   { name: 'review', summary: 'Have a different provider/model review the current session' },
   { name: 'export', summary: 'Download the conversation as a Markdown file' },
+  { name: 'trace', summary: 'Download a JSON trace of this chat (tool calls, thinking, tokens, cache, cost) for analysis', aliases: ['diagnostics'] },
   { name: 'models', summary: 'Open AI settings — provider, model, and API key', aliases: ['model', 'settings'] },
   { name: 'portrait', summary: 'Prefill a prompt to model a stylized 3D bust from a photo you attach', aliases: ['bust'] },
   { name: 'reconstruct', summary: 'Prefill a prompt to reverse-engineer an imported mesh into editable code', aliases: ['convert'] },
