@@ -133,4 +133,38 @@ test.describe('annotation views', () => {
     expect(await page.evaluate(() => ((window as unknown as { partwright: PW }).partwright.listAnnotationViews() as unknown[]).length)).toBe(0);
     expect(await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.setAnnotateStyle('sideways'))).toHaveProperty('error');
   });
+
+  test('drafts never leak into another session, and sub-mode switches keep redo', async ({ page }) => {
+    test.setTimeout(60_000); // two sessions + two runs
+    await page.goto('/editor');
+    await waitForEngine(page);
+    const call = (name: string) => page.evaluate((n) => (window as unknown as { partwright: PW }).partwright[n](), name);
+    const count = (name: string) => page.evaluate((n) => ((window as unknown as { partwright: PW }).partwright[n]() as unknown[]).length, name);
+    await page.evaluate(async () => {
+      const p = (window as unknown as { partwright: PW }).partwright;
+      await p.createSession('drafts-a');
+      await p.runAndSave('const { Manifold } = api;\nreturn Manifold.cube([20, 20, 20], true);', 'cube');
+      p.setAnnotateStyle('snapshot');
+      p.setAnnotateMode('pen');
+    });
+    await drawLoop(page);
+    await drawLoop(page, 0.2);
+    // Undo one, then Pen -> Select -> Pen: redo must survive the switch.
+    await call('undoAnnotation');
+    await page.locator('#annotate-picker-panel button', { hasText: 'Select' }).click();
+    await page.locator('#annotate-picker-panel button', { hasText: 'Pen' }).click();
+    expect(await call('redoAnnotation')).toMatchObject({ redone: true });
+    expect(await count('listAnnotations')).toBe(2);
+
+    // Close with unsaved drafts, open another session, reopen Annotate.
+    await page.evaluate(async () => {
+      const p = (window as unknown as { partwright: PW }).partwright;
+      p.setAnnotateMode(null);
+      await p.createSession('drafts-b');
+      await p.runAndSave('const { Manifold } = api;\nreturn Manifold.sphere(10, 48);', 'sphere');
+      p.setAnnotateMode('pen');
+    });
+    expect(await count('listAnnotations')).toBe(0);
+    expect(await count('listAnnotationViews')).toBe(0);
+  });
 });

@@ -69,7 +69,7 @@ import {
   type SerializedAnnotation,
 } from '../annotations/annotations';
 import { setActiveImports, type ImportedMesh, type ImportedMeshParts } from '../import/importedMesh';
-import { reloadAnnotationViews } from '../annotations/annotationViews';
+import { reloadAnnotationViews, newAnnotationViewId } from '../annotations/annotationViews';
 import { parseExportedAnnotationView, type AnnotationView, type ExportedAnnotationView } from '../annotations/annotationViewTypes';
 import { normalizeImportParts } from '../import/importParts';
 import type { PersistedSurfaceTexture } from '../surface/surfaceOpSpec';
@@ -2620,7 +2620,7 @@ export async function importSession(
     for (const raw of data.annotationViews) {
       const v = parseExportedAnnotationView(raw);
       if (!v) continue;
-      await dbPutAnnotationView({ ...v, id: generateId(), sessionId: session.id, context: v.context ?? {} });
+      await dbPutAnnotationView({ ...v, id: newAnnotationViewId(), sessionId: session.id, context: v.context ?? {} });
     }
   }
 

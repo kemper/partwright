@@ -115,6 +115,12 @@ export function clearDrafts(): void {
 let strokeRedoStack: StrokeAnnotation[] = [];
 const redoListeners: Array<() => void> = [];
 
+/** Floating marks only, regardless of scope — what versions persist, and so
+ *  what offscreen renders and thumbnails draw. */
+export function getFloatingAnnotations(): readonly Annotation[] {
+  return annotations.filter(a => a.draft !== true);
+}
+
 export function getStrokes(): readonly StrokeAnnotation[] {
   return annotations.filter((a): a is StrokeAnnotation => a.type === 'stroke' && inScope(a));
 }
@@ -281,11 +287,12 @@ function serializeList(list: Annotation[]): SerializedAnnotation[] {
 }
 
 /** Replace the floating annotations with the given serialized snapshot.
- *  Unsaved drafts are kept (they belong to the frame being marked up, not to
- *  a version). */
-export function loadFromSerialized(serialized: SerializedAnnotation[]): void {
+ *  Unsaved drafts are dropped too, except with `keepDrafts` — the version
+ *  navigation path, where the frame being marked up is still the same
+ *  object's. Session / object switches and data wipes must drop them. */
+export function loadFromSerialized(serialized: SerializedAnnotation[], opts: { keepDrafts?: boolean } = {}): void {
   clearRedoStack();
-  const drafts = annotations.filter(a => a.draft === true);
+  const drafts = opts.keepDrafts ? annotations.filter(a => a.draft === true) : [];
   annotations = [...drafts, ...deserializeList(serialized)];
   notify();
 }

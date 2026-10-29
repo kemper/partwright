@@ -54,6 +54,7 @@ import {
 import { captureAnnotationView, restoreAnnotationViewCamera, attachAnnotationViewToChat } from './viewCapture';
 import { describeViewHits, type AnnotationView } from './annotationViewTypes';
 import { showToast } from '../ui/toast';
+import { BUTTON_SMALL_PRIMARY, BUTTON_SMALL_SECONDARY, BUTTON_SMALL_DANGER } from '../ui/styleConstants';
 import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewportPanelDrag';
 import { viewportToolsMount } from '../ui/popoverMenu';
@@ -277,6 +278,8 @@ async function saveView(): Promise<void> {
     if ('error' in r) { showToast(r.error, { variant: 'warn', source: 'app' }); return; }
     if (viewTitleInput) viewTitleInput.value = '';
     showToast(`Saved "${r.title}" to the annotation history`, { variant: 'success', source: 'app' });
+  } catch (err) {
+    showToast(`Could not save the view: ${(err as Error)?.message ?? String(err)}`, { variant: 'warn', source: 'app' });
   } finally {
     saveViewBtn.disabled = false;
     updateSaveButton();
@@ -291,7 +294,8 @@ function formatAgo(ms: number): string {
   return new Date(ms).toLocaleDateString();
 }
 
-const historyBtnClass = 'px-1.5 py-0.5 min-h-[44px] md:min-h-0 rounded text-[10px] bg-zinc-700/60 text-zinc-300 hover:bg-zinc-600/60 transition-colors';
+const historyBtnClass = `${BUTTON_SMALL_SECONDARY} min-h-[44px] md:min-h-0 whitespace-nowrap`;
+const historyDangerClass = `${BUTTON_SMALL_DANGER} border border-red-800/60 whitespace-nowrap`;
 
 function renderHistory(): void {
   if (!historyList || !historyHeader) return;
@@ -334,7 +338,7 @@ function historyRow(v: AnnotationView): HTMLElement {
   body.appendChild(meta);
 
   const btns = document.createElement('div');
-  btns.className = 'flex items-center gap-1 mt-1';
+  btns.className = 'flex flex-wrap items-center gap-1 mt-1';
   const attach = document.createElement('button');
   attach.className = historyBtnClass;
   attach.textContent = '\u{1F4CE} Attach to AI';
@@ -357,15 +361,25 @@ function historyRow(v: AnnotationView): HTMLElement {
   del.className = historyBtnClass;
   del.textContent = 'Delete';
   del.title = 'Delete this view from the history';
-  let armed = false;
+  // Two-step delete: the first click arms "Confirm" for a few seconds (and
+  // disarms on blur), so a stray later click can't delete.
+  let disarmTimer: ReturnType<typeof setTimeout> | null = null;
+  const disarm = () => {
+    if (disarmTimer) clearTimeout(disarmTimer);
+    disarmTimer = null;
+    del.textContent = 'Delete';
+    del.className = historyBtnClass;
+  };
+  del.addEventListener('blur', disarm);
   del.addEventListener('click', () => {
-    if (!armed) {
-      armed = true;
+    if (!disarmTimer) {
       del.textContent = 'Confirm';
-      del.className = historyBtnClass.replace('bg-zinc-700/60 text-zinc-300 hover:bg-zinc-600/60', 'bg-red-700/60 text-red-100 hover:bg-red-600/60');
+      del.className = historyDangerClass;
+      disarmTimer = setTimeout(disarm, 4000);
       return;
     }
-    void deleteAnnotationView(v.id);
+    disarm();
+    deleteAnnotationView(v.id).catch(err => showToast(`Could not delete the view: ${(err as Error)?.message ?? String(err)}`, { variant: 'warn', source: 'app' }));
   });
   btns.appendChild(del);
   body.appendChild(btns);
@@ -386,8 +400,13 @@ function updatePanelState(): void {
   const open = isAnyActive();
   const wasOpen = pickerPanel ? !pickerPanel.classList.contains('hidden') : false;
   annotateBtn.className = open ? activeBtnClass : inactiveBtnClass;
-  // Drafts are only in scope while Annotate is open in Snapshot style.
-  setDraftScope(open && getAnnotateStyle() === 'snapshot');
+  // Drafts are only in scope while Annotate is open in Snapshot style. A
+  // sub-mode switch passes through a moment with no mode active (the old one
+  // deactivates before the new one activates), so leaving the draft layer is
+  // deferred to a microtask and skipped if Annotate reopened by then —
+  // otherwise every switch would flicker the overlay and drop redo.
+  if (open) setDraftScope(getAnnotateStyle() === 'snapshot');
+  else queueMicrotask(() => { if (!isAnyActive()) setDraftScope(false); });
   if (open) {
     pickerPanel?.classList.remove('hidden');
     if (!wasOpen && pickerPanel) {
@@ -720,7 +739,7 @@ function createPickerPanel(): HTMLElement {
   saveRow.appendChild(viewTitleInput);
   saveViewBtn = document.createElement('button');
   saveViewBtn.id = 'annotate-save-view';
-  saveViewBtn.className = 'px-2 py-1 rounded text-[11px] bg-blue-600 text-white hover:bg-blue-500 transition-colors whitespace-nowrap';
+  saveViewBtn.className = `${BUTTON_SMALL_PRIMARY} whitespace-nowrap`;
   saveViewBtn.title = 'Save this frame, its exact camera and your marks to the annotation history';
   saveViewBtn.addEventListener('click', () => { void saveView(); });
   saveRow.appendChild(saveViewBtn);

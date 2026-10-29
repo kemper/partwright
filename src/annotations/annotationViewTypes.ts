@@ -76,6 +76,38 @@ export type ExportedAnnotationView = Omit<AnnotationView, 'id' | 'sessionId' | '
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const isVec3 = (v: unknown): v is [number, number, number] => Array.isArray(v) && v.length === 3 && v.every(isNum);
+const isVec2 = (v: unknown): v is [number, number] => Array.isArray(v) && v.length === 2 && v.every(isNum);
+const isXYZ = (v: unknown): boolean => !!v && typeof v === 'object' && ['x', 'y', 'z'].every(k => isNum((v as Record<string, unknown>)[k]));
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object';
+
+function isCamera(v: unknown): boolean {
+  return isObj(v) && isVec3(v.position) && isVec3(v.target) && isVec3(v.up);
+}
+
+/** A stored mark (SerializedAnnotation) well-formed enough to re-render. */
+function isMark(v: unknown): v is SerializedAnnotation {
+  if (!isObj(v) || typeof v.id !== 'string' || !isVec3(v.color) || !isCamera(v.camera)) return false;
+  const plane = v.plane;
+  if (!isObj(plane) || !isVec3(plane.normal) || !isVec3(plane.origin) || !isCamera(plane.camera)) return false;
+  if (v.type === 'stroke') return Array.isArray(v.points) && v.points.every(isXYZ) && isNum(v.width);
+  if (v.type === 'text') return isXYZ(v.anchor) && typeof v.text === 'string' && isNum(v.fontSizePx);
+  return false;
+}
+
+function isMark2D(v: unknown): v is AnnotationViewMark2D {
+  if (!isObj(v) || typeof v.id !== 'string' || typeof v.color !== 'string') return false;
+  if (v.kind === 'stroke') return Array.isArray(v.points) && v.points.every(isVec2) && isNum(v.width) && typeof v.closed === 'boolean';
+  if (v.kind === 'text') return typeof v.text === 'string' && isVec2(v.at);
+  return false;
+}
+
+function isHit(v: unknown): v is AnnotationViewHit {
+  return isObj(v) && typeof v.markId === 'string' && (v.kind === 'stroke' || v.kind === 'text')
+    && isNum(v.samples) && isNum(v.hits)
+    && Array.isArray(v.parts) && v.parts.every(p => isObj(p) && typeof p.name === 'string' && isNum(p.hits))
+    && (v.centroid === undefined || isVec3(v.centroid))
+    && (v.text === undefined || typeof v.text === 'string');
+}
 
 /** Validate an imported view. Returns null for anything malformed so a bad
  *  entry is dropped rather than poisoning the history. */
@@ -89,14 +121,16 @@ export function parseExportedAnnotationView(raw: unknown): ExportedAnnotationVie
   const ctx = v.context && typeof v.context === 'object' ? v.context as Record<string, unknown> : {};
   return {
     createdAt: v.createdAt,
-    title: typeof v.title === 'string' ? v.title : 'View',
+    title: typeof v.title === 'string' && v.title.trim() ? v.title : 'View',
     camera: { position: cam.position, target: cam.target, up: cam.up, fov: cam.fov, aspect: cam.aspect },
     image: v.image,
     width: v.width,
     height: v.height,
-    marks: Array.isArray(v.marks) ? v.marks as SerializedAnnotation[] : [],
-    marks2D: Array.isArray(v.marks2D) ? v.marks2D as AnnotationViewMark2D[] : [],
-    hits: Array.isArray(v.hits) ? v.hits as AnnotationViewHit[] : [],
+    // Malformed elements are dropped individually so one bad mark can't
+    // break the history list, the AI tools or a re-render.
+    marks: Array.isArray(v.marks) ? v.marks.filter(isMark) : [],
+    marks2D: Array.isArray(v.marks2D) ? v.marks2D.filter(isMark2D) : [],
+    hits: Array.isArray(v.hits) ? v.hits.filter(isHit) : [],
     context: {
       ...(typeof ctx.objectName === 'string' ? { objectName: ctx.objectName } : {}),
       ...(isNum(ctx.versionIndex) ? { versionIndex: ctx.versionIndex } : {}),

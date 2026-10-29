@@ -2017,7 +2017,7 @@ function colorRegionStats(): { name: string; kind: RegionDescriptor['kind']; lab
  *  clears any that were on screen for the previously-active version. */
 function applyVersionAnnotations(version: Version | null | undefined): void {
   const snapshot = (version?.annotations ?? []) as SerializedAnnotation[];
-  loadAnnotations(snapshot);
+  loadAnnotations(snapshot, { keepDrafts: true });
 }
 
 /** Rehydrate color regions from a version's geometryData.
@@ -23235,7 +23235,8 @@ async function main() {
     async renameAnnotationView(id: string, title: string) {
       const bad = argError(() => {
         assertString(id, 'renameAnnotationView(id)');
-        assertString(title, 'renameAnnotationView(title)');
+        assertString(title, 'renameAnnotationView(title)', { allowEmpty: false });
+        if (title.trim() === '') throw new ValidationError('renameAnnotationView(title) must not be blank. See /ai.md#argument-validation');
       });
       if (bad) return bad;
       const v = await updateAnnotationView(id, { title: title.trim() });

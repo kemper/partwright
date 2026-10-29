@@ -14,8 +14,11 @@ Annotate has two **styles** (`getAnnotateStyle()` / `setAnnotateStyle()`):
 - **Snapshot** (default) -- the user marks up the frame they're looking at, then presses
   **Save view**. That stores an **annotation view** in the session's history: the exact camera,
   the frame as they saw it (marks drawn on it), the marks, and what each mark points at on the
-  model. Unsaved Snapshot marks are *drafts*: they never persist on a version or appear in
-  `listAnnotations()` once Annotate closes. The user picks which views to send to the AI with
+  model. Unsaved Snapshot marks are *drafts*: they never persist on a version, never appear
+  in renders or thumbnails, and are dropped on a session/object switch. **While the user has
+  Annotate open in Snapshot style, `listAnnotations()` / `addStrokeAnnotation()` /
+  `addTextAnnotation()` / `clear*` read and write those drafts** (so an agent can add a mark
+  for `saveAnnotationView` to capture); with Annotate closed they act on the floating marks. The user picks which views to send to the AI with
   each view's **Attach to AI** button, which stages the image plus a line like
   `[Annotation view "View 2" (av_…): 1 stroke · on handle. …]` in the chat input.
 - **Floating** -- the original behavior: marks stay pinned in space, are snapshotted onto each

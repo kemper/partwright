@@ -42,6 +42,7 @@ import {
 } from './annotationViewTypes';
 import { getConfig } from '../config/appConfig';
 import { attachToAiComposer } from '../ui/aiComposerBridge';
+import { isQuotaError } from '../storage/quota';
 
 
 export interface ViewCaptureHost {
@@ -164,7 +165,15 @@ export async function captureAnnotationView(opts: { title?: string } = {}): Prom
     hits,
     context: host?.context() ?? {},
   };
-  await addAnnotationView(view);
+  try {
+    await addAnnotationView(view);
+  } catch (err) {
+    return {
+      error: isQuotaError(err)
+        ? 'Browser storage is full — the view was not saved. Delete old views or sessions, or lower "Annotation view width" in Advanced Settings.'
+        : `Could not save the view: ${(err as Error)?.message ?? String(err)}`,
+    };
+  }
   if (isDraftScope()) clearDrafts();
   return view;
 }
@@ -206,6 +215,7 @@ export async function attachAnnotationViewToChat(view: AnnotationView): Promise<
     annotationViewChatText(view),
   );
   if (!ok) return { error: 'The AI panel is not available.' };
-  await updateAnnotationView(view.id, { attachedAt: Date.now() });
+  // The image is already staged; failing to record the timestamp is cosmetic.
+  await updateAnnotationView(view.id, { attachedAt: Date.now() }).catch(err => console.warn('Annotation views: attach stamp failed', err));
   return { attached: true };
 }

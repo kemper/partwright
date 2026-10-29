@@ -122,30 +122,33 @@ async function persist(view: AnnotationView): Promise<void> {
   publishTabSync({ kind: 'annotation-views', sessionId: view.sessionId });
 }
 
+// Every mutation persists BEFORE touching the in-memory list, so a failed
+// write (e.g. quota) never leaves a view on screen that a reload would lose.
+
 export async function addAnnotationView(view: AnnotationView): Promise<void> {
+  await persist(view);
   if (view.sessionId === sessionId) {
     views = [...views, view];
     notify();
   }
-  await persist(view);
 }
 
 export async function updateAnnotationView(id: string, patch: Partial<Pick<AnnotationView, 'title' | 'attachedAt'>>): Promise<AnnotationView | null> {
   const cur = getAnnotationView(id);
   if (!cur) return null;
   const next = { ...cur, ...patch };
+  await persist(next);
   views = views.map(v => (v.id === id ? next : v));
   notify();
-  await persist(next);
   return next;
 }
 
 export async function deleteAnnotationView(id: string): Promise<boolean> {
   const cur = getAnnotationView(id);
   if (!cur) return false;
+  await dbDeleteView(id);
   views = views.filter(v => v.id !== id);
   notify();
-  await dbDeleteView(id);
   publishTabSync({ kind: 'annotation-views', sessionId: cur.sessionId });
   return true;
 }

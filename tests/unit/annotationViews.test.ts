@@ -98,6 +98,23 @@ describe('annotation view helpers', () => {
     expect(parseExportedAnnotationView({ ...good, image: 'javascript:alert(1)' })).toBeNull();
     expect(parseExportedAnnotationView(null)).toBeNull();
   });
+
+  it('parseExportedAnnotationView drops malformed marks, 2D marks and hits individually', () => {
+    const plane = { normal: [0, -1, 0], origin: [0, -2, 0], camera: { position: [0, -10, 0], target: [0, 0, 0], up: [0, 0, 1] } };
+    const goodMark = { type: 'stroke', id: 'm', points: [{ x: 0, y: 0, z: 0 }], color: [1, 0, 0], width: 4, camera: plane.camera, plane };
+    const v = parseExportedAnnotationView({
+      createdAt: 1, title: '  ', width: 10, height: 5, image: 'data:image/png;base64,AA',
+      camera: { position: [1, 2, 3], target: [0, 0, 0], up: [0, 0, 1], fov: 45, aspect: 2 },
+      marks: [goodMark, { type: 'stroke', id: 'bad' }, null],
+      marks2D: [{ id: 'a', kind: 'text', color: '#fff', text: 'hi', at: [0.1, 0.2] }, null, { kind: 'stroke' }],
+      hits: [{ markId: 'a', kind: 'text', samples: 5, hits: 1, parts: [{ name: 'p', hits: 1 }] }, {}, { markId: 'b', kind: 'stroke', samples: 1, hits: 1, parts: [null] }],
+    })!;
+    expect(v.title).toBe('View');
+    expect(v.marks.map(m => m.id)).toEqual(['m']);
+    expect(v.marks2D.map(m => m.id)).toEqual(['a']);
+    expect(v.hits.map(h => h.markId)).toEqual(['a']);
+    expect(() => describeViewHits(v)).not.toThrow();
+  });
 });
 
 const cam = { position: [0, -10, 0] as [number, number, number], target: [0, 0, 0] as [number, number, number], up: [0, 0, 1] as [number, number, number] };
@@ -128,6 +145,14 @@ describe('annotation draft scope', () => {
     expect(getDrafts()).toHaveLength(1);
   });
 
+  it('a plain load (session/object switch) drops drafts', () => {
+    setDraftScope(true);
+    addStroke(stroke('draft'));
+    setDraftScope(false);
+    loadFromSerialized([]);
+    expect(getDrafts()).toHaveLength(0);
+  });
+
   it('clearAll only clears the layer in scope; a version load keeps drafts', () => {
     addStroke(stroke('floating'));
     setDraftScope(true);
@@ -140,7 +165,7 @@ describe('annotation draft scope', () => {
     setDraftScope(true);
     addStroke(stroke('draft2'));
     setDraftScope(false);
-    loadFromSerialized([]);
+    loadFromSerialized([], { keepDrafts: true });
     expect(getCount()).toBe(0);
     expect(getDrafts().map(d => d.id)).toEqual(['draft2']);
   });
