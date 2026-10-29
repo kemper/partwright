@@ -530,6 +530,11 @@ export interface AppConfig {
      *  reached. After it fades, "Recover deleted" in the Objects list still
      *  restores the item. */
     undoToastDurationMs: number;
+    /** How long the collapsed model-console pill (shown when a run prints with
+     *  console.log / warn) stays in the viewport corner before fading away
+     *  (ms). 0 keeps it until dismissed. Output with errors never auto-hides;
+     *  "Show console output" in the command palette brings it back. */
+    modelConsoleAutoHideMs: number;
     /** Days a deleted object stays in the "Recover deleted" bin before it is
      *  permanently purged (checked whenever the bin is read). */
     deletedObjectRetentionDays: number;
@@ -897,6 +902,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     maxAppliedNoteChars: 400,
     toastDurationMs: 2200,
     undoToastDurationMs: 8000,
+    modelConsoleAutoHideMs: 10_000,
     deletedObjectRetentionDays: 30,
     tooltipDelayMs: 150,
     exportColorMergeTolerance: 10,
