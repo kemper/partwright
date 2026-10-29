@@ -40,6 +40,8 @@ export const APP_CONFIG_FIELD_BOUNDS: { [S in ConfigSection]: Partial<Record<key
     workerMaxSteps: { min: 1, max: 60, integer: true },
     workerMaxSpendUsd: { min: 0.05, max: 20 },
     workerReportMaxChars: { min: 500, max: 20_000, integer: true },
+    workerStallTimeoutMs: { min: 10_000, max: 900_000, integer: true },
+    workerMinBudgetUsd: { min: 0, max: 5 },
     cachedImageLimit: { min: 1, max: 50, integer: true },
     cachedImageTrimTo: { min: 1, max: 50, integer: true },
     autoCompactMaxTokens: { min: 10_000, max: 1_000_000, integer: true },

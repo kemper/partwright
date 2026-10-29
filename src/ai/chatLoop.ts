@@ -21,7 +21,7 @@ import { recordEvent, usageEventFields } from './diagnostics';
 import { buildToolList, executeTool, type ToolDefinition, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, RETRY_SAFE_TOOLS, declinedToolMessage, preConfirmToolResult, unofferedToolMessage, LEGACY_TOOL_ALIASES, TURN_ENDING_TOOLS, type ToolExecResult } from './tools';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { loadSettings } from './settings';
-import { turnCostUsd } from './cost';
+import { hasKnownPricing, turnCostUsd } from './cost';
 import { cacheTtlForThinking } from './anthropicCache';
 import { activeModel, ITERATION_CAP, MAX_TOKENS_WHILE_THINKING, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type Provider, type TurnOutcomeReason } from './types';
 import { getConfig } from '../config/appConfig';
@@ -29,7 +29,7 @@ import { isTransientError, isTransientToolFailure } from './transientError';
 import { elideStaleToolImages, providerCachesHistory, pruneStaleToolPayloads } from './historyElision';
 import { REDUCED_TOOLS_NOTE, resolveCustomPromptTier, toolsForCustomTier } from './customContext';
 import { LOAD_TOOLS_TOOL, loadToolsDefinition, loadToolsResult, loadedToolGroups, selectOfferedTools, toolGroupsSuffix } from './toolGroups';
-import { DELEGATE_TASK_TOOL, WORKER_EXCLUDED_TOOLS, buildWorkerBrief, delegateToolDefinition, delegationAvailable, formatWorkerReport, parseDelegateInput, resolveWorkerModel, workerToggles } from './delegate';
+import { DELEGATE_TASK_TOOL, WORKER_EXCLUDED_TOOLS, WORKER_RENDER_TOOLS, buildWorkerBrief, delegateToolDefinition, delegationAvailable, formatWorkerReport, parseDelegateInput, resolveWorkerModel, workerToggles } from './delegate';
 
 /** Look up the stored API key for a hosted provider. Returns null when
  *  no key is stored; chatLoop turns that into an "open AI Settings to
@@ -192,7 +192,7 @@ export function turnToolList(
 ): ToolDefinition[] {
   const cfg = getConfig().ai;
   const tools = buildToolList(toggles, uiTools);
-  if (delegationAvailable(toggles, cfg.delegateToWorker)) tools.push(delegateToolDefinition(cfg.workerMaxSteps));
+  if (delegationAvailable(toggles, cfg.delegateToWorker)) tools.push(delegateToolDefinition());
   return exclude ? tools.filter(t => !exclude.has(t.name)) : tools;
 }
 
@@ -456,7 +456,11 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           tools,
           thinking: toggles.thinking,
           cacheHistory: aiCfg.cacheConversationHistory,
-          cacheTtl: cacheTtlForThinking(toggles.thinking, aiCfg.extendedCacheForDeepThinking),
+          // A turn that can delegate may sit through a long worker run before
+          // its next request, so its cache gets the 1-hour lifetime too.
+          cacheTtl: offeredTools.has(DELEGATE_TASK_TOOL) && aiCfg.extendedCacheForDeepThinking
+            ? '1h'
+            : cacheTtlForThinking(toggles.thinking, aiCfg.extendedCacheForDeepThinking),
         }, streamCallbacks, signal);
       } else if (toggles.provider === 'openai') {
         // sendMessage passes the active provider's key as `apiKey`; fall
@@ -769,10 +773,12 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     await putMessages([toolResultMsg]);
 
     let workerCostUsd = 0;
+    let workerCostUnknown = false;
     const delegate = async (raw: Record<string, unknown>): Promise<Omit<PersistedToolResult, 'toolUseId'>> => {
       const remaining = maxSpend - (priorSessionCost + totalCostUsd + workerCostUsd);
       const run = await runWorkerTask(raw, { input, model, workingHistory, remainingBudgetUsd: remaining, callbacks });
       workerCostUsd += run.costUsd;
+      workerCostUnknown ||= run.costUnknown;
       return run.result;
     };
     const toolResults = await executeAllWithRetry(
@@ -791,6 +797,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       totalCostUsd += workerCostUsd;
       toolResultMsg.costUsd = (toolResultMsg.costUsd ?? 0) + workerCostUsd;
     }
+    if (workerCostUnknown) toolResultMsg.costUnknown = true;
 
     // Final authoritative persist: same id, complete result set.
     toolResultMsg.toolResults = toolResults;
@@ -814,6 +821,13 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     if (signal?.aborted) {
       callbacks.onAborted?.();
       callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason: 'aborted', iterations: iter + 1 });
+      return workingHistory;
+    }
+
+    // A worker's spend lands between model calls, so check the cap now —
+    // before the main model sends another full-price request.
+    if (workerCostUsd > 0 && Number.isFinite(maxSpend) && (priorSessionCost + totalCostUsd) > maxSpend) {
+      callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason: 'spend_cap', detail: `$${maxSpend.toFixed(2)}`, iterations: iter + 1 });
       return workingHistory;
     }
 
@@ -1000,11 +1014,18 @@ async function timedExecuteTool(
   return result;
 }
 
+/** Tools a delegated worker is never offered: no delegating, no talking to
+ *  the user, and nothing confirm-gated — the user would be asked to approve
+ *  an action from a conversation they can't see. */
+export const WORKER_TOOL_EXCLUSIONS: ReadonlySet<string> = new Set([...WORKER_EXCLUDED_TOOLS, ...CONFIRM_REQUIRED_TOOLS]);
+
 async function persistNothing(_msgs: ChatMessage[]): Promise<void> { /* in-memory run */ }
 
 /** Run one delegated worker: a fresh, in-memory agent loop on the worker
- *  model, same session and tools (minus WORKER_EXCLUDED_TOOLS), capped in
- *  steps and dollars. Only its report (and last render) goes back. */
+ *  model, same session and tools (minus WORKER_EXCLUDED_TOOLS and anything
+ *  that needs the user's confirmation), capped in steps, dollars and stall
+ *  time. Never throws: any failure comes back as an error report, with
+ *  whatever the worker had already spent. */
 async function runWorkerTask(
   raw: Record<string, unknown>,
   parent: {
@@ -1014,73 +1035,123 @@ async function runWorkerTask(
     remainingBudgetUsd: number;
     callbacks: RunTurnCallbacks;
   },
-): Promise<{ result: Omit<PersistedToolResult, 'toolUseId'>; costUsd: number }> {
+): Promise<{ result: Omit<PersistedToolResult, 'toolUseId'>; costUsd: number; costUnknown: boolean }> {
   const cfg = getConfig().ai;
   const { input, callbacks } = parent;
-  const fail = (content: string) => ({ result: { content, isError: true }, costUsd: 0 });
+  const fail = (content: string) => ({ result: { content, isError: true }, costUsd: 0, costUnknown: false });
   const req = parseDelegateInput(raw, cfg.workerMaxSteps);
   if ('error' in req) return fail(req.error);
-  const workerModel = resolveWorkerModel(input.toggles.provider, parent.model);
-  if (!workerModel) return fail(`delegateTask isn't available for the ${input.toggles.provider} provider. Do the work yourself.`);
+  const provider = input.toggles.provider;
+  const workerModel = resolveWorkerModel(provider, parent.model);
+  if (!workerModel) return fail(`delegateTask isn't available for the ${provider} provider. Do the work yourself.`);
   const budget = Math.min(cfg.workerMaxSpendUsd, parent.remainingBudgetUsd);
-  if (!(budget > 0)) return fail('delegateTask: the session $ budget is used up, so no worker can run. Tell the user, or raise the $ cap.');
+  if (!(budget > 0) || budget < cfg.workerMinBudgetUsd) {
+    return fail('delegateTask: too little of the session $ budget is left to run a worker. Finish the work yourself, or tell the user to raise the $ cap.');
+  }
+  if (!hasKnownPricing(provider, workerModel) && Number.isFinite(budget)) {
+    return fail(`delegateTask: ${workerModel} has no known price, so a worker's $ cap couldn't be enforced. Do the work yourself.`);
+  }
+
+  // The worker's own abort: the user's Stop, or a stalled model request.
+  const ctrl = new AbortController();
+  const onParentAbort = () => ctrl.abort();
+  input.signal?.addEventListener('abort', onParentAbort, { once: true });
+  if (input.signal?.aborted) ctrl.abort();
+  let stalled = false;
+  let stallTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearStall = () => { if (stallTimer !== null) { clearTimeout(stallTimer); stallTimer = null; } };
+  // Only model requests can stall: tool runs have their own timeout.
+  const armStall = () => {
+    clearStall();
+    stallTimer = setTimeout(() => { stalled = true; ctrl.abort(); }, cfg.workerStallTimeoutMs);
+  };
 
   let steps = 0;
+  let spent = 0;
+  let costUnknown = false;
   let lastImage: PersistedToolResult['image'];
   let errorMessage: string | undefined;
-  let outcome = { reason: 'other', toolCalls: 0, costUsd: 0 };
+  let reason = 'other';
+  let toolCalls = 0;
   const label = `worker · ${workerModel}`;
   const workerCallbacks: RunTurnCallbacks = {
     onAssistantStart: () => { steps++; },
     // Always the 'tool' phase from the main loop's point of view: the panel
     // shows its detail line, and its stall watchdog (thinking/streaming only)
     // must not abort — and re-run — the whole delegation over one slow call.
-    onProgress: info => callbacks.onProgress?.({
-      phase: 'tool',
-      detail: `${label} · step ${Math.max(steps, 1)}/${req.maxSteps} · ${info.phase === 'tool' && info.detail ? info.detail : info.phase}`,
-    }),
-    onToolResult: (_id, _name, r) => { if (r.image) lastImage = r.image; },
+    // The worker's own stall timer covers its model requests instead.
+    onProgress: info => {
+      if (info.phase === 'tool' || info.phase === 'idle') clearStall();
+      else armStall();
+      callbacks.onProgress?.({
+        phase: 'tool',
+        detail: `${label} · step ${Math.max(steps, 1)}/${req.maxSteps} · ${info.phase === 'tool' && info.detail ? info.detail : info.phase}`,
+      });
+    },
+    // Counted per step, so a worker that fails part-way still bills the turn.
+    onAssistantPersisted: msg => {
+      spent += msg.costUsd ?? 0;
+      if (msg.costUnknown) costUnknown = true;
+    },
+    onToolResult: (_id, name, r) => { if (r.image && WORKER_RENDER_TOOLS.has(name)) lastImage = r.image; },
     onError: err => { errorMessage = err.message; },
-    onTurnComplete: info => { outcome = { reason: info.reason, toolCalls: info.toolCalls, costUsd: info.totalCostUsd }; },
+    onTurnComplete: info => { reason = info.reason; toolCalls = info.toolCalls; },
     confirmTool: callbacks.confirmTool,
   };
-  const history = await runTurn({
-    apiKey: input.apiKey,
-    toggles: workerToggles(input.toggles, workerModel),
-    sessionId: input.sessionId,
-    history: [],
-    userBlocks: [{ type: 'text', text: buildWorkerBrief(req) }],
-    signal: input.signal,
-    executeToolFn: input.executeToolFn,
-    uiTools: input.uiTools,
-    preloadToolGroups: [...loadedToolGroups(parent.workingHistory, input.preloadToolGroups)],
-    persist: false,
-    maxIterationsOverride: req.maxSteps,
-    spendCapUsd: budget,
-    excludeTools: WORKER_EXCLUDED_TOOLS,
-    // Count down the last steps in the tool-result turn (append-only, so the
-    // worker's cached history survives), so it writes its report in time.
-    onDrainQueuedBlocks: () => {
-      const left = req.maxSteps - steps;
-      if (left === 1) return [{ type: 'text', text: '[Worker budget] Your next reply is your LAST step: write your report now and call no tools.' }];
-      if (left === 2) return [{ type: 'text', text: '[Worker budget] 2 steps left. Wrap up: save your best version, then report.' }];
-      return [];
-    },
-  }, workerCallbacks);
 
-  const lastText = [...history].reverse().find(m => m.role === 'assistant' && m.blocks.some(b => b.type === 'text' && b.text.trim()));
-  const report = lastText ? lastText.blocks.map(b => (b.type === 'text' ? b.text : '')).join('').trim() : '';
+  let history: ChatMessage[] = [];
+  try {
+    history = await runTurn({
+      apiKey: input.apiKey,
+      toggles: workerToggles(input.toggles, workerModel),
+      sessionId: input.sessionId,
+      history: [],
+      userBlocks: [{ type: 'text', text: buildWorkerBrief(req) }],
+      signal: ctrl.signal,
+      executeToolFn: input.executeToolFn,
+      uiTools: input.uiTools,
+      preloadToolGroups: [...loadedToolGroups(parent.workingHistory, input.preloadToolGroups)],
+      persist: false,
+      maxIterationsOverride: req.maxSteps,
+      spendCapUsd: budget,
+      excludeTools: WORKER_TOOL_EXCLUSIONS,
+      // Count down the last steps in the tool-result turn (append-only, so the
+      // worker's cached history survives), so it writes its report in time.
+      onDrainQueuedBlocks: () => {
+        const left = req.maxSteps - steps;
+        if (left === 1) return [{ type: 'text', text: '[Worker budget] Your next reply is your LAST step: write your report now and call no tools.' }];
+        if (left === 2) return [{ type: 'text', text: '[Worker budget] 2 steps left. Wrap up: save your best version, then report.' }];
+        return [];
+      },
+    }, workerCallbacks);
+  } catch (err) {
+    reason = 'error';
+    errorMessage = err instanceof Error ? err.message : String(err);
+  } finally {
+    clearStall();
+    input.signal?.removeEventListener('abort', onParentAbort);
+  }
+  if (stalled && !input.signal?.aborted) {
+    reason = 'error';
+    errorMessage = `The worker's model request went silent for ${Math.round(cfg.workerStallTimeoutMs / 1000)}s and was stopped.`;
+  }
+
+  // Its report is the final message's text. When it was cut off, that's
+  // whatever its last step said (often nothing) — flagged as not final.
+  const final = [...history].reverse().find(m => m.role === 'assistant');
+  const report = final ? final.blocks.map(b => (b.type === 'text' ? b.text : '')).join('').trim() : '';
   const formatted = formatWorkerReport({
     model: workerModel,
     steps,
-    toolCalls: outcome.toolCalls,
-    costUsd: outcome.costUsd,
-    reason: outcome.reason,
+    toolCalls,
+    costUsd: spent,
+    reason,
     report,
+    reportIsFinal: reason === 'end_turn',
     errorMessage,
     lastImage,
   }, cfg.workerReportMaxChars);
-  return { result: { ...formatted, ...(lastImage ? { image: lastImage } : {}) }, costUsd: outcome.costUsd };
+  return { result: { ...formatted, ...(lastImage ? { image: lastImage } : {}) }, costUsd: spent, costUnknown };
 }
 
 function nextSeq(history: ChatMessage[]): number {

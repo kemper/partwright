@@ -106,6 +106,13 @@ export interface AppConfig {
     workerMaxSpendUsd: number;
     /** Longest worker report (chars) passed back to the main agent. */
     workerReportMaxChars: number;
+    /** A worker's model request that sends nothing for this long (ms) is
+     *  treated as stalled: the worker is stopped and its partial report
+     *  returned. Time spent running its tools doesn't count. */
+    workerStallTimeoutMs: number;
+    /** Smallest budget (USD) worth starting a worker with; below it,
+     *  delegateTask refuses rather than overshoot the session $ cap. */
+    workerMinBudgetUsd: number;
     /** Render images allowed to accumulate in the request before a trim, for
      *  providers that cache the history (Anthropic with history caching on,
      *  OpenAI, Gemini). Cached images are cheap to re-send, and trimming edits
@@ -788,6 +795,8 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     workerMaxSteps: 15,
     workerMaxSpendUsd: 1,
     workerReportMaxChars: 4000,
+    workerStallTimeoutMs: 120_000,
+    workerMinBudgetUsd: 0.05,
     cachedImageLimit: 15,
     cachedImageTrimTo: 8,
     autoCompactMaxTokens: 150_000,

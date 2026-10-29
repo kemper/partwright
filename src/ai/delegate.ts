@@ -49,11 +49,21 @@ export function resolveWorkerModel(provider: Provider, mainModel: string | null)
   return workerRate < mainRate ? fallback : mainModel;
 }
 
-/** Whether the main agent is offered delegateTask this turn. */
+/** Whether the main agent is offered delegateTask this turn. Not in plan
+ *  mode, and not when the scope toggles let nothing change the model — the
+ *  worker inherits them, so it could only spend money. */
 export function delegationAvailable(toggles: ChatToggles, enabled: boolean): boolean {
   if (!enabled || toggles.planFirst) return false;
+  const { runCode, saveVersions, paintFaces } = toggles.scope;
+  if (!runCode && !saveVersions && !paintFaces) return false;
   return DEFAULT_WORKER_MODEL[toggles.provider] !== undefined;
 }
+
+/** Tools whose image is a render of the model — what the worker's "last
+ *  render" means (not a reference-photo grid or a match overlay). */
+export const WORKER_RENDER_TOOLS: ReadonlySet<string> = new Set([
+  'renderView', 'renderViews', 'runIsolated', 'renderParts', 'renderSection',
+]);
 
 export interface DelegateRequest {
   task: string;
@@ -84,12 +94,13 @@ export function parseDelegateInput(input: Record<string, unknown>, stepCap: numb
 }
 
 /** The worker's toggles: the main chat's, on the worker model, at Medium
- *  thinking, with nothing that waits on a person (auto-continue, plan mode,
+ *  thinking at most (a user who chose Off or Low to save money keeps it),
+ *  with nothing that waits on a person (auto-continue, plan mode,
  *  end-of-task review). */
 export function workerToggles(main: ChatToggles, workerModel: string): ChatToggles {
   const t: ChatToggles = {
     ...main,
-    thinking: 'medium',
+    thinking: main.thinking === 'off' || main.thinking === 'low' ? main.thinking : 'medium',
     autoResume: false,
     planFirst: false,
     autoReview: false,
@@ -122,8 +133,11 @@ export interface WorkerOutcome {
   costUsd: number;
   /** TurnOutcomeReason of the worker's loop. */
   reason: string;
-  /** The worker's final reply text ('' when it ended without one). */
+  /** The worker's last reply text ('' when its last step had none). */
   report: string;
+  /** False when the worker was cut off (step/spend cap, error, Stop), so
+   *  `report` is whatever it last said, not a conclusion. */
+  reportIsFinal: boolean;
   errorMessage?: string;
   /** The last image any of its tools returned (a render), if any. */
   lastImage?: ImageSource;
@@ -142,13 +156,17 @@ export function formatWorkerReport(o: WorkerOutcome, maxReportChars: number): { 
   const body = report.length > maxReportChars ? `${report.slice(0, maxReportChars)}\n[report truncated]` : report;
   const parts = [head];
   if (o.errorMessage) parts.push(`Error: ${o.errorMessage}`);
-  parts.push(body || '(The worker ended without a written report — check getSessionContext / the latest saved version to see what it did.)');
+  if (!body) parts.push('(The worker ended without a written report — check getSessionContext / the latest saved version to see what it did.)');
+  else if (!o.reportIsFinal) parts.push(`Its last message before it stopped (not a final report — verify its state yourself):\n${body}`);
+  else parts.push(body);
   if (o.lastImage) parts.push('[The image is the last render the worker made.]');
   return { content: parts.join('\n\n'), isError: o.reason === 'error' };
 }
 
-/** delegateTask's schema, offered to the main agent next to its other tools. */
-export function delegateToolDefinition(stepCap: number): { name: string; description: string; input_schema: { type: 'object'; properties: Record<string, unknown>; required: string[] } } {
+/** delegateTask's schema, offered to the main agent next to its other tools.
+ *  Static on purpose: a setting baked into it would change the cached tool
+ *  prefix whenever the user edits the limit. */
+export function delegateToolDefinition(): { name: string; description: string; input_schema: { type: 'object'; properties: Record<string, unknown>; required: string[] } } {
   return {
     name: DELEGATE_TASK_TOOL,
     description:
@@ -162,7 +180,7 @@ export function delegateToolDefinition(stepCap: number): { name: string; descrip
         task: { type: 'string', description: 'The complete instruction, written for someone who has not seen this conversation.' },
         acceptance: { type: 'string', description: 'The concrete check that means done, e.g. "isManifold, componentCount === 1, photoMatch silhouetteIoU >= 0.85".' },
         context: { type: 'string', description: 'Facts the worker needs: dimensions, decisions already made, version labels to start from, what was already tried.' },
-        maxSteps: { type: 'integer', minimum: 1, maximum: stepCap, description: `Step budget (default and max ${stepCap}).` },
+        maxSteps: { type: 'integer', minimum: 1, description: 'Step budget. Defaults to, and is capped by, the app\'s worker step limit.' },
       },
       required: ['task', 'acceptance'],
     },

@@ -35,6 +35,7 @@ const REPORT = 'Done. Edge length is 12.0; isManifold true; saved as cube-12.';
 interface Body {
   model: string;
   tools?: Array<{ name: string }>;
+  system?: Array<{ cache_control?: { type: string; ttl?: string } }>;
   messages: Array<{ role: string; content: string | Array<{ type: string; text?: string; content?: unknown }> }>;
 }
 const textOf = (b: Body) => JSON.stringify(b.messages);
@@ -107,6 +108,11 @@ test.describe('AI worker delegation', () => {
     const workerTools = (bodies[1].tools ?? []).map(t => t.name);
     expect(workerTools).not.toContain('delegateTask');
     expect(workerTools).not.toContain('askUser');
+
+    // A main turn that can delegate keeps its cache for an hour, so a long
+    // worker run doesn't expire it; the worker's own steps use 5 minutes.
+    expect(bodies[0].system?.[0].cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
+    expect(bodies[1].system?.[0].cache_control).toEqual({ type: 'ephemeral' });
 
     // The worker starts from an empty history: only the brief.
     expect(bodies[1].messages).toHaveLength(1);
