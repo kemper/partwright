@@ -7,7 +7,7 @@
 
 import { streamOneShotTurn } from './oneShot';
 import { turnCostUsd } from './cost';
-import { recordEvent } from './diagnostics';
+import { recordEvent, usageEventFields } from './diagnostics';
 import { generateId } from '../storage/db';
 import { putMessages } from './db';
 import { loadSettings, providerLabel } from './settings';
@@ -118,20 +118,17 @@ export async function runReview(
     });
     throw err;
   }
+  // null = the reviewer model has no known pricing (the modal asked the
+  // user to authorize it); surfaced as "cost unknown", never $0.
+  const pricedCost = turnCostUsd(req.provider, req.model, usage);
   recordEvent({
     provider: req.provider, model: req.model, kind: 'review',
     durationMs: Math.round(performance.now() - t0),
     status: 'ok',
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    cachedTokens: usage.cacheReadInputTokens,
+    ...usageEventFields(usage, pricedCost),
     textPreview: text.slice(0, 200),
     requestSummary: `code=${req.context.code.length}ch, notes=${req.context.notes.length}, snapshot=${req.context.snapshot ? 'yes' : 'no'}, references=${req.context.references?.length ?? 0}, userMessages=${req.context.conversation?.messages.length ?? 0}`,
   });
-
-  // null = the reviewer model has no known pricing (the modal asked the
-  // user to authorize it); surfaced as "cost unknown", never $0.
-  const pricedCost = turnCostUsd(req.provider, req.model, usage);
 
   onProgress?.('persisting');
   const reviewDurationMs = Math.round(performance.now() - t0);

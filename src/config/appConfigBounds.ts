@@ -35,6 +35,7 @@ export const APP_CONFIG_FIELD_BOUNDS: { [S in ConfigSection]: Partial<Record<key
     maxAttachments: { min: 1, max: 100, integer: true },
     keepRecentToolImages: { min: 0, max: 50, integer: true },
     cacheConversationHistory: BOOL,
+    extendedCacheForDeepThinking: BOOL,
     cachedImageLimit: { min: 1, max: 50, integer: true },
     cachedImageTrimTo: { min: 1, max: 50, integer: true },
     autoCompactMaxTokens: { min: 10_000, max: 1_000_000, integer: true },

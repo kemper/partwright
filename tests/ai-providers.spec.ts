@@ -53,7 +53,7 @@ test.describe('Multi-provider AI', () => {
     await expect(box.locator('pre')).toContainText('winding order must be CCW');
   });
 
-  test('Thinking pill is in the toggle strip, defaults High, and persists', async ({ page }) => {
+  test('Thinking pill is in the toggle strip, defaults Medium, and persists', async ({ page }) => {
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
@@ -64,8 +64,8 @@ test.describe('Multi-provider AI', () => {
     await page.locator('#ai-panel button:has-text("⚙ Options")').dispatchEvent('click');
     const thinkSel = page.locator('#ai-panel select[title^="Thinking:"]');
     await expect(thinkSel).toBeVisible();
-    // Thinking now ships on by default (the standard preset uses 'high').
-    await expect(thinkSel).toHaveValue('high');
+    // Thinking ships on by default at Medium (the standard preset).
+    await expect(thinkSel).toHaveValue('medium');
     // Every level is offered, in order.
     const values = await thinkSel.locator('option').evaluateAll(opts => opts.map(o => (o as HTMLOptionElement).value));
     expect(values).toEqual(['off', 'default', 'low', 'medium', 'high', 'xhigh', 'max']);

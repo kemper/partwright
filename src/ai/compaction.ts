@@ -10,7 +10,7 @@ import { summarize as summarizeOpenai } from './openai';
 import { summarize as summarizeGemini } from './gemini';
 import { summarize as summarizeCustom } from './custom';
 import { summarizeLocal } from './local';
-import { recordEvent } from './diagnostics';
+import { recordEvent, usageEventFields } from './diagnostics';
 import { turnCostUsd } from './cost';
 import { getKey } from './db';
 import { resolveCustomApiKey } from './customEndpoints';
@@ -175,9 +175,7 @@ export async function proposeCompaction(
     kind: 'summarize',
     durationMs: Math.round(performance.now() - t0),
     status: 'ok',
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    cachedTokens: usage.cacheReadInputTokens,
+    ...usageEventFields(usage, costUsd),
     textPreview: text.slice(0, 200),
     requestSummary: `${drop.length} drop / ${keep.length} keep`,
   });

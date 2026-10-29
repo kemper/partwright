@@ -1,12 +1,14 @@
-// In-memory ring buffer of recent AI provider events. The diagnostics
-// modal reads this; providers and the chat loop record into it whenever
-// an API call completes (success, error, or abort).
+// Ring buffer of recent AI provider events. The diagnostics modal reads
+// this; providers and the chat loop record into it whenever an API call
+// completes (success, error, or abort).
 //
-// Lives in memory only — there's no value persisting yesterday's HTTP
-// errors across page loads, and the records can contain sensitive
-// request fragments we don't want sitting in IndexedDB long-term.
+// Mirrored to this tab's sessionStorage so a reload keeps the log — the
+// moment a costly or stuck turn makes you reload is exactly when you want
+// it. sessionStorage is per tab and cleared when the tab closes, so nothing
+// leaks into other windows (see "Cross-Tab Isolation" in CLAUDE.md) and the
+// records, which can hold request fragments, never sit in IndexedDB.
 
-import type { Provider } from './types';
+import type { Provider, TurnUsage } from './types';
 import { getConfig } from '../config/appConfig';
 
 export type DiagnosticKind = 'streamTurn' | 'summarize' | 'validateKey' | 'review';
@@ -30,7 +32,16 @@ export interface DiagnosticEvent {
   stopReason?: string;
   inputTokens?: number;
   outputTokens?: number;
+  /** Prompt tokens served from the provider's cache (billed ~0.1× input). */
   cachedTokens?: number;
+  /** Prompt tokens written to the cache this call (Anthropic: 1.25× input,
+   *  or 2× for the 1-hour cache). A large number on a mid-conversation call
+   *  means the cache had expired and the whole history was re-written. */
+  cacheWriteTokens?: number;
+  /** The part of `cacheWriteTokens` written to the 1-hour cache. */
+  cacheWrite1hTokens?: number;
+  /** USD cost of this call, when the model is priced. */
+  costUsd?: number;
   toolCallCount?: number;
   textPreview?: string;
   // === Populated on error ===
@@ -49,8 +60,50 @@ export interface DiagnosticEvent {
   notes?: string;
 }
 
+/** The token + cost fields of an event, from a provider's usage and the
+ *  priced cost (`null` = unpriced model, left out rather than shown as $0). */
+export function usageEventFields(usage: TurnUsage, costUsd: number | null): Pick<DiagnosticEvent, 'inputTokens' | 'outputTokens' | 'cachedTokens' | 'cacheWriteTokens' | 'cacheWrite1hTokens' | 'costUsd'> {
+  return {
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    cachedTokens: usage.cacheReadInputTokens,
+    ...(usage.cacheCreationInputTokens > 0 ? { cacheWriteTokens: usage.cacheCreationInputTokens } : {}),
+    ...(usage.cacheCreation1hInputTokens ? { cacheWrite1hTokens: usage.cacheCreation1hInputTokens } : {}),
+    ...(costUsd !== null ? { costUsd } : {}),
+  };
+}
+
+const STORAGE_KEY = 'partwright.aiCallLog';
+
 function getMaxEvents(): number { return getConfig().ai.diagnosticsRingSize; }
-const events: DiagnosticEvent[] = [];
+const events: DiagnosticEvent[] = loadStoredEvents();
+
+/** This tab's saved log, newest first, or [] (no sessionStorage — the agent
+ *  Worker, a blocked storage — or nothing usable saved). */
+function loadStoredEvents(): DiagnosticEvent[] {
+  try {
+    if (typeof sessionStorage === 'undefined') return [];
+    const raw = sessionStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((e): e is DiagnosticEvent => !!e && typeof e === 'object'
+        && typeof (e as DiagnosticEvent).id === 'string'
+        && typeof (e as DiagnosticEvent).timestamp === 'number')
+      .slice(0, getMaxEvents());
+  } catch {
+    return [];
+  }
+}
+
+function saveEvents(): void {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    if (events.length === 0) sessionStorage.removeItem(STORAGE_KEY);
+    else sessionStorage.setItem(STORAGE_KEY, JSON.stringify(events));
+  } catch { /* quota or blocked storage: the in-memory log still works */ }
+}
 const listeners = new Set<() => void>();
 let counter = 0;
 let forwarder: ((evt: DiagnosticEvent) => void) | null = null;
@@ -104,6 +157,7 @@ export function recordEvent(evt: Omit<DiagnosticEvent, 'id' | 'timestamp'>): voi
 export function ingestEvent(full: DiagnosticEvent): void {
   events.unshift(full);
   if (events.length > getMaxEvents()) events.length = getMaxEvents();
+  saveEvents();
   // Mirror to devtools so a user who reports "diagnostics shows nothing"
   // can verify in the browser console that recording is alive. The
   // single-line format is greppable: `[partwright-ai]`.
@@ -134,6 +188,7 @@ export function listEvents(): DiagnosticEvent[] {
 
 export function clearEvents(): void {
   events.length = 0;
+  saveEvents();
   for (const fn of listeners) {
     try { fn(); } catch { /* ignore */ }
   }

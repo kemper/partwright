@@ -47,7 +47,8 @@ import { getState, setSessionAiPreference, refreshCurrentSession } from '../stor
 import { onTabSync, publishTabSync } from '../storage/tabSync';
 import { onOwnershipChange } from '../storage/sessionLock';
 import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
-import { activeModel, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolCall, type PersistedToolResult, type Preset, type Provider, type TurnOutcomeReason } from '../ai/types';
+import { lowerThinkingLevel } from '../ai/thinkingLevels';
+import { activeModel, MAX_TOKENS_WHILE_THINKING, SPEND_CAP_USD, THINKING_LEVELS, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolCall, type PersistedToolResult, type Preset, type Provider, type TurnOutcomeReason } from '../ai/types';
 import { matchSlashCommands, parseSlashCommand, slashMenuPrefix, type SlashCommandName, type SlashCommandSpec } from '../ai/slashCommands';
 import { repairToolHistory, hasOrphanedToolCalls, isEphemeral, isToolHistoryMismatchError } from '../ai/historyRepair';
 import { countChapters, countSteps, isChapterStart, mergeBySeq, planRewind, repairUndo, rewindCutIndex, takeFirstStep, type RepairUndo, type RewindEntry, type RewindKind } from '../ai/rewind';
@@ -2610,11 +2611,29 @@ function renderStopNotice(msg: ChatMessage): HTMLElement {
   const bumpedSpend = isSpend ? nextSpendTier(curSpend) : curSpend;
   const canRaise = isSpend && bumpedSpend !== curSpend;
 
+  // Ran out of room while thinking: the reasoning is gone, so retrying at the
+  // same level usually hits the same wall. Lead with a one-step-lower retry.
+  const lowerThinking = thinkingCutoffRetryLevel(notice);
+  if (lowerThinking) {
+    const lowerBtn = document.createElement('button');
+    lowerBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-100 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600';
+    lowerBtn.textContent = `↻ Retry at ${THINKING_LEVELS[lowerThinking].label} thinking`;
+    lowerBtn.title = 'Lower the Thinking level one step and run this step again.';
+    lowerBtn.addEventListener('click', () => {
+      applyToggleChange({ thinking: lowerThinking });
+      renderToggleStrip();
+      void resumeFromNotice(msg.id, false);
+    });
+    actions.appendChild(lowerBtn);
+  }
+
   const resumeBtn = document.createElement('button');
-  resumeBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-100 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600';
+  resumeBtn.className = lowerThinking
+    ? 'px-2 py-1 rounded text-[11px] text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800 border border-zinc-700'
+    : 'px-2 py-1 rounded text-[11px] text-zinc-100 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600';
   resumeBtn.textContent = canRaise
     ? `↻ Raise cap to ${spendTierLabel(bumpedSpend)} & keep going`
-    : '↻ Keep going';
+    : lowerThinking ? 'Keep going at this level' : '↻ Keep going';
   resumeBtn.title = 'Continue the agent loop from where it stopped — no need to retype your request.';
   resumeBtn.addEventListener('click', () => { void resumeFromNotice(msg.id, canRaise); });
   actions.appendChild(resumeBtn);
@@ -2633,11 +2652,18 @@ function renderStopNotice(msg: ChatMessage): HTMLElement {
   return card;
 }
 
+/** The Thinking level to offer a retry at when a step ran out of output room
+ *  while still thinking, or null (not that stop, or nothing lower). */
+function thinkingCutoffRetryLevel(notice: NonNullable<ChatMessage['stopNotice']>): ChatToggles['thinking'] | null {
+  if (notice.reason !== 'max_tokens' || notice.detail !== MAX_TOKENS_WHILE_THINKING) return null;
+  return lowerThinkingLevel(loadSettings().toggles.thinking);
+}
+
 function stopNoticeTitle(notice: NonNullable<ChatMessage['stopNotice']>): string {
   switch (notice.reason) {
     case 'iteration_cap': return `Stopped at the ${notice.iterations}-iteration cap`;
     case 'spend_cap': return 'Stopped at the session spend cap';
-    case 'max_tokens': return 'Response was cut off';
+    case 'max_tokens': return notice.detail === MAX_TOKENS_WHILE_THINKING ? 'Ran out of room while thinking' : 'Response was cut off';
     case 'refusal': return 'The model declined';
     case 'empty_final': return 'Stopped without a final message';
     default: return 'Stopped early';
@@ -2650,8 +2676,15 @@ function stopNoticeBody(notice: NonNullable<ChatMessage['stopNotice']>): string 
       return `The agent used all ${notice.iterations} tool round-trips allowed per turn and was still working. Keep going to grant another batch, or raise the ⟲ iteration cap in the toggle strip for longer autonomous runs.`;
     case 'spend_cap':
       return `This session reached its ${notice.detail ?? 'spend'} budget. Raise the cap and keep going, or pick a higher $ cap in the toggle strip.`;
-    case 'max_tokens':
-      return 'The model hit its output-token limit before finishing this step. Keep going to let it continue from where it left off.';
+    case 'max_tokens': {
+      if (notice.detail !== MAX_TOKENS_WHILE_THINKING) {
+        return 'The model hit its output-token limit before finishing this step. Keep going to let it continue from where it left off.';
+      }
+      const lower = thinkingCutoffRetryLevel(notice);
+      return 'The model used its whole output allowance thinking and stopped before writing any reply or code. '
+        + 'That reasoning can\'t be picked up again, so continuing starts this step over — at the same Thinking level it will likely run out again. '
+        + (lower ? `Retry at ${THINKING_LEVELS[lower].label} thinking, or ask for a smaller step.` : 'Ask for a smaller step.');
+    }
     case 'refusal':
       return 'The model declined to continue this turn. Keep going to try again, or rephrase your request.';
     case 'empty_final':
@@ -4040,6 +4073,9 @@ function formatTurnOutcome(o: TurnOutcome): string {
     case 'spend_cap':
       return `⚠ stopped at session spend cap${o.detail ? ` (${o.detail})` : ''} — raise the $ cap to continue · ${cost} · ${iters}${tools}`;
     case 'max_tokens': {
+      if (o.detail === MAX_TOKENS_WHILE_THINKING) {
+        return `⚠ ran out of room while thinking · ${cost} · ${iters}${tools} — lower the Thinking level or ask for a smaller step`;
+      }
       const isLocal = loadSettings().toggles.provider === 'local';
       const hint = isLocal
         ? 'try a shorter prompt, switch to a larger local model, or compact the chat'

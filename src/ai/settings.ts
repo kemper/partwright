@@ -139,7 +139,7 @@ export const AUTO_REVIEW_MAX_FIX_ROUNDS = 3;
 const DEFAULT_AUTO_REVIEW: AutoReviewSettings = { provider: 'same', model: '', fixRounds: 1, includeConversation: true };
 
 /** Current settings-migration revision (see AiSettings.settingsRev). */
-const SETTINGS_REV = 1;
+const SETTINGS_REV = 2;
 const DEFAULT_GEMINI_MODEL: GeminiModelId = 'gemini-flash-latest';
 
 /** Default Base URL for the Custom (OpenAI-compatible) provider. Points at
@@ -183,7 +183,11 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     autoRetry: 1,
     maxIterations: 'high',
     maxSpend: 'medium',
-    thinking: 'high',
+    // Medium, not High: at High a hard modeling step can think for 30k+
+    // tokens and 5+ minutes per agent step (and run out of output room
+    // mid-thought). Medium matches High on most steps on current models; the
+    // Thinking pill still raises it for a genuinely hard problem.
+    thinking: 'medium',
     // Off by default — a model that asks a clarifying question should wait for
     // the answer, not auto-continue past it. Opt in via the pill or full preset.
     autoResume: false,
@@ -637,6 +641,18 @@ function migrateAutoCompactMode(partial: LegacyAiSettings): AiSettings['autoComp
   return stored;
 }
 
+/** Rev 2: the default Thinking level moved from High to Medium. A stored
+ *  High from before rev 2 is almost always the old default carried along
+ *  (any toggle change — even switching model — moves the preset to Custom,
+ *  so the preset can't tell a pick from a leftover), so it's lowered once;
+ *  anything picked afterwards, High included, is kept because the stored
+ *  settings then carry rev 2. Full's XHigh is a different level and stays. */
+function migrateThinking(partial: LegacyAiSettings, stored: ChatToggles['thinking'] | null): ChatToggles['thinking'] {
+  if (stored === null) return DEFAULT_SETTINGS.toggles.thinking;
+  if ((partial.settingsRev ?? 0) < 2 && stored === 'high') return 'medium';
+  return stored;
+}
+
 function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
   const tgls = partial.toggles ?? {};
   // Pre-provider builds stored a single `model` field on toggles. Detect
@@ -679,7 +695,7 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
       autoRetry: tgls.autoRetry ?? DEFAULT_SETTINGS.toggles.autoRetry,
       maxIterations: tgls.maxIterations ?? DEFAULT_SETTINGS.toggles.maxIterations,
       maxSpend: tgls.maxSpend ?? DEFAULT_SETTINGS.toggles.maxSpend,
-      thinking: parseThinkingLevel(tgls.thinking) ?? DEFAULT_SETTINGS.toggles.thinking,
+      thinking: migrateThinking(partial, parseThinkingLevel(tgls.thinking)),
       autoResume: tgls.autoResume ?? DEFAULT_SETTINGS.toggles.autoResume,
       planFirst: tgls.planFirst ?? DEFAULT_SETTINGS.toggles.planFirst,
       printOptimized: tgls.printOptimized ?? DEFAULT_SETTINGS.toggles.printOptimized,
