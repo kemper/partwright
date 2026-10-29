@@ -158,6 +158,10 @@ export interface RunTurnInput {
    *  so the model doesn't spend a step on loadTools. Main-thread state, so the
    *  caller computes it; the agent Worker can't. */
   preloadToolGroups?: string[];
+  /** Round limit for this turn that replaces the ⟲ iteration cap — set while
+   *  building an approved plan, so the build stops at the plan's estimate
+   *  (a checkpoint) instead of the toolbar cap. */
+  iterationLimit?: number;
 }
 
 /** Whether this turn sends the core tool set plus loaded groups
@@ -333,7 +337,9 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
   let totalCostUsd = 0;
   let totalToolCalls = 0;
   let turnApiTimeMs = 0;
-  const maxIter = ITERATION_CAP[toggles.maxIterations];
+  const maxIter = typeof input.iterationLimit === 'number' && input.iterationLimit >= 1
+    ? Math.floor(input.iterationLimit)
+    : ITERATION_CAP[toggles.maxIterations];
   const maxSpend = SPEND_CAP_USD[toggles.maxSpend];
   // Auto-continue mode: the model only stops cleanly by calling `finish`; a
   // plain end_turn is auto-resumed (bounded by maxIter + maxSpend, plus the

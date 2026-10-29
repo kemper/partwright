@@ -169,6 +169,21 @@ export interface AppConfig {
      *  `[REVIEW from …]` session note the agent reads via getSessionContext.
      *  The review itself is always kept in full in the chat transcript. */
     reviewNoteMaxChars: number;
+    /** Plan mode, "Assess first" style: the most tool rounds the planning turn
+     *  may spend inspecting attachments and the model before it must report. */
+    planAssessMaxRounds: number;
+    /** Plan-mode build checkpoint: rounds a "Keep going" grants, as a fraction
+     *  of the plan's estimated maximum (never fewer than planCheckpointMinExtension). */
+    planCheckpointExtensionFraction: number;
+    /** Plan-mode build checkpoint: the fewest rounds a "Keep going" grants. */
+    planCheckpointMinExtension: number;
+    /** Recent priced rounds of this chat averaged to turn a plan's round
+     *  estimate into a cost range. */
+    planCostSampleRounds: number;
+    /** Past plan-mode builds kept to calibrate new estimates (estimate vs actual). */
+    planCalibrationMaxEntries: number;
+    /** Past builds needed before calibration is shown and sent to the planner. */
+    planCalibrationMinBuilds: number;
     /** Safety timeout (ms) for SCAD Worker operations with no cancel button —
      *  OpenSCAD validation and include-detection. (The render path has no
      *  timeout; it's bounded by the elapsed counter + Cancel button instead.)
@@ -792,6 +807,12 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     reviewReferenceImages: 4,
     reviewConversationMaxChars: 12_000,
     reviewNoteMaxChars: 2000,
+    planAssessMaxRounds: 10,
+    planCheckpointExtensionFraction: 0.5,
+    planCheckpointMinExtension: 4,
+    planCostSampleRounds: 20,
+    planCalibrationMaxEntries: 50,
+    planCalibrationMinBuilds: 3,
     geometryTimeoutScadMs: 180_000,
     geometryTimeoutReplicadMs: 180_000,
     localPromptBudgetMedium: 1300,

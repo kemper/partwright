@@ -25,10 +25,13 @@ import { renderLocalPicker } from '../aiLocalModal';
 import { confirmDialog } from '../dialogs';
 import { showSystemPromptModal } from '../aiSystemPromptModal';
 import { showReviewPromptModal } from '../aiReviewPromptModal';
+import { PLAN_STYLE_INFO } from '../aiPlanUi';
+import { PLAN_STYLES } from '../../ai/userWords';
 import {
   loadSettings,
   setAutoCompactMode,
   setAutoReview,
+  setPlanStylePrefs,
   setToggles,
   AUTO_REVIEW_MAX_FIX_ROUNDS,
   type AutoReviewSettings,
@@ -119,6 +122,8 @@ export function SettingsModalBody(props: {
       <AutoCompactSection cb={cb} />
       <Divider />
       <AutoReviewSection cb={cb} close={close} />
+      <Divider />
+      <PlanModeSection cb={cb} />
     </>
   );
 }
@@ -861,6 +866,37 @@ function AutoReviewSection(props: { cb: AiSettingsCallbacks; close: () => void }
             showReviewPromptModal({ onChange: cb.onChange });
           }}
         />
+      </div>
+    </Section>
+  );
+}
+
+// === Plan mode ===
+
+function PlanModeSection(props: { cb: AiSettingsCallbacks }) {
+  const { cb } = props;
+  const { planStyle, askPlanStyle } = settingsSignal.value;
+  const update = (partial: Parameters<typeof setPlanStylePrefs>[1]) => { setSettings(setPlanStylePrefs(loadSettings(), partial)); cb.onChange(); };
+  return (
+    <Section label="Plan mode">
+      <div class="text-[11px] text-zinc-400 leading-snug">
+        With 📋 Plan on, the AI plans before it builds, and each plan comes with an estimate: difficulty, rounds, cost and expected quality. Building then pauses for your go-ahead when it reaches the estimated rounds, instead of at the ⟲ cap.
+      </div>
+      <div class="flex flex-col gap-1">
+        <span class="text-xs text-zinc-400">Planning style</span>
+        <div class="flex flex-wrap gap-1">
+          {PLAN_STYLES.map(s => (
+            <Pill key={s} active={planStyle === s} label={PLAN_STYLE_INFO[s].label} title={PLAN_STYLE_INFO[s].description} onClick={() => update({ planStyle: s })} />
+          ))}
+        </div>
+        <span class="text-[10px] text-zinc-500">{PLAN_STYLE_INFO[planStyle].description}</span>
+      </div>
+      <div class="flex flex-col gap-1">
+        <span class="text-xs text-zinc-400">On a new plan request</span>
+        <div class="flex flex-wrap gap-1">
+          <Pill active={askPlanStyle} label="Ask each time" onClick={() => update({ askPlanStyle: true })} />
+          <Pill active={!askPlanStyle} label="Use this style" onClick={() => update({ askPlanStyle: false })} />
+        </div>
       </div>
     </Section>
   );

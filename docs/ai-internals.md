@@ -59,6 +59,13 @@ Turning **off** is byte-for-byte the old behavior — no `finish` tool, no nudge
   - Auto-compaction and `/compact` wait while a plan is pending, because the plan is anchored by history index.
 - **Build** sends `planApprovalText(latestPlanReply(...).text)`, i.e. `[Plan approved — …]` plus the plan Markdown. The build turn runs with `planFirst: false`, so it gets the full tool list. **Discard** deletes the planning messages and restores the request in the input.
 
+### Planning styles, estimates and the build checkpoint (#1209)
+
+- **Styles.** A new plan request opens a picker (`renderPlanStylePicker` in `src/ui/aiPlanUi.ts`) unless `AiSettings.askPlanStyle` is off; `AiSettings.planStyle` is the remembered choice. Each style has its own request prefix (`PLAN_FIRST_PREFIX` = quick, `PLAN_ASSESS_PREFIX`, `PLAN_COMPARE_PREFIX` via `planRequestPrefix`), and `planTurn()` reports the style. "Assess first" planning turns are capped at `ai.planAssessMaxRounds` rounds.
+- **Estimate.** `proposePlan` takes an optional `estimate` (difficulty, confidence, roundsMin/roundsMax, quality, gaps, risks), validated and parsed in `src/ai/planEstimate.ts`. The model never prices itself: the card's cost range is the rounds × this chat's average priced round (`perRoundCostUsd`, last `ai.planCostSampleRounds`). `readDoc("feasibility")` (`public/ai/feasibility.md`) is the difficulty map the planner reads.
+- **Build budget.** Build starts a `BuildBudget` from the plan's estimate. While set, every build turn passes `RunTurnInput.iterationLimit = remainingRounds(budget)`, which **replaces** the ⟲ `maxIterations` cap (the $ cap still applies). Reaching it is an `iteration_cap` stop with detail `plan_checkpoint`, rendered as the checkpoint card: Keep going extends the limit by `checkpointExtension(...)` (`ai.planCheckpointExtensionFraction`, min `ai.planCheckpointMinExtension`), Accept ends the build. The budget is in-memory only, like stop notices.
+- **Calibration.** When a build ends (finished, accepted, or abandoned by a new request / session switch) `calibrationRecord` is appended to `localStorage['partwright.planCalibration']` (`src/ai/planCalibration.ts`, ring of `ai.planCalibrationMaxEntries`). Once there are `ai.planCalibrationMinBuilds`, `summarizeCalibration` is shown on plan cards and sent with each new plan request as a `[UI · app note]` line.
+
 ## OpenAI routing (Chat Completions vs Responses API)
 
 `streamTurn` routes per model (gated by `isReasoningModel`):

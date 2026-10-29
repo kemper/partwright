@@ -96,7 +96,7 @@ describe('plan-mode user turns', () => {
   });
 
   it('classifies plan turns and extracts the user words', () => {
-    expect(planTurn(`${PLAN_FIRST_PREFIX}Make a vase`)).toEqual({ kind: 'request', words: 'Make a vase' });
+    expect(planTurn(`${PLAN_FIRST_PREFIX}Make a vase`)).toEqual({ kind: 'request', words: 'Make a vase', style: 'quick' });
     expect(planTurn(`${PLAN_REFINE_PREFIX}Taller`)).toEqual({ kind: 'refine', words: 'Taller' });
     expect(planTurn(planApprovalText('Plan'))).toEqual({ kind: 'approved', words: '' });
     expect(planTurn(PLAN_APPROVED_TEXT)).toEqual({ kind: 'approved', words: '' });
@@ -125,7 +125,7 @@ describe('card tools', () => {
 
   it('parses a plan and formats it as Markdown', () => {
     const plan = parseProposedPlan(PLAN_INPUT);
-    expect(plan).toEqual(PLAN_INPUT);
+    expect(plan).toEqual({ ...PLAN_INPUT, estimate: null });
     expect(planMarkdown(plan!)).toBe('A 60 mm vase.\n\n1. Revolve the profile.\n2. Hollow it.\n\nAssumptions:\n- Units are mm.');
     expect(parseProposedPlan({ summary: 'x', steps: [] })).toBeNull();
   });
@@ -144,7 +144,7 @@ describe('card tools', () => {
 
   it('reads shown cards ahead of text in the latest reply', () => {
     const planned = [msg('user', 'plan it', 0), msg('assistant', 'Here it is.', 1, { toolCalls: [{ id: 'p', name: 'proposePlan', input: PLAN_INPUT }] }), carrier('p', 2)];
-    expect(latestPlanReply(planned, 0)).toEqual({ text: planMarkdown(parseProposedPlan(PLAN_INPUT)!), awaitingAnswers: false });
+    expect(latestPlanReply(planned, 0)).toEqual({ text: planMarkdown(parseProposedPlan(PLAN_INPUT)!), awaitingAnswers: false, estimate: null });
     const asked = [msg('user', 'plan it', 0), msg('assistant', '', 1, { toolCalls: [{ id: 'a', name: 'askUser', input: ASK }] }), carrier('a', 2)];
     expect(latestPlanReply(asked, 0)).toEqual({ text: '- How tall?\n- Which features?', awaitingAnswers: true });
   });

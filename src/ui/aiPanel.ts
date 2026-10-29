@@ -15,7 +15,7 @@ import { captureIsoViews, fileToImageSource } from '../ai/images';
 import { PHOTO_BUST_PROMPT } from '../ai/photoModelPrompt';
 import { RECONSTRUCT_PROMPT } from '../ai/reconstructPrompt';
 import { PARTS_PROMPT } from '../ai/partsPrompt';
-import { isLegacyDefaultThinking, loadSettings, saveSettings, SETTINGS_REV, setAnthropicModel, setOpenaiModel, setGeminiModel, setCustomContext, setCustomModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
+import { isLegacyDefaultThinking, loadSettings, saveSettings, SETTINGS_REV, setPlanStylePrefs, setAnthropicModel, setOpenaiModel, setGeminiModel, setCustomContext, setCustomModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd, hasKnownPricing } from '../ai/cost';
 import { getLimits } from '../ai/catalog';
@@ -28,7 +28,10 @@ import { confirmUnpricedModel } from './unpricedModelGate';
 import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiReviewModal } from './aiReviewModal';
 import { gatherReviewContext, runReview } from '../ai/review';
-import { PLAN_FIRST_PREFIX, PLAN_REFINE_PREFIX, planApprovalText, planTurn } from '../ai/userWords';
+import { PLAN_REFINE_PREFIX, planApprovalText, planRequestPrefix, planTurn, type PlanStyle } from '../ai/userWords';
+import { calibrationRecord, checkpointExtension, estimateCostRange, perRoundCostUsd, remainingRounds, startBuildBudget, summarizeCalibration, type BuildBudget, type BuildOutcome } from '../ai/planEstimate';
+import { appendCalibration, loadCalibration } from '../ai/planCalibration';
+import { PLAN_STYLE_INFO, appendPlanCardList, checkpointBody, checkpointTitle, renderPlanEstimate, renderPlanStylePicker } from './aiPlanUi';
 import { ASK_USER_TOOL, CARD_TOOL_ACK, PROPOSE_PLAN_TOOL, answersText, type AskUserQuestion, derivePendingPlan, latestPlanReply, parseAskUser, parseProposedPlan, pendingAskUser, planMarkdown } from '../ai/planReply';
 import { buildFixPrompt, countModelChangingCalls, latestUserRequest, overSpendCap, parseReviewVerdict, requestText, resolveReviewer, shouldActOnReview, shouldAutoReview, userConversation } from '../ai/autoReview';
 import { buildToolList, isModelChangingTool, confirmToolLabel } from '../ai/tools';
@@ -271,6 +274,12 @@ let inputEl: HTMLTextAreaElement | null = null;
 let pendingPrefill: string | null = null;
 let voiceController: VoiceController | null = null;
 let planApprovalBarEl: HTMLElement | null = null;
+/** The planning-style picker shown on a new plan request (#1209). */
+let planStyleBarEl: HTMLElement | null = null;
+/** The round budget the build of an approved plan runs under: the plan's
+ *  estimate, extended by each checkpoint "Keep going". Overrides the ⟲ cap
+ *  while set. In memory only — like the checkpoint notice. */
+let buildBudget: BuildBudget | null = null;
 
 // The docked panel is an editor tool: it only takes layout space on the editor
 // route. On overlay pages (e.g. /ideas) it's force-hidden so those pages render
@@ -445,6 +454,8 @@ export async function setActiveSession(sessionId: string | null): Promise<void> 
   renderQueuedBadge();
   state.pendingPlanApproval = null;
   renderPlanApprovalBar();
+  hidePlanStylePicker();
+  endBuildBudget(buildBudget && buildBudget.checkpoints > 0 ? 'accepted' : 'abandoned');
   await loadHistoryForCurrentSession();
   await applySessionAiPreference();
   renderTranscript();
@@ -1054,6 +1065,12 @@ function buildDrawer(): void {
   planApprovalBarEl = document.createElement('div');
   planApprovalBarEl.className = 'px-3 py-2 border-t border-amber-700/60 bg-amber-900/20 flex items-center gap-2 shrink-0 hidden';
   root.appendChild(planApprovalBarEl);
+
+  // Planning-style picker — shown when a new plan request is sent, until the
+  // user picks how to plan (or cancels).
+  planStyleBarEl = document.createElement('div');
+  planStyleBarEl.className = 'px-3 py-2 border-t border-amber-700/60 bg-amber-900/20 flex flex-col gap-1.5 shrink-0 hidden';
+  root.appendChild(planStyleBarEl);
 
   // Bottom section — rewind, toggles, cost, input
   const bottomSection = document.createElement('div');
@@ -1722,6 +1739,7 @@ function renderToggleStrip(): void {
     'Plan first: when ON, the AI writes a step-by-step plan (or asks its questions) before doing any work. Answer or revise by typing; nothing is built until you click Build. Useful for complex requests where you want to review the approach first.',
     () => {
       applyToggleChange({ planFirst: !toggles.planFirst });
+      if (toggles.planFirst) hidePlanStylePicker();
       // Off leaves plan mode (a pending plan's bar goes; its messages stay);
       // on picks a pending plan back up from the transcript.
       if (!state.inFlight) syncPendingPlanFromHistory();
@@ -2122,7 +2140,7 @@ function renderPlanApprovalBar(): void {
   // A planning turn either ends on a plan or on questions the model needs
   // answered first. Questions lead with "answer below" — Build stays on offer
   // (the model then picks its own defaults), but as the quieter choice.
-  const { awaitingAnswers } = latestPlanReply(state.history, state.pendingPlanApproval.historyLengthBefore);
+  const { awaitingAnswers, estimate } = latestPlanReply(state.history, state.pendingPlanApproval.historyLengthBefore);
   planApprovalBarEl.dataset.planState = awaitingAnswers ? 'questions' : 'plan';
 
   const label = document.createElement('span');
@@ -2140,7 +2158,9 @@ function renderPlanApprovalBar(): void {
   buildBtn.textContent = awaitingAnswers ? 'Build anyway' : '✓ Build it';
   buildBtn.title = awaitingAnswers
     ? 'Skip the questions: the AI picks sensible defaults and starts building.'
-    : 'Approve this plan and start building.';
+    : estimate
+      ? `Approve this plan and start building. It pauses for your go-ahead after ${estimate.roundsMax} rounds (the plan's estimate) instead of the ⟲ cap.`
+      : 'Approve this plan and start building.';
   buildBtn.addEventListener('click', () => { void approvePlan(); });
   planApprovalBarEl.appendChild(buildBtn);
 
@@ -2150,6 +2170,69 @@ function renderPlanApprovalBar(): void {
   discardBtn.title = 'Drop this plan and put your request back in the input to edit.';
   discardBtn.addEventListener('click', () => { void rejectPlan(); });
   planApprovalBarEl.appendChild(discardBtn);
+}
+
+/** Stop-notice / outcome detail marking an iteration-cap stop as the build
+ *  of an approved plan reaching its estimate. */
+const PLAN_CHECKPOINT = 'plan_checkpoint';
+/** Outcome detail for an "Assess first" planning turn that used its rounds. */
+const PLAN_ASSESS_CAP = 'plan_assess_cap';
+
+/** The detail a checkpoint stop carries: tied to the build it belongs to, so
+ *  a notice left over from an earlier build never acts on a later one. */
+function checkpointDetail(b: BuildBudget): string {
+  return `${PLAN_CHECKPOINT}:${b.id}`;
+}
+
+/** The current build's budget when `detail` is its checkpoint, else null. */
+function checkpointBudget(detail: string | undefined): BuildBudget | null {
+  return buildBudget && detail === checkpointDetail(buildBudget) ? buildBudget : null;
+}
+
+/** Drop checkpoint notices from earlier builds (in-memory only). */
+function dropCheckpointNotices(): void {
+  const before = state.history.length;
+  state.history = state.history.filter(m => !m.stopNotice?.detail?.startsWith(PLAN_CHECKPOINT));
+  if (state.history.length !== before) renderTranscript();
+}
+
+function showPlanStylePicker(current: PlanStyle): void {
+  if (!planStyleBarEl) return;
+  // Visible before rendering, so the picker can take focus.
+  planStyleBarEl.classList.remove('hidden');
+  renderPlanStylePicker(planStyleBarEl, {
+    current,
+    onPick: (style, remember) => {
+      // The pick becomes the default next time; "don't ask" stops the picker.
+      saveSettings(setPlanStylePrefs(loadSettings(), remember ? { planStyle: style, askPlanStyle: false } : { planStyle: style }));
+      hidePlanStylePicker();
+      void sendMessage({ planStyle: style });
+    },
+    onCancel: () => {
+      hidePlanStylePicker();
+      inputEl?.focus();
+    },
+  });
+}
+
+function hidePlanStylePicker(): void {
+  if (!planStyleBarEl) return;
+  planStyleBarEl.classList.add('hidden');
+  planStyleBarEl.replaceChildren();
+  planStyleBarEl.onkeydown = null;
+}
+
+/** Rounds a checkpoint "Keep going" grants for the current build. */
+function buildCheckpointExtension(b: BuildBudget): number {
+  const cfg = getConfig().ai;
+  return checkpointExtension(b.estimate.roundsMax, cfg.planCheckpointExtensionFraction, cfg.planCheckpointMinExtension);
+}
+
+/** End the current build's round budget and record estimate vs actual. */
+function endBuildBudget(outcome: BuildOutcome): void {
+  if (!buildBudget) return;
+  if (buildBudget.used > 0) appendCalibration(calibrationRecord(buildBudget, outcome, Date.now()));
+  buildBudget = null;
 }
 
 /** Set while Build is between its click and the build turn starting, so a
@@ -2163,7 +2246,8 @@ async function approvePlan(): Promise<void> {
   const reviewRequest = state.pendingPlanApproval.originalText;
   // The approval carries the plan the user is approving, so the build turn is
   // anchored to it (and the hand-off from planning is explicit).
-  const plan = latestPlanReply(state.history, state.pendingPlanApproval.historyLengthBefore).text;
+  const planReply = latestPlanReply(state.history, state.pendingPlanApproval.historyLengthBefore);
+  const plan = planReply.text;
 
   const settings = loadSettings();
   // Preflight may open the key modal and retry this later, so the plan stays
@@ -2178,6 +2262,15 @@ async function approvePlan(): Promise<void> {
   if (apiKey === PREFLIGHT_ABORT || !state.pendingPlanApproval) return;
   state.pendingPlanApproval = null;
   renderPlanApprovalBar();
+
+  // The plan's estimate becomes the build's round budget: it stops at the
+  // estimated maximum for the user's go-ahead instead of at the ⟲ cap.
+  if (buildBudget) endBuildBudget('abandoned');
+  dropCheckpointNotices();
+  if (planReply.estimate) {
+    const cost = estimateCostRange(planReply.estimate, perRoundCostUsd(state.history, getConfig().ai.planCostSampleRounds));
+    buildBudget = startBuildBudget(generateId(), planReply.estimate, cost, settings.toggles.provider, activeModel(settings.toggles) ?? '');
+  }
 
   progressState.retryCount = 0;
   stalledByWatchdog = false;
@@ -2411,7 +2504,8 @@ function renderMessage(msg: ChatMessage): HTMLElement {
         wrap.appendChild(line);
         continue;
       }
-      const bubble = renderTextBubble(msg.role, plan ? plan.words : b.text, msg.compacted, plan ? PLAN_TURN_CHIP[plan.kind] : undefined);
+      const chip = plan ? (plan.kind === 'request' ? PLAN_STYLE_INFO[plan.style ?? 'quick'].chip : PLAN_TURN_CHIP[plan.kind]) : undefined;
+      const bubble = renderTextBubble(msg.role, plan ? plan.words : b.text, msg.compacted, chip);
       if (isEmpty && msg.role === 'assistant') {
         // Live streaming placeholder: kept bare (no copy wrapper) so
         // onAssistantText can rewrite its textContent and the thinking-box
@@ -2587,6 +2681,8 @@ async function retryFailedTurn(errorMsgId: string): Promise<void> {
  *  off rather than re-sending the original prompt. */
 function renderStopNotice(msg: ChatMessage): HTMLElement {
   const notice = msg.stopNotice!;
+  const checkpoint = checkpointBudget(notice.detail);
+  if (checkpoint) return renderPlanCheckpoint(msg, checkpoint);
   const card = document.createElement('div');
   card.className = 'max-w-[95%] rounded border border-amber-700/60 bg-amber-900/15 px-3 py-2 flex flex-col gap-2';
 
@@ -2652,6 +2748,43 @@ function renderStopNotice(msg: ChatMessage): HTMLElement {
   return card;
 }
 
+/** The checkpoint an approved plan's build stops at when it reaches its
+ *  estimate: what it planned vs used, then keep going (another batch of
+ *  rounds) or accept the result as it is. */
+function renderPlanCheckpoint(msg: ChatMessage, budget: BuildBudget): HTMLElement {
+  const extension = buildCheckpointExtension(budget);
+  const card = document.createElement('div');
+  card.className = 'max-w-[95%] rounded border border-amber-700/60 bg-amber-900/15 px-3 py-2 flex flex-col gap-2';
+  card.dataset.planCheckpoint = '';
+  const head = document.createElement('div');
+  head.className = 'flex items-center gap-1.5 text-xs font-medium text-amber-200';
+  head.textContent = `⏸ ${checkpointTitle(budget)}`;
+  const body = document.createElement('div');
+  body.className = 'text-[12px] text-amber-100/90 whitespace-pre-wrap leading-snug';
+  body.textContent = checkpointBody(budget, extension);
+  const actions = document.createElement('div');
+  actions.className = 'flex items-center gap-2 pt-1';
+  const resumeBtn = document.createElement('button');
+  resumeBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-100 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600';
+  resumeBtn.textContent = `↻ Keep going (+${extension} rounds)`;
+  resumeBtn.title = 'Continue the build for another batch of rounds; it pauses here again after them.';
+  resumeBtn.addEventListener('click', () => { void resumeFromNotice(msg.id, false); });
+  const acceptBtn = document.createElement('button');
+  acceptBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800 border border-zinc-700';
+  acceptBtn.textContent = '✓ Accept as is';
+  acceptBtn.title = 'Stop building and keep the model as it is now.';
+  acceptBtn.addEventListener('click', () => {
+    if (state.inFlight || !writeOwner || buildBudget !== budget) return;
+    endBuildBudget('accepted');
+    state.history = state.history.filter(m => m.id !== msg.id);
+    renderTranscript();
+    setTransientStatus('Build stopped — the model stays as it is.');
+  });
+  actions.append(resumeBtn, acceptBtn);
+  card.append(head, body, actions);
+  return card;
+}
+
 /** The Thinking level to offer a retry at when a step ran out of output room
  *  while still thinking, or null (not that stop, or nothing lower). */
 function thinkingCutoffRetryLevel(notice: NonNullable<ChatMessage['stopNotice']>): ChatToggles['thinking'] | null {
@@ -2661,7 +2794,7 @@ function thinkingCutoffRetryLevel(notice: NonNullable<ChatMessage['stopNotice']>
 
 function stopNoticeTitle(notice: NonNullable<ChatMessage['stopNotice']>): string {
   switch (notice.reason) {
-    case 'iteration_cap': return `Stopped at the ${notice.iterations}-iteration cap`;
+    case 'iteration_cap': return notice.detail === PLAN_ASSESS_CAP ? `The assessment used its ${notice.iterations} rounds` : `Stopped at the ${notice.iterations}-iteration cap`;
     case 'spend_cap': return 'Stopped at the session spend cap';
     case 'max_tokens': return notice.detail === MAX_TOKENS_WHILE_THINKING ? 'Ran out of room while thinking' : 'Response was cut off';
     case 'refusal': return 'The model declined';
@@ -2673,6 +2806,7 @@ function stopNoticeTitle(notice: NonNullable<ChatMessage['stopNotice']>): string
 function stopNoticeBody(notice: NonNullable<ChatMessage['stopNotice']>): string {
   switch (notice.reason) {
     case 'iteration_cap':
+      if (notice.detail === PLAN_ASSESS_CAP) return `"Assess first" inspected for its ${notice.iterations}-round limit without writing the plan yet. Keep going to let it finish the assessment and plan (up to the ⟲ cap), or raise the limit in Advanced Settings.`;
       return `The agent used all ${notice.iterations} tool round-trips allowed per turn and was still working. Keep going to grant another batch, or raise the ⟲ iteration cap in the toggle strip for longer autonomous runs.`;
     case 'spend_cap':
       return `This session reached its ${notice.detail ?? 'spend'} budget. Raise the cap and keep going, or pick a higher $ cap in the toggle strip.`;
@@ -2745,6 +2879,10 @@ async function resumeFromNotice(noticeMsgId: string, raiseSpendCap: boolean, low
   const apiKey = await preflightTurn(settings, () => { void resumeFromNotice(noticeMsgId, false); });
   if (apiKey === PREFLIGHT_ABORT) return;
 
+  // Keep going at a plan checkpoint grants the build another batch of rounds.
+  const checkpoint = checkpointBudget(state.history.find(m => m.id === noticeMsgId)?.stopNotice?.detail);
+  if (checkpoint) checkpoint.limit = checkpoint.used + buildCheckpointExtension(checkpoint);
+
   // Drop the notice card now that we're actually resuming.
   state.history = state.history.filter(m => m.id !== noticeMsgId);
   renderTranscript();
@@ -2768,8 +2906,7 @@ function renderAutoResumeDivider(): HTMLElement {
   return el;
 }
 
-const PLAN_TURN_CHIP: Record<'request' | 'refine', string> = {
-  request: '📋 Plan first',
+const PLAN_TURN_CHIP: Record<'refine', string> = {
   refine: '📋 Plan revision',
 };
 
@@ -3055,19 +3192,11 @@ function renderPlanCard(tc: PersistedToolCall): HTMLElement {
     steps.appendChild(li);
   }
   card.appendChild(steps);
-  if (plan.assumptions.length > 0) {
-    const label = document.createElement('div');
-    label.className = 'mt-1 text-[11px] uppercase tracking-wide text-zinc-400';
-    label.textContent = 'Assumptions';
-    card.appendChild(label);
-    const list = document.createElement('ul');
-    list.className = 'list-disc pl-5 text-zinc-300 flex flex-col gap-0.5';
-    for (const a of plan.assumptions) {
-      const li = document.createElement('li');
-      li.textContent = a;
-      list.appendChild(li);
-    }
-    card.appendChild(list);
+  appendPlanCardList(card, 'Assumptions', plan.assumptions);
+  if (plan.estimate) {
+    const cfg = getConfig().ai;
+    const cost = estimateCostRange(plan.estimate, perRoundCostUsd(state.history, cfg.planCostSampleRounds));
+    card.appendChild(renderPlanEstimate(plan.estimate, cost, summarizeCalibration(loadCalibration(), cfg.planCalibrationMinBuilds)));
   }
   return withCopyButton(card, 'assistant', () => planMarkdown(plan));
 }
@@ -3934,7 +4063,7 @@ function positionSlashMenu(): void {
   slashMenuEl.style.top = 'auto';
 }
 
-async function sendMessage(): Promise<void> {
+async function sendMessage(opts: { planStyle?: PlanStyle } = {}): Promise<void> {
   if (state.inFlight) return;
   // A rewind/restore is mid-write — sending now would race it.
   if (rewindBusy) return;
@@ -3964,8 +4093,22 @@ async function sendMessage(): Promise<void> {
     }
   }
 
-  const apiKey = await preflightTurn(settings, () => { void sendMessage(); });
+  // A new plan request first asks how to plan (unless the user turned the
+  // question off): the picker re-sends with the chosen style.
+  const newPlanRequest = settings.toggles.planFirst && !state.pendingPlanApproval && pendingAskUser(state.history) === null;
+  if (newPlanRequest && settings.askPlanStyle && !opts.planStyle) {
+    showPlanStylePicker(settings.planStyle);
+    return;
+  }
+  const planStyle: PlanStyle = opts.planStyle ?? settings.planStyle;
+  hidePlanStylePicker();
+
+  const apiKey = await preflightTurn(settings, () => { void sendMessage({ planStyle }); });
   if (apiKey === PREFLIGHT_ABORT) return;
+
+  // A new request (not an answer to the AI's question card) ends the build of
+  // an approved plan: its round budget no longer applies.
+  if (buildBudget && pendingAskUser(state.history) === null) endBuildBudget(buildBudget.checkpoints > 0 ? 'accepted' : 'abandoned');
 
   // Capture content before clearing the input so plan mode can restore it on reject.
   const capturedText = text;
@@ -4017,6 +4160,9 @@ async function sendMessage(): Promise<void> {
     };
 
     let planBlocks: ChatBlock[];
+    // "Assess first" inspects before planning — cap how many rounds that
+    // first look may take so the assessment itself stays cheap.
+    let planIterationLimit: number | undefined;
     if (state.pendingPlanApproval) {
       // Refinement turn: plain user message, no prefix. historyLengthBefore
       // stays fixed so Reject still removes all planning messages.
@@ -4030,8 +4176,17 @@ async function sendMessage(): Promise<void> {
       planBlocks = [...uiNoteBlocks, { type: 'text', text: PLAN_REFINE_PREFIX + textWithContext }];
       for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
     } else {
-      // First planning turn: prefix with the planning instruction.
-      planBlocks = [...uiNoteBlocks, { type: 'text', text: PLAN_FIRST_PREFIX + textWithContext }];
+      // First planning turn: prefix with the chosen style's instruction, and
+      // tell the planner how past estimates compared with what builds took.
+      const calibration = summarizeCalibration(loadCalibration(), getConfig().ai.planCalibrationMinBuilds);
+      const calibrationBlocks: ChatBlock[] = calibration
+        ? [{ type: 'text', text: `${UI_APPLIED_NOTE_PREFIX} ${calibration} Scale your round estimate by it.` }]
+        : [];
+      if (planStyle === 'assess') {
+        planIterationLimit = getConfig().ai.planAssessMaxRounds;
+        calibrationBlocks.push({ type: 'text', text: `${UI_APPLIED_NOTE_PREFIX} The assessment has ${planIterationLimit} tool rounds — leave the last one for the plan or your questions.` });
+      }
+      planBlocks = [...uiNoteBlocks, ...calibrationBlocks, { type: 'text', text: planRequestPrefix(planStyle) + textWithContext }];
       for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
       state.pendingPlanApproval = {
         originalText: capturedText,
@@ -4040,7 +4195,7 @@ async function sendMessage(): Promise<void> {
       };
     }
 
-    await runTurnWithStallRetry(apiKey, planToggles, planBlocks);
+    await runTurnWithStallRetry(apiKey, planToggles, planBlocks, { iterationLimit: planIterationLimit });
     syncPendingPlanFromHistory();
     return;
   }
@@ -4076,6 +4231,8 @@ function formatTurnOutcome(o: TurnOutcome): string {
     case 'empty_final':
       return `⚠ model exited without a final message · ${cost} · ${iters}${tools} — last visible content is above`;
     case 'iteration_cap':
+      if (o.detail === PLAN_ASSESS_CAP) return `⏸ the assessment used its ${o.iterations} rounds before planning · ${cost}${tools}`;
+      if (o.detail?.startsWith(PLAN_CHECKPOINT)) return `⏸ plan checkpoint — the build reached its estimated rounds · ${cost}${tools}`;
       return `⚠ stopped at agent iteration cap (${o.iterations}) — try a more focused prompt, click Compact, or raise the ⟲ cap · ${cost}${tools}`;
     case 'spend_cap':
       return `⚠ stopped at session spend cap${o.detail ? ` (${o.detail})` : ''} — raise the $ cap to continue · ${cost} · ${iters}${tools}`;
@@ -4167,7 +4324,7 @@ async function runTurnWithStallRetry(
   apiKey: string | undefined,
   toggles: ChatToggles,
   userBlocks: ChatBlock[],
-  opts: { reviewRequest?: string } = {},
+  opts: { reviewRequest?: string; iterationLimit?: number } = {},
 ): Promise<void> {
   let attempt = 0;
   let lastTurnOutcome: TurnOutcome | null = null;
@@ -4228,6 +4385,8 @@ async function runTurnWithStallRetry(
       userBlocks: blocksForThisAttempt,
       signal: controller.signal,
       onDrainQueuedBlocks: drainQueuedBlocks,
+      // Building an approved plan: its round budget replaces the ⟲ cap.
+      iterationLimit: !toggles.planFirst && buildBudget ? remainingRounds(buildBudget) : opts.iterationLimit,
     }, {
       onUserPersisted: msg => {
         state.history.push(msg);
@@ -4386,6 +4545,17 @@ async function runTurnWithStallRetry(
           else void maybeAutoCompact();
         }
         lastTurnOutcome = { ...info, costUnknown: !hasKnownPricing(toggles.provider, activeModel(toggles) ?? '') };
+        // A capped planning look ("Assess first") ran out — say so, not "raise the ⟲ cap".
+        if (toggles.planFirst && opts.iterationLimit && info.reason === 'iteration_cap') lastTurnOutcome.detail = PLAN_ASSESS_CAP;
+        if (!toggles.planFirst && buildBudget) {
+          buildBudget.used += info.iterations;
+          buildBudget.spentUsd += info.totalCostUsd;
+          // The build reached the plan's estimate: a checkpoint, not the cap.
+          if (info.reason === 'iteration_cap') {
+            buildBudget.checkpoints++;
+            lastTurnOutcome.detail = checkpointDetail(buildBudget);
+          }
+        }
       },
     });
     } catch (err) {
@@ -4463,6 +4633,9 @@ async function runTurnWithStallRetry(
       // ghost bubble.
       await stripLastAbortedAssistant();
       stalledByWatchdog = false;
+      // The stalled round produced nothing and was just removed — don't bill
+      // it to the plan's round budget.
+      if (buildBudget && !toggles.planFirst) buildBudget.used = Math.max(0, buildBudget.used - 1);
       continue;
     }
 
@@ -4472,6 +4645,10 @@ async function runTurnWithStallRetry(
     // common case where the human queued a follow-up while the model was
     // streaming its final assistant turn (no tool_use → no drain seam).
     if (state.queuedBlocks.length > 0) {
+      // Queued while the build reached its checkpoint: the follow-up is the
+      // go-ahead, so it gets a fresh batch instead of the one round left.
+      const queuedCheckpoint = checkpointBudget(finalOutcome?.detail);
+      if (queuedCheckpoint) queuedCheckpoint.limit = queuedCheckpoint.used + buildCheckpointExtension(queuedCheckpoint);
       const next = drainQueuedBlocks();
       progressState.retryCount = 0;
       stalledByWatchdog = false;
@@ -4545,6 +4722,11 @@ async function runTurnWithStallRetry(
     if (deferredAutoCompact) {
       deferredAutoCompact = false;
       void maybeAutoCompact();
+    }
+    // An approved plan's build that finished on its own (not on a question
+    // card for the user) is done: record how it compared with the estimate.
+    if (buildBudget && !toggles.planFirst && finalOutcome?.reason === 'end_turn' && finalOutcome.detail !== ASK_USER_TOOL) {
+      endBuildBudget('completed');
     }
     broadcastChatChanged();
     // The turn truly ended (retries/queued follow-ups `continue` above and never

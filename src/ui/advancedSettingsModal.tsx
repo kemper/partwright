@@ -542,6 +542,60 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={200} max={8000} integer
           onChange={v => set('ai', 'reviewNoteMaxChars', v)}
         />
+        <Field cfgKey="ai.planAssessMaxRounds"
+          label="Plan: assessment rounds"
+          hint='Most tool rounds an "Assess first" plan may spend inspecting before it reports.'
+          tooltip="In plan mode, the Assess-first style looks at your attachments and the current model with read-only tools before planning. This caps how many tool rounds that look may take, so the assessment itself stays cheap."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.planAssessMaxRounds}
+          value={c.ai.planAssessMaxRounds}
+          min={2} max={40} integer
+          onChange={v => set('ai', 'planAssessMaxRounds', v)}
+        />
+        <Field cfgKey="ai.planCheckpointExtensionFraction"
+          label="Plan: rounds per Keep going (fraction)"
+          hint="At a plan checkpoint, Keep going grants this fraction of the plan's estimated maximum rounds."
+          tooltip="Building an approved plan stops at the plan's estimated maximum rounds (a checkpoint). Keep going grants another batch: this fraction of that maximum, but never fewer than the minimum below."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.planCheckpointExtensionFraction}
+          value={c.ai.planCheckpointExtensionFraction}
+          min={0.1} max={2}
+          onChange={v => set('ai', 'planCheckpointExtensionFraction', v)}
+        />
+        <Field cfgKey="ai.planCheckpointMinExtension"
+          label="Plan: minimum rounds per Keep going"
+          hint="The fewest rounds a Keep going at a plan checkpoint grants."
+          tooltip="Keeps a small plan's checkpoint from granting only one or two rounds at a time."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.planCheckpointMinExtension}
+          value={c.ai.planCheckpointMinExtension}
+          min={1} max={64} integer
+          onChange={v => set('ai', 'planCheckpointMinExtension', v)}
+        />
+        <Field cfgKey="ai.planCostSampleRounds"
+          label="Plan: rounds sampled for cost"
+          hint="Recent priced rounds of the chat averaged to turn a plan's round estimate into dollars."
+          tooltip="The plan card shows an estimated cost: the plan's round range times this chat's average cost per round, over this many of its most recent rounds."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.planCostSampleRounds}
+          value={c.ai.planCostSampleRounds}
+          min={1} max={200} integer
+          onChange={v => set('ai', 'planCostSampleRounds', v)}
+        />
+        <Field cfgKey="ai.planCalibrationMaxEntries"
+          label="Plan: builds kept for calibration"
+          hint="Past plan-mode builds (estimate vs actual) remembered in this browser."
+          tooltip="Each build of an approved plan records how many rounds and dollars it planned and actually used. The planner sees a summary so its next estimates can correct for being too optimistic."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.planCalibrationMaxEntries}
+          value={c.ai.planCalibrationMaxEntries}
+          min={1} max={500} integer
+          onChange={v => set('ai', 'planCalibrationMaxEntries', v)}
+        />
+        <Field cfgKey="ai.planCalibrationMinBuilds"
+          label="Plan: builds before calibration"
+          hint="Past builds needed before the calibration summary is shown and sent to the planner."
+          tooltip="A summary of one or two builds is noise; this waits until there are enough to say something."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.planCalibrationMinBuilds}
+          value={c.ai.planCalibrationMinBuilds}
+          min={1} max={50} integer
+          onChange={v => set('ai', 'planCalibrationMinBuilds', v)}
+        />
       </Section>
 
       <Section title="AI — geometry timeouts">
