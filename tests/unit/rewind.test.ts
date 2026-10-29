@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { repairToolHistory } from '../../src/ai/historyRepair';
 import {
   countChapters, countSteps, isChapterStart, isStepStart, mergeBySeq,
-  repairUndo, rewindCutIndex, takeFirstStep,
+  planRewind, repairUndo, rewindCutIndex, takeFirstStep,
 } from '../../src/ai/rewind';
 import type { ChatMessage } from '../../src/ai/types';
 
@@ -125,8 +125,8 @@ describe('mergeBySeq', () => {
   });
 });
 
-describe('repairUndo', () => {
-  it('reverses the repair a chapter cut at a queued follow-up triggers', () => {
+describe('planRewind', () => {
+  it('a chapter cut at a queued follow-up keeps its real tool results and strips only the text', () => {
     seq = 0;
     const before = [
       typed('go'),
@@ -135,23 +135,52 @@ describe('repairUndo', () => {
       callTool('t2'),
       results('t2'),
     ];
-    const cut = rewindCutIndex(before, 'chapter');
-    expect(cut).toBe(2);
-    const kept = before.slice(0, cut);
-    const removed = before.slice(cut);
+    const plan = planRewind(before, 'chapter')!;
+    expect(plan.kept.map(m => m.id)).toEqual(['m0', 'm1', 'm2']);
+    expect(plan.kept[2].blocks).toEqual([]);
+    expect(plan.kept[2].toolResults).toEqual(before[2].toolResults);
+    expect(plan.toPut).toEqual([plan.kept[2]]);
+    expect(plan.toDeleteIds).toEqual(['m3', 'm4']);
+    // No invented "interrupted" result: the kept history is already valid.
+    expect(repairToolHistory(plan.kept).changed).toBe(false);
+
+    // Restoring step by step puts the original carrier (text included) back.
+    let h = plan.kept;
+    let rest = plan.entry;
+    while (rest.length > 0) {
+      const next = takeFirstStep(rest);
+      h = mergeBySeq(h, next.step);
+      rest = next.rest;
+    }
+    expect(h).toEqual(before);
+  });
+
+  it('drops ephemeral bubbles from the rewound entry', () => {
+    const h = longRun();
+    const plan = planRewind(h, 'step')!;
+    expect(plan.entry.map(m => m.id)).toEqual(['m7', 'm8']);
+    expect(plan.toDeleteIds).toEqual(['m7', 'm8']);
+    expect(plan.kept).toHaveLength(7);
+  });
+
+  it('is null when there is nothing to rewind', () => {
+    expect(planRewind([], 'step')).toBeNull();
+  });
+});
+
+describe('repairUndo', () => {
+  it('reverses a repair exactly (synthetic carrier removed, originals back)', () => {
+    seq = 0;
+    const before = [typed('go'), callTool('t1'), results('t1')];
+    const kept = before.slice(0, 2); // orphaned t1
     const repair = repairToolHistory(kept);
-    expect(repair.changed).toBe(true); // t1 is orphaned → synthetic carrier appended
+    expect(repair.changed).toBe(true);
     const undo = repairUndo(kept, repair)!;
     expect(undo.removeIds).toHaveLength(1);
-
-    // Step forward: undo the repair, then restore the first step.
     const gone = new Set(undo.removeIds);
     let h = mergeBySeq(repair.messages.filter(m => !gone.has(m.id)), undo.restore);
-    const { step, rest } = takeFirstStep(removed);
-    h = mergeBySeq(h, step);
-    h = mergeBySeq(h, rest);
+    h = mergeBySeq(h, [before[2]]);
     expect(h).toEqual(before);
-    expect(repairToolHistory(h).changed).toBe(false);
   });
 
   it('is undefined when the repair changed nothing', () => {

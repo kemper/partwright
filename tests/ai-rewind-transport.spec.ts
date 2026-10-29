@@ -105,6 +105,21 @@ test.describe('AI chat rewind transport', () => {
     await expect(banner).toContainText('Rewound 4 steps (incl. 1 of your message)');
     expect(await chatIds(page, id)).toEqual(['r-ask', 'r-plan']);
 
+    // Rewind the whole chat, then change session state (saving a version
+    // reloads the chat): the rewound steps must survive the reload.
+    await btn('skipBack').click();
+    await expect(panel).not.toContainText('Make a wall bracket');
+    expect(await chatIds(page, id)).toEqual([]);
+    await page.evaluate(async () => {
+      const w = window as unknown as { partwright: { saveVersion: (label: string) => Promise<unknown> } };
+      await w.partwright.saveVersion('after rewind');
+    });
+    await page.waitForTimeout(500);
+    await expect(btn('skipForward')).toBeEnabled();
+    await btn('skipForward').click();
+    await expect(panel).toContainText('Plan: base plate');
+    await expect(panel).not.toContainText('Plan approved');
+
     // ⏭ restores everything up to the next human message — here, the end.
     await btn('skipForward').click();
     await expect(panel).toContainText('Adding the fillets');

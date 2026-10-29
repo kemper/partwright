@@ -49,8 +49,8 @@ import { onOwnershipChange } from '../storage/sessionLock';
 import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
 import { activeModel, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolCall, type PersistedToolResult, type Preset, type Provider, type TurnOutcomeReason } from '../ai/types';
 import { matchSlashCommands, parseSlashCommand, slashMenuPrefix, type SlashCommandName, type SlashCommandSpec } from '../ai/slashCommands';
-import { repairToolHistory, hasOrphanedToolCalls, isToolHistoryMismatchError } from '../ai/historyRepair';
-import { countChapters, countSteps, isChapterStart, isEphemeralMessage, mergeBySeq, repairUndo, rewindCutIndex, takeFirstStep, type RepairUndo, type RewindEntry, type RewindKind } from '../ai/rewind';
+import { repairToolHistory, hasOrphanedToolCalls, isEphemeral, isToolHistoryMismatchError } from '../ai/historyRepair';
+import { countChapters, countSteps, isChapterStart, mergeBySeq, planRewind, repairUndo, rewindCutIndex, takeFirstStep, type RepairUndo, type RewindEntry, type RewindKind } from '../ai/rewind';
 import { cancelCurrentExecution } from '../geometry/engine';
 import { errorLog } from '../diagnostics/errorLog';
 import { showToast } from './toast';
@@ -670,9 +670,10 @@ export function setAiPanelRouteActive(active: boolean): void {
 
 async function loadHistoryForCurrentSession(): Promise<void> {
   state.history = await listMessages(state.sessionId);
-  // A fresh read (session switch, peer-tab edit, compaction) invalidates any
-  // rewound slice — it belonged to the history we just replaced.
-  state.rewindStack = [];
+  // Rewound steps belong to one session's chat — drop them when this read is
+  // for another one. A same-session reload (saving or loading a version,
+  // compaction) leaves the tail they continue untouched, so they stay.
+  if (state.rewindStack[0]?.messages[0]?.sessionId !== state.sessionId) state.rewindStack = [];
   // Mid-turn reloads (auto-compaction, stall retries) can run before this
   // turn's plan request is persisted; the turn re-syncs when it ends.
   if (!state.inFlight) syncPendingPlanFromHistory();
@@ -684,7 +685,13 @@ async function loadHistoryForCurrentSession(): Promise<void> {
  *  Only while the Plan pill is on: turning it off is how the user leaves plan
  *  mode and keeps the conversation (Discard deletes it). */
 function syncPendingPlanFromHistory(): void {
-  const pending = loadSettings().toggles.planFirst ? derivePendingPlan(state.history) : null;
+  let pending = loadSettings().toggles.planFirst ? derivePendingPlan(state.history) : null;
+  // A plan request whose reply isn't in the history (e.g. stepped back past
+  // it) has no plan to build yet — Resume or Send re-plans instead.
+  if (pending) {
+    const reply = latestPlanReply(state.history, pending.requestIndex);
+    if (!reply.awaitingAnswers && reply.text.trim().length === 0) pending = null;
+  }
   state.pendingPlanApproval = pending
     ? {
       originalText: splitPartSelectionContext(pending.requestWords).rest,
@@ -843,6 +850,8 @@ function broadcastChatChanged(): void {
  *  during an active turn). */
 async function reloadChatFromPeer(sessionId: string): Promise<void> {
   if (sessionId !== state.sessionId || state.inFlight) return;
+  // Another tab edited this chat, so rewound steps no longer fit its tail.
+  state.rewindStack = [];
   await loadHistoryForCurrentSession();
   renderTranscript();
   renderCostMeter();
@@ -859,6 +868,7 @@ function applyOwnership(owned: boolean): void {
   // The plan bar and question cards are owner-only controls.
   renderPlanApprovalBar();
   refreshAskUserCards();
+  updateRewindButtons();
   // Becoming a viewer mid-turn (another tab took control): stop our run.
   if (!writeOwner) stopActiveTurn();
   // Gaining write-ownership of a real session — "Take control" in a new tab —
@@ -2562,7 +2572,7 @@ async function retryFailedTurn(errorMsgId: string): Promise<void> {
   progressState.retryCount = 0;
   stalledByWatchdog = false;
   pinTranscriptToBottom();
-  await runTurnWithStallRetry(apiKey, settings.toggles, []);
+  await runTurnWithStallRetry(apiKey, continuationToggles(settings.toggles), []);
 }
 
 /** Rendered for turns that auto-stopped early but can be picked back up — the
@@ -2700,7 +2710,7 @@ async function resumeFromNotice(noticeMsgId: string, raiseSpendCap: boolean): Pr
   renderTranscript();
   progressState.retryCount = 0;
   stalledByWatchdog = false;
-  await runTurnWithStallRetry(apiKey, settings.toggles, []);
+  await runTurnWithStallRetry(apiKey, continuationToggles(settings.toggles), []);
 }
 
 /** Subtle centered divider for an auto-continue nudge (the synthetic "keep
@@ -2852,9 +2862,13 @@ async function launchReview(): Promise<void> {
     sessionId: state.sessionId,
     history: state.history,
     onReviewPosted: (msg) => {
+      // The review judged the current (rewound) state — restoring steps after
+      // it would put them out of order, so they're discarded.
+      state.rewindStack = [];
       state.history.push(msg);
       renderTranscript();
       renderCostMeter();
+      updateRewindButtons();
       setTransientStatus('Review posted to the chat.');
     },
   });
@@ -3434,10 +3448,34 @@ function buildRewindTransport(): HTMLElement {
 
 async function runTransportAction(action: TransportAction): Promise<void> {
   switch (action) {
-    case 'skipBack': return rewindHistory('chapter');
-    case 'stepBack': return rewindHistory('step');
-    case 'stepForward': return restoreRewound('step');
-    case 'skipForward': return restoreRewound('chapter');
+    case 'skipBack': return withRewindLock(() => rewindHistory('chapter'));
+    case 'stepBack': return withRewindLock(() => rewindHistory('step'));
+    case 'stepForward': return withRewindLock(() => restoreRewound('step'));
+    case 'skipForward': return withRewindLock(() => restoreRewound('chapter'));
+  }
+}
+
+/** True while a rewind/restore is writing to IndexedDB. Sends, resumes and
+ *  further rewinds wait it out, so a turn can't start on a half-applied edit
+ *  (it would reuse the removed messages' seqs, and the stale entry would be
+ *  pushed after the turn cleared the stack). */
+let rewindBusy = false;
+
+/** Run one rewind/restore exclusively. Every edit writes IndexedDB before it
+ *  touches memory or the stack; if a write fails, memory is re-read from
+ *  IndexedDB (the stack only changes after its writes succeed). */
+async function withRewindLock(op: () => Promise<void>): Promise<void> {
+  if (rewindBusy || state.inFlight || !writeOwner) return;
+  rewindBusy = true;
+  updateRewindButtons();
+  try {
+    await op();
+  } catch (err) {
+    showToast(`Couldn't rewind the chat: ${err instanceof Error ? err.message : String(err)}`, { variant: 'warn', source: 'ai' });
+    try { await loadHistoryForCurrentSession(); } catch { /* keep what we have */ }
+  } finally {
+    rewindBusy = false;
+    afterRewindChange();
   }
 }
 
@@ -3446,50 +3484,44 @@ async function runTransportAction(action: TransportAction): Promise<void> {
  *  (`'chapter'`). The removed slice is pushed onto rewindStack so step/skip
  *  forward can restore it. */
 async function rewindHistory(kind: RewindKind): Promise<void> {
-  if (state.inFlight || !writeOwner) return;
-  const cutIndex = rewindCutIndex(state.history, kind);
-  if (cutIndex < 0) return;
-  const removed = state.history.splice(cutIndex);
-  // The error bubble / stop notice were never persisted — drop, don't restore.
-  const persisted = removed.filter(m => !isEphemeralMessage(m));
-  await deleteMessages(persisted.map(m => m.id));
-  // A chapter cut at a follow-up the human queued mid-run lands on a
-  // tool-result carrier, which exposes the tool_use it answered — that would
-  // 400 the very next send. Repair the exposed history (a no-op for every
-  // step cut) and remember how to reverse it for a later step forward.
+  const plan = planRewind(state.history, kind);
+  if (!plan) return;
+  if (plan.toDeleteIds.length > 0) await deleteMessages(plan.toDeleteIds);
+  if (plan.toPut.length > 0) await putMessages(plan.toPut);
+  state.history = plan.kept;
+  const entry: RewindEntry = { messages: plan.entry };
+  state.rewindStack.push(entry);
+  // Belt and braces: every cut lands on a clean boundary, but if the exposed
+  // tail still breaks the tool_use/tool_result invariant (which would 400 the
+  // next send), repair it — and remember how to reverse that for a restore.
   const undo = await persistToolHistoryRepair();
-  state.rewindStack.push({ messages: persisted, ...(undo ? { undo } : {}) });
-  afterRewindChange();
+  if (undo) entry.undo = undo;
 }
 
 /** Re-apply rewound history: one step (`'step'`), or steps up to the next
  *  human-written message (`'chapter'`). */
 async function restoreRewound(kind: RewindKind): Promise<void> {
-  if (state.inFlight || !writeOwner) return;
   if (!(await restoreNextStep())) return;
   if (kind === 'chapter') {
     while (state.rewindStack.length > 0 && !isChapterStart(state.rewindStack[state.rewindStack.length - 1].messages[0])) {
       await restoreNextStep();
     }
   }
-  afterRewindChange();
 }
 
 /** Restore the first step of the top rewind entry (undoing the repair its cut
  *  triggered first). False when there's nothing to restore. */
 async function restoreNextStep(): Promise<boolean> {
-  const top = state.rewindStack.pop();
+  const top = state.rewindStack[state.rewindStack.length - 1];
   if (!top) return false;
-  if (top.undo) {
-    const { restore, removeIds } = top.undo;
-    if (removeIds.length > 0) await deleteMessages(removeIds);
-    if (restore.length > 0) await putMessages(restore);
-    const gone = new Set(removeIds);
-    state.history = mergeBySeq(state.history.filter(m => !gone.has(m.id)), restore);
-  }
   const { step, rest } = takeFirstStep(top.messages);
-  if (step.length > 0) await putMessages(step);
-  state.history = mergeBySeq(state.history, step);
+  const removeIds = top.undo?.removeIds ?? [];
+  const restore = [...(top.undo?.restore ?? []), ...step];
+  if (removeIds.length > 0) await deleteMessages(removeIds);
+  if (restore.length > 0) await putMessages(restore);
+  const gone = new Set(removeIds);
+  state.history = mergeBySeq(state.history.filter(m => !gone.has(m.id)), restore);
+  state.rewindStack.pop();
   if (rest.length > 0) state.rewindStack.push({ messages: rest });
   return true;
 }
@@ -3521,15 +3553,8 @@ async function persistToolHistoryRepair(): Promise<RepairUndo | undefined> {
   return repairUndo(before, repair);
 }
 
-/** Every rewound message, in conversation order (top of the stack first). */
-function rewoundMessages(): ChatMessage[] {
-  const out: ChatMessage[] = [];
-  for (let i = state.rewindStack.length - 1; i >= 0; i--) out.push(...state.rewindStack[i].messages);
-  return out;
-}
-
 function updateRewindButtons(): void {
-  const idle = !state.inFlight && writeOwner;
+  const idle = !state.inFlight && !rewindBusy && writeOwner;
   const canStepBack = idle && rewindCutIndex(state.history, 'step') >= 0;
   const canSkipBack = idle && rewindCutIndex(state.history, 'chapter') >= 0;
   const canForward = idle && state.rewindStack.length > 0;
@@ -3546,9 +3571,9 @@ function updateRewindButtons(): void {
 /** Banner at the foot of the transcript while history is rewound: what's
  *  hidden, and how to bring it back or carry on from here. */
 function renderRewindBanner(): HTMLElement {
-  const rewound = rewoundMessages();
-  const steps = countSteps(rewound);
-  const chapters = countChapters(rewound);
+  // Count per entry: each entry's first message opens a step of its own.
+  const steps = state.rewindStack.reduce((n, e) => n + countSteps(e.messages), 0);
+  const chapters = state.rewindStack.reduce((n, e) => n + countChapters(e.messages), 0);
   const card = document.createElement('div');
   card.dataset.rewindBanner = 'true';
   card.className = 'max-w-[95%] self-center rounded border border-sky-700/60 bg-sky-900/15 px-3 py-2 flex flex-col gap-2';
@@ -3568,7 +3593,7 @@ function renderRewindBanner(): HTMLElement {
   actions.className = 'flex flex-wrap items-center gap-2 pt-1';
   // Resuming needs a user turn at the tail for the model to answer (a trailing
   // assistant message would read as a prefill).
-  const tail = [...state.history].reverse().find(m => !isEphemeralMessage(m));
+  const tail = [...state.history].reverse().find(m => !isEphemeral(m));
   if (tail?.role === 'user') {
     const resumeBtn = document.createElement('button');
     resumeBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-100 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600';
@@ -3588,22 +3613,38 @@ function renderRewindBanner(): HTMLElement {
 }
 
 async function restoreAllRewound(): Promise<void> {
-  if (state.inFlight || !writeOwner) return;
-  while (await restoreNextStep()) { /* restore every rewound step */ }
-  afterRewindChange();
+  await withRewindLock(async () => {
+    while (await restoreNextStep()) { /* restore every rewound step */ }
+  });
+}
+
+/** Toggles for a turn that continues the existing history (Resume / Keep
+ *  going / Retry) rather than sending a new prompt: with the Plan pill on,
+ *  only a run that's still planning keeps the read-only plan-mode tools — a
+ *  build run (its plan already approved) needs the full list, exactly as
+ *  approvePlan forces. */
+function continuationToggles(toggles: ChatToggles): ChatToggles {
+  return toggles.planFirst && derivePendingPlan(state.history) === null
+    ? { ...toggles, planFirst: false }
+    : toggles;
 }
 
 /** Continue the agent loop from the rewound point — like "Keep going", the
  *  model answers the tail of the history with no new prompt. */
 async function resumeFromRewind(): Promise<void> {
-  if (state.inFlight || !writeOwner) return;
+  if (state.inFlight || rewindBusy || !writeOwner) return;
   const settings = loadSettings();
+  const sessionCap = SPEND_CAP_USD[settings.toggles.maxSpend];
+  if (Number.isFinite(sessionCap) && totalCost(state.history) >= sessionCap) {
+    setTransientStatus(`Session has spent ${formatUsd(totalCost(state.history))} — at or over the ${formatUsd(sessionCap)} cap. Raise the $ cap to continue.`);
+    return;
+  }
   const apiKey = await preflightTurn(settings, () => { void resumeFromRewind(); });
   if (apiKey === PREFLIGHT_ABORT) return;
   progressState.retryCount = 0;
   stalledByWatchdog = false;
   pinTranscriptToBottom();
-  await runTurnWithStallRetry(apiKey, settings.toggles, []);
+  await runTurnWithStallRetry(apiKey, continuationToggles(settings.toggles), []);
 }
 
 // === Send message ===
@@ -3855,6 +3896,8 @@ function positionSlashMenu(): void {
 
 async function sendMessage(): Promise<void> {
   if (state.inFlight) return;
+  // A rewind/restore is mid-write — sending now would race it.
+  if (rewindBusy) return;
   // Another tab is the leader for this session — don't run a second chat loop
   // against the same transcript. The viewer overlay offers "Take control".
   if (!writeOwner) return;

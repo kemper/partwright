@@ -12,13 +12,14 @@
 //     before the latest one — the coarse "undo my last request" jump.
 //
 // Every cut lands on a step boundary, so a step-back never orphans a tool_use.
-// A chapter cut at a queued follow-up can, and the panel's tool-history repair
-// then patches the tail; `repairUndo` records how to reverse that patch so a
-// later step forward restores the history byte-for-byte.
+// A chapter cut at a queued follow-up keeps that carrier's tool results and
+// strips only the human's text (`planRewind`), so it doesn't either. Should the
+// panel's tool-history repair still patch the tail, `repairUndo` records how to
+// reverse it so a later step forward restores the history exactly.
 //
 // Pure logic (no DOM, no IndexedDB) — unit-tested in tests/unit/rewind.test.ts.
 
-import type { HistoryRepairResult } from './historyRepair';
+import { isEphemeral, type HistoryRepairResult } from './historyRepair';
 import type { ChatMessage } from './types';
 
 export type RewindKind = 'step' | 'chapter';
@@ -37,17 +38,11 @@ export interface RewindEntry {
   undo?: RepairUndo;
 }
 
-/** The red error bubble / amber stop notice — in-memory only, never persisted,
- *  so they are dropped (not restored) when the slice they sit in is rewound. */
-export function isEphemeralMessage(m: ChatMessage): boolean {
-  return m.errored === true || m.stopNotice !== undefined;
-}
-
 /** Does a step begin at this message? Every model response does; so does a
  *  user-authored message that isn't a tool-result carrier (a carrier belongs
  *  to the assistant step whose calls it answers). */
 export function isStepStart(m: ChatMessage): boolean {
-  if (isEphemeralMessage(m) || m.compacted) return false;
+  if (isEphemeral(m) || m.compacted) return false;
   if (m.role === 'assistant') return true;
   return m.blocks.length > 0 && !(m.toolResults && m.toolResults.length > 0);
 }
@@ -56,7 +51,7 @@ export function isStepStart(m: ChatMessage): boolean {
  *  prompt, a plan approval, a follow-up queued mid-run — but not the synthetic
  *  auto-continue nudge. */
 export function isChapterStart(m: ChatMessage): boolean {
-  return m.role === 'user' && !isEphemeralMessage(m) && !m.compacted
+  return m.role === 'user' && !isEphemeral(m) && !m.compacted
     && m.blocks.length > 0 && m.autoResumeNudge !== true;
 }
 
@@ -82,6 +77,39 @@ export function rewindCutIndex(history: ChatMessage[], kind: RewindKind): number
   return -1;
 }
 
+/** What one rewind does: the history to keep, the entry to push for a later
+ *  restore, and the IndexedDB writes. Null when there's nothing to rewind. */
+export interface RewindPlan {
+  kept: ChatMessage[];
+  entry: ChatMessage[];
+  toPut: ChatMessage[];
+  toDeleteIds: string[];
+}
+
+/** Plan a rewind of `kind`. Ephemeral bubbles in the removed tail are dropped
+ *  (they were never persisted). A chapter cut that lands on a tool-result
+ *  carrier holding a queued follow-up keeps the carrier — its results are real
+ *  and the tool_use before it still needs them — and strips only the human's
+ *  text; the original carrier leads the entry so a restore puts the text back
+ *  (mergeBySeq replaces it by id). */
+export function planRewind(history: ChatMessage[], kind: RewindKind): RewindPlan | null {
+  const cut = rewindCutIndex(history, kind);
+  if (cut < 0) return null;
+  const at = history[cut];
+  const splitCarrier = at.role === 'user' && (at.toolResults?.length ?? 0) > 0;
+  const tail = history.slice(splitCarrier ? cut + 1 : cut).filter(m => !isEphemeral(m));
+  if (splitCarrier) {
+    const stripped: ChatMessage = { ...at, blocks: [] };
+    return {
+      kept: [...history.slice(0, cut), stripped],
+      entry: [at, ...tail],
+      toPut: [stripped],
+      toDeleteIds: tail.map(m => m.id),
+    };
+  }
+  return { kept: history.slice(0, cut), entry: tail, toPut: [], toDeleteIds: tail.map(m => m.id) };
+}
+
 /** Split a rewound slice into its first step and the rest. The first message
  *  always opens the step (it may be a carrier when a chapter cut landed on a
  *  queued follow-up); the step runs until the next step start. */
@@ -91,7 +119,8 @@ export function takeFirstStep(messages: ChatMessage[]): { step: ChatMessage[]; r
   return { step: messages.slice(0, end), rest: messages.slice(end) };
 }
 
-/** Number of steps in a rewound slice (its first message always counts). */
+/** Number of steps in a rewound slice (its first message always counts, so
+ *  count each rewind entry separately). */
 export function countSteps(messages: ChatMessage[]): number {
   let n = 0;
   messages.forEach((m, i) => { if (i === 0 || isStepStart(m)) n++; });
