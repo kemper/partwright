@@ -691,11 +691,14 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       if (effectiveStopReason === 'end_turn') reason = hasText ? 'end_turn' : 'empty_final';
       else if (effectiveStopReason === 'max_tokens') reason = 'max_tokens';
       else if (effectiveStopReason === 'refusal') reason = 'refusal';
-      // A max_tokens stop with no text and no tool call ran out of room while
-      // still thinking. That reasoning is dropped from history (the API won't
-      // accept a turn that ends in thinking), so "keep going" restarts the
-      // step rather than continuing it — the panel says so.
-      const detail = reason === 'max_tokens' && !hasText && result.toolCalls.length === 0
+      // A max_tokens stop that thought but produced no text and no tool call
+      // ran out of room while still thinking. That reasoning is dropped from
+      // history (the API won't accept a turn that ends in thinking), so "keep
+      // going" restarts the step rather than continuing it — the panel says
+      // so. A Local tool call cut off mid-way also lands here with no text,
+      // but that's not a thinking problem, so it keeps its own hint.
+      const thought = !!result.thinking?.trim() || (result.thinkingBlocks?.length ?? 0) > 0;
+      const detail = reason === 'max_tokens' && !hasText && result.toolCalls.length === 0 && thought && !localTruncated
         ? MAX_TOKENS_WHILE_THINKING
         : effectiveStopReason;
       callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason, detail, iterations: iter + 1 });

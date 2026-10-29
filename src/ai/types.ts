@@ -330,7 +330,7 @@ export interface ChatMessage {
    *  Rendered as a distinct amber notice with a "Keep going" button that
    *  continues the agent loop from the existing history (no new user prompt).
    *  Not persisted to IndexedDB. */
-  stopNotice?: { reason: TurnOutcomeReason; detail?: string; iterations: number };
+  stopNotice?: { reason: TurnOutcomeReason; detail?: string; iterations: number; /** Thinking level a cut-off-while-thinking step ran at. */ ranAtThinking?: ThinkingLevel };
   /** Marks the synthetic user prompt the agent loop injects to auto-continue a
    *  turn that ended without calling `finish` (auto-continue mode). Rendered as
    *  a subtle divider rather than a normal user bubble, but persisted (and sent

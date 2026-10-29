@@ -8,6 +8,7 @@ import { turnCostUsd } from '../../src/ai/cost';
 import { getPricing } from '../../src/ai/catalog';
 import { usageEventFields } from '../../src/ai/diagnostics';
 import { lowerThinkingLevel } from '../../src/ai/thinkingLevels';
+import { isLegacyDefaultThinking } from '../../src/ai/settings';
 
 describe('1-hour prompt cache', () => {
   it('uses the 1-hour cache only at High+ thinking, and only when enabled', () => {
@@ -150,5 +151,15 @@ describe('default Thinking level', () => {
     expect(await thinkingFor({ preset: 'full', toggles: { thinking: 'xhigh' }, settingsRev: 1 })).toBe('xhigh');
     expect(await thinkingFor({ preset: 'custom', toggles: { thinking: 'low' }, settingsRev: 1 })).toBe('low');
     expect(await thinkingFor({ preset: 'custom', toggles: { thinking: 'high' }, settingsRev: 2 })).toBe('high');
+  });
+});
+
+describe('session toggle snapshots', () => {
+  it('treats a High saved without a rev (or below rev 2) as the old default', () => {
+    expect(isLegacyDefaultThinking('high', undefined)).toBe(true);
+    expect(isLegacyDefaultThinking('high', 1)).toBe(true);
+    expect(isLegacyDefaultThinking('high', 2)).toBe(false);
+    expect(isLegacyDefaultThinking('xhigh', undefined)).toBe(false);
+    expect(isLegacyDefaultThinking('low', undefined)).toBe(false);
   });
 });

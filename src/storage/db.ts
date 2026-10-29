@@ -52,7 +52,7 @@ export interface Session {
    *  snapshot (stored opaquely as a record to keep this storage layer decoupled
    *  from the AI types) and `preset` mirrors the settings preset. Sessions saved
    *  before this field gains `toggles` simply restore provider/model only. */
-  aiPreference?: { provider: string; model: string; toggles?: Record<string, unknown>; preset?: string };
+  aiPreference?: { provider: string; model: string; toggles?: Record<string, unknown>; preset?: string; /** AI settings rev the toggles were saved under (absent = before rev 2). */ settingsRev?: number };
   /** Pinned thumbnail camera angle (degrees). When set, captured thumbnails
    *  (catalog tiles, gallery, version snapshots) render from this azimuth /
    *  elevation instead of the default iso 3/4 view — so a faced model can show

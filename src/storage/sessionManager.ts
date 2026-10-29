@@ -946,6 +946,7 @@ export async function setSessionAiPreference(
   model: string | null,
   toggles?: Record<string, unknown>,
   preset?: string,
+  settingsRev?: number,
 ): Promise<void> {
   if (!currentState.session || !model) return;
   // A read-only viewer must not mutate the shared session row, or it would
@@ -955,11 +956,15 @@ export async function setSessionAiPreference(
   const cur = currentState.session.aiPreference;
   const togglesSnap = toggles ?? cur?.toggles;
   const presetVal = preset ?? cur?.preset;
+  // A fresh toggle snapshot is saved under the caller's rev; a reused one
+  // keeps the rev it was saved with.
+  const revVal = toggles ? settingsRev : cur?.settingsRev;
   // Skip the write when nothing meaningful changed (cheap + idempotent).
   if (cur
     && cur.provider === provider
     && cur.model === model
     && (cur.preset ?? undefined) === (presetVal ?? undefined)
+    && cur.settingsRev === revVal
     && JSON.stringify(cur.toggles ?? null) === JSON.stringify(togglesSnap ?? null)) {
     return;
   }
@@ -969,6 +974,7 @@ export async function setSessionAiPreference(
     model,
     ...(togglesSnap ? { toggles: togglesSnap } : {}),
     ...(presetVal ? { preset: presetVal } : {}),
+    ...(revVal !== undefined ? { settingsRev: revVal } : {}),
   };
   await dbUpdateSession(id, { aiPreference });
   if (currentState.session?.id === id) {

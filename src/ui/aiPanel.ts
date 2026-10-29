@@ -15,7 +15,7 @@ import { captureIsoViews, fileToImageSource } from '../ai/images';
 import { PHOTO_BUST_PROMPT } from '../ai/photoModelPrompt';
 import { RECONSTRUCT_PROMPT } from '../ai/reconstructPrompt';
 import { PARTS_PROMPT } from '../ai/partsPrompt';
-import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setCustomContext, setCustomModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
+import { isLegacyDefaultThinking, loadSettings, saveSettings, SETTINGS_REV, setAnthropicModel, setOpenaiModel, setGeminiModel, setCustomContext, setCustomModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd, hasKnownPricing } from '../ai/cost';
 import { getLimits } from '../ai/catalog';
@@ -733,6 +733,7 @@ function recordSessionAiPreference(): void {
       model,
       s.toggles as unknown as Record<string, unknown>,
       s.preset,
+      SETTINGS_REV,
     );
   }
 }
@@ -779,6 +780,9 @@ async function applySessionAiPreference(): Promise<void> {
     // else, then take the context from the saved endpoint the restored URL
     // points at (or keep the current one when it's the same URL).
     const { customContext: _snapshotContext, ...restorable } = pref.toggles as Record<string, unknown>;
+    // A snapshot saved before the Medium default carries the old High along;
+    // lower it the same way the tab's own settings were (settings rev 2).
+    if (isLegacyDefaultThinking(restorable.thinking, pref.settingsRev)) restorable.thinking = 'medium';
     // Full per-session toggle snapshot (current format): restore provider,
     // every per-provider model id, and all the toggles in one shot. Skip when
     // already applied so the focus / take-control re-assert is a cheap no-op
@@ -2619,11 +2623,7 @@ function renderStopNotice(msg: ChatMessage): HTMLElement {
     lowerBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-100 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600';
     lowerBtn.textContent = `↻ Retry at ${THINKING_LEVELS[lowerThinking].label} thinking`;
     lowerBtn.title = 'Lower the Thinking level one step and run this step again.';
-    lowerBtn.addEventListener('click', () => {
-      applyToggleChange({ thinking: lowerThinking });
-      renderToggleStrip();
-      void resumeFromNotice(msg.id, false);
-    });
+    lowerBtn.addEventListener('click', () => { void resumeFromNotice(msg.id, false, lowerThinking); });
     actions.appendChild(lowerBtn);
   }
 
@@ -2656,7 +2656,7 @@ function renderStopNotice(msg: ChatMessage): HTMLElement {
  *  while still thinking, or null (not that stop, or nothing lower). */
 function thinkingCutoffRetryLevel(notice: NonNullable<ChatMessage['stopNotice']>): ChatToggles['thinking'] | null {
   if (notice.reason !== 'max_tokens' || notice.detail !== MAX_TOKENS_WHILE_THINKING) return null;
-  return lowerThinkingLevel(loadSettings().toggles.thinking);
+  return lowerThinkingLevel(notice.ranAtThinking ?? loadSettings().toggles.thinking);
 }
 
 function stopNoticeTitle(notice: NonNullable<ChatMessage['stopNotice']>): string {
@@ -2711,7 +2711,7 @@ function spendTierLabel(id: ChatToggles['maxSpend']): string {
  *  user message, so the model resumes from the last real turn (its tool
  *  results or its own last message). The per-turn iteration budget resets,
  *  so an iteration-cap stop gets a fresh batch of round-trips. */
-async function resumeFromNotice(noticeMsgId: string, raiseSpendCap: boolean): Promise<void> {
+async function resumeFromNotice(noticeMsgId: string, raiseSpendCap: boolean, lowerThinkingTo?: ChatToggles['thinking']): Promise<void> {
   if (state.inFlight) {
     setTransientStatus('Wait for the current turn to finish before resuming.');
     return;
@@ -2727,12 +2727,19 @@ async function resumeFromNotice(noticeMsgId: string, raiseSpendCap: boolean): Pr
     }
   }
 
-  const settings = loadSettings();
+  let settings = loadSettings();
   // Honor the (possibly just-raised) session spend cap before spending more.
   const sessionCap = SPEND_CAP_USD[settings.toggles.maxSpend];
   if (Number.isFinite(sessionCap) && totalCost(state.history) >= sessionCap) {
     setTransientStatus(`Session has spent ${formatUsd(totalCost(state.history))} — at or over the ${formatUsd(sessionCap)} cap. Raise the $ cap to continue.`);
     return;
+  }
+  // Retry-at-lower-thinking: only change the level once the resume is going
+  // ahead, so a rejected click doesn't silently rewrite this session's setting.
+  if (lowerThinkingTo && settings.toggles.thinking !== lowerThinkingTo) {
+    applyToggleChange({ thinking: lowerThinkingTo });
+    renderToggleStrip();
+    settings = loadSettings();
   }
 
   const apiKey = await preflightTurn(settings, () => { void resumeFromNotice(noticeMsgId, false); });
@@ -4673,7 +4680,16 @@ function pushStopNotice(outcome: TurnOutcome): void {
     blocks: [],
     createdAt: Date.now(),
     seq: (last?.seq ?? 0) + 1,
-    stopNotice: { reason: outcome.reason, detail: outcome.detail, iterations: outcome.iterations },
+    stopNotice: {
+      reason: outcome.reason,
+      detail: outcome.detail,
+      iterations: outcome.iterations,
+      // The level the step ran at, so the retry button doesn't follow later
+      // pill changes.
+      ...(outcome.reason === 'max_tokens' && outcome.detail === MAX_TOKENS_WHILE_THINKING
+        ? { ranAtThinking: loadSettings().toggles.thinking }
+        : {}),
+    },
   };
   state.history.push(msg);
   renderTranscript();

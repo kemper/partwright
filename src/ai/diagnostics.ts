@@ -6,7 +6,9 @@
 // moment a costly or stuck turn makes you reload is exactly when you want
 // it. sessionStorage is per tab and cleared when the tab closes, so nothing
 // leaks into other windows (see "Cross-Tab Isolation" in CLAUDE.md) and the
-// records, which can hold request fragments, never sit in IndexedDB.
+// records, which can hold request fragments, never sit in IndexedDB. (A
+// browser "Duplicate tab" copies sessionStorage once, so the copy starts with
+// this log — a one-time snapshot, never a live link.)
 
 import type { Provider, TurnUsage } from './types';
 import { getConfig } from '../config/appConfig';

@@ -139,7 +139,7 @@ export const AUTO_REVIEW_MAX_FIX_ROUNDS = 3;
 const DEFAULT_AUTO_REVIEW: AutoReviewSettings = { provider: 'same', model: '', fixRounds: 1, includeConversation: true };
 
 /** Current settings-migration revision (see AiSettings.settingsRev). */
-const SETTINGS_REV = 2;
+export const SETTINGS_REV = 2;
 const DEFAULT_GEMINI_MODEL: GeminiModelId = 'gemini-flash-latest';
 
 /** Default Base URL for the Custom (OpenAI-compatible) provider. Points at
@@ -649,8 +649,14 @@ function migrateAutoCompactMode(partial: LegacyAiSettings): AiSettings['autoComp
  *  settings then carry rev 2. Full's XHigh is a different level and stays. */
 function migrateThinking(partial: LegacyAiSettings, stored: ChatToggles['thinking'] | null): ChatToggles['thinking'] {
   if (stored === null) return DEFAULT_SETTINGS.toggles.thinking;
-  if ((partial.settingsRev ?? 0) < 2 && stored === 'high') return 'medium';
-  return stored;
+  return isLegacyDefaultThinking(stored, partial.settingsRev) ? 'medium' : stored;
+}
+
+/** Whether a stored Thinking level is the pre-rev-2 High default (see
+ *  migrateThinking). Also applied to a session's remembered toggle snapshot,
+ *  which carries the rev it was saved under (none = before rev 2). */
+export function isLegacyDefaultThinking(thinking: unknown, rev: number | undefined): boolean {
+  return (rev ?? 0) < 2 && thinking === 'high';
 }
 
 function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
