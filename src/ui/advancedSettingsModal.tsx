@@ -1969,6 +1969,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={2000} max={60_000} integer
           onChange={v => set('ui', 'undoToastDurationMs', v)}
         />
+        <Field cfgKey="ui.modelConsoleAutoHideMs"
+          label="Console pill auto-hide"
+          unit="ms"
+          hint="How long the console pill stays in the viewport corner after a run prints. 0 = until dismissed."
+          tooltip="When model code prints with console.log or console.warn, a small Console pill with the line count appears in the viewport's lower-left corner. Click it to read the output. It fades after this long; output with errors stays until you dismiss it. Show console output in the command palette brings it back."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.modelConsoleAutoHideMs}
+          value={c.ui.modelConsoleAutoHideMs}
+          min={0} max={600_000} integer
+          onChange={v => set('ui', 'modelConsoleAutoHideMs', v)}
+        />
         <Field cfgKey="ui.deletedObjectRetentionDays"
           label="Keep deleted objects"
           unit="days"
