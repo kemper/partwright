@@ -27,8 +27,8 @@ export interface AiTraceOptions {
 }
 
 /** Redact secret-shaped substrings from every string in the trace, except
- *  base64 image payloads (`data`), which can't hold a key and which a
- *  pattern could otherwise corrupt. Mutates in place. */
+ *  base64 image payloads (`data` beside a `mediaType`), which can't hold a
+ *  key and which a pattern could otherwise corrupt. Mutates in place. */
 function redactDeep(value: unknown): unknown {
   if (typeof value === 'string') return redactSecrets(value);
   if (Array.isArray(value)) {
@@ -38,7 +38,7 @@ function redactDeep(value: unknown): unknown {
   if (value && typeof value === 'object') {
     const obj = value as Record<string, unknown>;
     for (const k of Object.keys(obj)) {
-      if (k === 'data' && typeof obj[k] === 'string') continue;
+      if (k === 'data' && typeof obj[k] === 'string' && typeof obj.mediaType === 'string') continue;
       obj[k] = redactDeep(obj[k]);
     }
   }
@@ -81,7 +81,8 @@ export async function downloadAiSessionTrace(opts: AiTraceOptions = {}): Promise
   if (!trace) return null;
   const json = JSON.stringify(trace, null, 2);
   const blob = new Blob([json], { type: 'application/json' });
-  const filename = getExportFilename('json', `${trace.session.name ?? 'global'}-ai-trace`);
+  const label = trace.session.name ?? (trace.session.id === GLOBAL_CHAT_BUCKET ? 'global' : trace.session.id);
+  const filename = getExportFilename('json', `${label}-ai-trace`);
   downloadBlob(blob, filename, 'AI trace');
   return { filename, bytes: blob.size, trace };
 }

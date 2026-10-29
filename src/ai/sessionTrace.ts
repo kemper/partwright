@@ -10,6 +10,9 @@
 import type { ApiCallTrace, ChatMessage, ChatToggles, CompactionTrace, ImageSource, PersistedToolCall, TurnUsage } from './types';
 import type { DiagnosticEvent } from './diagnostics';
 import { turnCostUsd } from './cost';
+import { CARRIED_ATTACHMENTS_NOTE } from './compactionAttachments';
+import { AUTO_REVIEW_FOLLOWUP_TAG } from './autoReview';
+import { userWords } from './userWords';
 
 export const TRACE_FORMAT = 'partwright-ai-session-trace';
 export const TRACE_VERSION = 1;
@@ -20,10 +23,11 @@ const README = [
   'Partwright AI session trace. One in-app AI chat, oldest first.',
   'summary: totals, cache efficiency, per-model / per-tool / per-turn rollups, and the heaviest calls + tool results.',
   'turns: one entry per human prompt — every API call and tool run until the next prompt, with the tool sequence (the agent\'s steps).',
-  'timeline: every persisted message. kind = user | tool_results (tool outputs posted back to the model, plus any text the human queued mid-turn) | assistant (one API call) | auto_resume (synthetic "keep going" nudge) | compaction_summary.',
-  'assistant.call: provider, model, stopReason, thinking level, agent-loop iteration, request shape (messages, offered tool names, tool-schema chars, system prompt + suffix chars, history chars, chars pruned, images sent/elided), and transient retries.',
+  'timeline: every persisted message. kind = user | tool_results (tool outputs posted back to the model, plus any text the human queued mid-turn) | assistant (one agent API call) | auto_resume (synthetic "keep going" nudge) | auto_review_followup (fixes requested by the automatic end-of-task review) | review (a cross-provider review call) | compaction_summary | carried_attachments (images re-attached after a compaction).',
+  'assistant entries: provider, model, stopReason, thinking level, agent-loop iteration, request shape (messages, offered tool names, tool-schema chars, system prompt + suffix chars, history chars, chars pruned, images sent/elided), and transient retries. request.tools is null when the list was not recorded (its call was compacted away).',
+  'summary.apiCalls counts agent calls plus compaction summarizer calls; reviews are counted in summary.reviews. All of them are in tokens and costUsd. apiMs is successful-attempt time only; failed transient attempts are in each call\'s retries.',
   'Tokens: inputTokens = uncached prompt tokens; cacheReadTokens = prompt tokens served from the provider cache; cacheWriteTokens = prompt tokens written to cache; promptTokens = their sum. cacheHitRate = cacheRead / promptTokens.',
-  'costUsd comes from the app\'s pricing table at the time of the call; uncachedCostUsd re-prices the same call as if nothing were cached, so cacheSavingsUsd = uncached − actual (negative = cache writes cost more than they saved).',
+  'costUsd was recorded at call time; uncachedCostUsd re-prices the call with the CURRENT pricing table as if nothing were cached, so cacheSavingsUsd = uncached − actual (negative = cache writes cost more than they saved; a pricing change since the call also shows up here).',
   'Messages replaced by a compaction are deleted; their totals survive on the compaction_summary entry (compaction.dropped) and are included in summary.totals.',
   'callLog: the AI Call Log for this browser tab since page load (also covers calls that left no message: errors, compaction, reviews, key checks). errors: AI entries from the Diagnostic Log, secrets redacted.',
   'Messages written before per-call telemetry existed have no `call`; their provider/model show as "unknown".',
@@ -132,7 +136,24 @@ function uncachedCost(call: ApiCallTrace | undefined, t: TokenTotals): number | 
 /** A user message that starts a new turn: the human typed (or attached)
  *  something, rather than the loop posting tool results or a nudge. */
 function isHumanPrompt(m: ChatMessage): boolean {
-  return m.role === 'user' && !m.autoResumeNudge && (m.toolResults?.length ?? 0) === 0 && m.blocks.length > 0;
+  return m.role === 'user' && !m.autoResumeNudge && (m.toolResults?.length ?? 0) === 0 && m.blocks.length > 0
+    && !isCarriedAttachments(m) && !isAutoReviewFollowup(m);
+}
+
+/** The images a compaction re-attaches just before its summary. */
+function isCarriedAttachments(m: ChatMessage): boolean {
+  return m.role === 'user' && userWords(m.blocks) === CARRIED_ATTACHMENTS_NOTE;
+}
+
+/** The fix-up prompt the automatic end-of-task review sends the agent. */
+function isAutoReviewFollowup(m: ChatMessage): boolean {
+  return m.role === 'user' && !m.toolResults?.length && userWords(m.blocks).startsWith(AUTO_REVIEW_FOLLOWUP_TAG);
+}
+
+function reviewBlock(m: ChatMessage): { provider: string; model: string; text: string } | null {
+  if (m.role !== 'assistant') return null;
+  const b = m.blocks.find(x => x.type === 'review');
+  return b ? b as { provider: string; model: string; text: string } : null;
 }
 
 function textOf(m: ChatMessage, type: 'text' | 'thinking'): string {
@@ -140,15 +161,22 @@ function textOf(m: ChatMessage, type: 'text' | 'thinking'): string {
 }
 
 function kindOf(m: ChatMessage): string {
-  if (m.role === 'assistant') return m.compacted ? 'compaction_summary' : 'assistant';
+  if (m.role === 'assistant') return m.compacted ? 'compaction_summary' : reviewBlock(m) ? 'review' : 'assistant';
   if (m.autoResumeNudge) return 'auto_resume';
   if ((m.toolResults?.length ?? 0) > 0) return 'tool_results';
+  if (isCarriedAttachments(m)) return 'carried_attachments';
+  if (isAutoReviewFollowup(m)) return 'auto_review_followup';
   return 'user';
 }
 
 function modelKey(m: ChatMessage): string {
-  return m.call ? `${m.call.provider}/${m.call.model}` : 'unknown';
+  if (m.call) return `${m.call.provider}/${m.call.model}`;
+  const review = reviewBlock(m);
+  return review ? `${review.provider}/${review.model}` : 'unknown';
 }
+
+/** Providers that never report prompt-cache reads, so a zero is not a miss. */
+const NO_PROMPT_CACHE = new Set(['local', 'custom']);
 
 /** Build the trace. Deterministic for a given input (exportedAt aside). */
 export function buildSessionTrace(input: SessionTraceInput) {
@@ -172,6 +200,7 @@ export function buildSessionTrace(input: SessionTraceInput) {
   let abortedCalls = 0;
   let autoResumes = 0;
   let humanPrompts = 0;
+  let reviews = 0;
   let images = 0;
   let imageBytes = 0;
   const stopReasons: Record<string, number> = {};
@@ -182,6 +211,9 @@ export function buildSessionTrace(input: SessionTraceInput) {
   const compactions: { seq: number; at: string; droppedMessages: number; dropped: unknown; summarizer?: unknown }[] = [];
   const cacheMisses: { seq: number; model: string; promptTokens: number }[] = [];
   const seenModel = new Set<string>();
+  // request.tools is stored only when it changes; carry it forward.
+  let lastTools: string[] | null = null;
+  const byModelEntry = (key: string) => byModel[key] ??= { calls: 0, tokens: zeroTokens(), costUsd: 0, apiMs: 0 };
 
   const timeline = messages.map(m => {
     const base = {
@@ -199,7 +231,7 @@ export function buildSessionTrace(input: SessionTraceInput) {
       }
     }
     const text = textOf(m, 'text');
-    const reviews = m.blocks.filter(b => b.type === 'review').map(b => b as { provider: string; model: string; text: string });
+    const reviewBlocks = m.blocks.filter(b => b.type === 'review').map(b => b as { provider: string; model: string; text: string });
 
     if (m.role === 'user') {
       if (isHumanPrompt(m)) humanPrompts++;
@@ -237,7 +269,7 @@ export function buildSessionTrace(input: SessionTraceInput) {
         ...base,
         ...(text ? { text } : {}),
         ...(imgs.length > 0 ? { images: imgs } : {}),
-        ...(reviews.length > 0 ? { reviews } : {}),
+        ...(reviewBlocks.length > 0 ? { reviews: reviewBlocks } : {}),
         ...(results.length > 0 ? { toolResults: results } : {}),
       };
     }
@@ -253,9 +285,17 @@ export function buildSessionTrace(input: SessionTraceInput) {
         apiCalls += d.apiCalls;
         toolCalls += d.toolCalls;
         toolErrors += d.toolErrors;
-        if (m.compaction.summarizer) {
-          costUsd += m.compaction.summarizer.costUsd;
-          uncachedUsd += m.compaction.summarizer.costUsd;
+        const sm = m.compaction.summarizer;
+        if (sm) {
+          costUsd += sm.costUsd;
+          uncachedUsd += sm.costUsd;
+          apiCalls++;
+          const st = { ...zeroTokens(), inputTokens: sm.inputTokens, outputTokens: sm.outputTokens, promptTokens: sm.inputTokens };
+          addTokens(totals, st);
+          const mm = byModelEntry(`compaction/${sm.model}`);
+          mm.calls++;
+          addTokens(mm.tokens, st);
+          mm.costUsd += sm.costUsd;
         }
       }
       compactions.push({
@@ -268,10 +308,32 @@ export function buildSessionTrace(input: SessionTraceInput) {
       return { ...base, text, ...(m.compaction ? { compaction: m.compaction } : { compaction: null }) };
     }
 
-    apiCalls++;
     const t = tokensOf(m.usage);
     addTokens(totals, t);
     const key = modelKey(m);
+    const review = reviewBlock(m);
+    if (review) {
+      // A cross-provider review: spend, but not a step of the agent loop.
+      reviews++;
+      if (m.costUsd != null) { costUsd += m.costUsd; uncachedUsd += m.costUsd; }
+      if (m.costUnknown) costUnknownCalls++;
+      const mm = byModelEntry(key);
+      mm.calls++;
+      addTokens(mm.tokens, t);
+      mm.costUsd += m.costUsd ?? 0;
+      mm.apiMs += m.durationMs ?? 0;
+      return {
+        ...base,
+        provider: review.provider,
+        model: review.model,
+        durationMs: m.durationMs ?? null,
+        tokens: t,
+        costUsd: m.costUsd ?? null,
+        ...(m.costUnknown ? { costUnknown: true } : {}),
+        text: review.text,
+      };
+    }
+    apiCalls++;
     const cost = m.costUsd ?? null;
     if (cost != null) costUsd += cost;
     if (m.costUnknown) costUnknownCalls++;
@@ -282,25 +344,27 @@ export function buildSessionTrace(input: SessionTraceInput) {
     const stop = m.call?.stopReason ?? (m.aborted ? 'aborted' : 'unknown');
     stopReasons[stop] = (stopReasons[stop] ?? 0) + 1;
     retries += m.call?.retries?.length ?? 0;
-    const mm = byModel[key] ??= { calls: 0, tokens: zeroTokens(), costUsd: 0, apiMs: 0 };
+    const mm = byModelEntry(key);
     mm.calls++;
     addTokens(mm.tokens, t);
     mm.costUsd += cost ?? 0;
     mm.apiMs += m.durationMs ?? 0;
     // A prompt that read nothing from cache after the model's first call is
     // where caching broke (prefix changed, TTL expired, tool list shifted).
-    if (m.call && seenModel.has(key) && t.promptTokens > 0 && t.cacheReadTokens === 0) {
+    if (m.call && !NO_PROMPT_CACHE.has(m.call.provider) && seenModel.has(key) && t.promptTokens > 0 && t.cacheReadTokens === 0) {
       cacheMisses.push({ seq: m.seq, model: key, promptTokens: t.promptTokens });
     }
     seenModel.add(key);
     toolCalls += m.toolCalls?.length ?? 0;
+    if (m.call?.request.tools) lastTools = m.call.request.tools;
+    const request = m.call ? { ...m.call.request, tools: m.call.request.tools ?? lastTools } : null;
     heaviestCalls.push({
       seq: m.seq,
       model: key,
       promptTokens: t.promptTokens,
       outputTokens: t.outputTokens,
       costUsd: cost,
-      tools: m.call?.request.tools.length ?? 0,
+      tools: m.call?.request.toolCount ?? m.call?.request.tools?.length ?? 0,
       historyChars: m.call?.request.historyChars ?? null,
     });
     const thinking = textOf(m, 'thinking');
@@ -316,13 +380,12 @@ export function buildSessionTrace(input: SessionTraceInput) {
       costUsd: cost,
       ...(m.costUnknown ? { costUnknown: true } : {}),
       uncachedCostUsd: uncached,
-      ...(m.call ? { request: m.call.request } : {}),
+      ...(request ? { request } : {}),
       ...(m.call?.retries ? { retries: m.call.retries } : {}),
       ...(thinking ? { thinking, thinkingChars: thinking.length } : {}),
       ...(m.thinkingBlocks?.length ? { signedThinkingBlocks: m.thinkingBlocks.length } : {}),
       ...(text ? { text } : {}),
       ...(imgs.length > 0 ? { images: imgs } : {}),
-      ...(reviews.length > 0 ? { reviews } : {}),
       ...(m.toolCalls?.length ? { toolCalls: m.toolCalls.map(tc => ({ id: tc.id, name: tc.name, input: tc.input })) } : {}),
     };
   });
@@ -330,12 +393,15 @@ export function buildSessionTrace(input: SessionTraceInput) {
   for (const s of Object.values(byTool)) s.avgMs = s.calls > 0 ? Math.round(s.totalMs / s.calls) : 0;
   for (const mm of Object.values(byModel)) mm.costUsd = round(mm.costUsd);
 
-  const turns = buildTurns(messages, callsById);
+  const turns = buildTurns(messages);
 
   const sp = input.systemPrompt ?? null;
   const cpt = input.charsPerToken && input.charsPerToken > 0 ? input.charsPerToken : 4;
-  const first = messages[0]?.createdAt;
-  const last = messages[messages.length - 1]?.createdAt;
+  // Span by time, not by seq order: a compaction summary sorts first but is
+  // created last.
+  const times = messages.map(m => m.createdAt).filter(t => Number.isFinite(t));
+  const first = times.length > 0 ? Math.min(...times) : undefined;
+  const last = times.length > 0 ? Math.max(...times) : undefined;
 
   return {
     format: TRACE_FORMAT,
@@ -354,6 +420,7 @@ export function buildSessionTrace(input: SessionTraceInput) {
       messages: messages.length,
       humanPrompts,
       apiCalls,
+      reviews,
       toolCalls,
       toolErrors,
       autoResumes,
@@ -389,7 +456,7 @@ export type SessionTrace = ReturnType<typeof buildSessionTrace>;
 
 /** Group the timeline into human-prompt turns: the prompt, then every API
  *  call and tool run until the next human prompt. */
-function buildTurns(messages: ChatMessage[], callsById: Map<string, PersistedToolCall>) {
+function buildTurns(messages: ChatMessage[]) {
   interface Turn {
     index: number;
     startSeq: number;
@@ -416,9 +483,12 @@ function buildTurns(messages: ChatMessage[], callsById: Map<string, PersistedToo
   const close = () => {
     if (cur) { cur.wallMs = Math.max(0, curEnd - curStart); turns.push(cur); }
   };
+  // toolUseId → index in the current turn's steps, to mark failures.
+  let stepIndex = new Map<string, number>();
   for (const m of messages) {
-    if (m.compacted) continue;
+    if (m.compacted || isCarriedAttachments(m)) continue;
     if (isHumanPrompt(m) || !cur) {
+      stepIndex = new Map();
       close();
       const promptText = textOf(m, 'text');
       cur = {
@@ -434,7 +504,12 @@ function buildTurns(messages: ChatMessage[], callsById: Map<string, PersistedToo
     }
     curEnd = m.createdAt;
     const t = cur!;
-    if (m.role === 'assistant') {
+    const review = reviewBlock(m);
+    if (review) {
+      t.steps.push(`(review: ${review.provider}/${review.model})`);
+      t.costUsd = round(t.costUsd + (m.costUsd ?? 0));
+      addTokens(t.tokens, tokensOf(m.usage));
+    } else if (m.role === 'assistant') {
       t.apiCalls++;
       addTokens(t.tokens, tokensOf(m.usage));
       t.costUsd = round(t.costUsd + (m.costUsd ?? 0));
@@ -442,17 +517,17 @@ function buildTurns(messages: ChatMessage[], callsById: Map<string, PersistedToo
       t.finalStopReason = m.call?.stopReason ?? (m.aborted ? 'aborted' : null);
       const key = modelKey(m);
       if (!t.models.includes(key)) t.models.push(key);
-      for (const tc of m.toolCalls ?? []) { t.toolCalls++; t.steps.push(tc.name); }
+      for (const tc of m.toolCalls ?? []) { t.toolCalls++; stepIndex.set(tc.id, t.steps.length); t.steps.push(tc.name); }
       if ((m.toolCalls?.length ?? 0) === 0) t.steps.push(m.aborted ? '(aborted)' : '(reply)');
     } else {
       if (m.autoResumeNudge) { t.autoResumes++; t.steps.push('(auto-resume)'); }
+      if (isAutoReviewFollowup(m)) t.steps.push('(auto-review follow-up)');
       for (const tr of m.toolResults ?? []) {
         if (tr.isError) {
           t.toolErrors++;
-          const name = callsById.get(tr.toolUseId)?.name;
           // Mark the failed step so the sequence reads "runAndSave✗".
-          const idx = name ? t.steps.lastIndexOf(name) : -1;
-          if (idx >= 0) t.steps[idx] = `${name}✗`;
+          const idx = stepIndex.get(tr.toolUseId);
+          if (idx !== undefined) t.steps[idx] = `${t.steps[idx]}✗`;
         }
         t.toolMs += tr.durationMs ?? 0;
       }
@@ -470,7 +545,7 @@ function buildTurns(messages: ChatMessage[], callsById: Map<string, PersistedToo
  *  toggles (keys are in IndexedDB), but the custom endpoint URL can name a
  *  private host, so only whether one is set is kept. */
 function sanitizeToggles(t: ChatToggles) {
-  const { customModels: _models, customBaseUrl, ...rest } = t;
+  const { customModels: _models, customBaseUrl, ...rest } = structuredClone(t);
   return { ...rest, customBaseUrl: customBaseUrl ? '(set)' : '' };
 }
 
@@ -499,6 +574,10 @@ export function compactionTraceFor(
         out.toolErrors += prev.dropped.toolErrors;
         out.costUsd += prev.dropped.costUsd + (prev.summarizer?.costUsd ?? 0);
         addUsage(prev.dropped.usage);
+        if (prev.summarizer) {
+          out.apiCalls++;
+          addUsage({ inputTokens: prev.summarizer.inputTokens, outputTokens: prev.summarizer.outputTokens, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 });
+        }
       }
       continue;
     }

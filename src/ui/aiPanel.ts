@@ -2053,7 +2053,7 @@ async function exportCurrentTrace(): Promise<void> {
     const r = await downloadAiSessionTrace({ sessionId: state.sessionId });
     setTransientStatus(r ? `Session trace saved as ${r.filename}.` : 'Nothing to trace — the chat is empty.');
   } catch (err) {
-    setTransientStatus(`Couldn't build the session trace: ${err instanceof Error ? err.message : String(err)}`);
+    showToast(`Couldn't build the session trace: ${err instanceof Error ? err.message : String(err)}`, { variant: 'warn', source: 'ai' });
   }
 }
 

@@ -381,7 +381,7 @@ The AI chat input supports `/command` shortcuts (`src/ai/slashCommands.ts`). A l
 | `/repair` (alias `/fix`) | Repair corrupted tool history (orphaned tool calls) so a chat wedged on a provider 400 can send again |
 | `/review` | Open the cross-provider review modal |
 | `/export` | Download the conversation as Markdown |
-| `/trace` (alias `/diagnostics`) | Download the chat as a JSON session trace (tool calls, thinking, per-call tokens/cache/cost) for analysis |
+| `/trace` | Download the chat as a JSON session trace (tool calls, thinking, per-call tokens/cache/cost) for analysis |
 | `/models` (alias `/settings`) | Open AI settings modal |
 | `/portrait` (alias `/bust`) | Prefill a prompt to model a stylized 3D bust from a photo you attach |
 | `/reconstruct` (alias `/convert`) | Prefill a prompt to reverse-engineer an imported mesh into editable code |

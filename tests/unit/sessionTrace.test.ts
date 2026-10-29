@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { buildSessionTrace, compactionTraceFor, TRACE_FORMAT } from '../../src/ai/sessionTrace';
 import type { ApiCallTrace, ChatMessage } from '../../src/ai/types';
 import { turnCostUsd } from '../../src/ai/cost';
+import { CARRIED_ATTACHMENTS_NOTE } from '../../src/ai/compactionAttachments';
 
 const MODEL = 'claude-sonnet-4-6';
 
@@ -13,7 +14,7 @@ function call(over: Partial<ApiCallTrace> = {}): ApiCallTrace {
     thinking: 'high',
     iteration: 0,
     request: {
-      messages: 1, tools: ['runAndSave', 'renderViews'], toolSchemaChars: 900,
+      messages: 1, tools: ['runAndSave', 'renderViews'], toolCount: 2, toolSchemaChars: 900,
       systemPromptChars: 40_000, systemSuffixChars: 300, historyChars: 120,
       prunedChars: 0, imagesSent: 0, imagesElided: 0,
     },
@@ -144,14 +145,17 @@ describe('buildSessionTrace', () => {
     const summary: ChatMessage = { id: 'c', sessionId: 's1', role: 'assistant', blocks: [{ type: 'text', text: '[compacted summary]' }], createdAt: 0, seq: -1, compacted: true, compaction };
     const full = build(chat);
     const compacted = build([summary, ...chat.slice(4)]);
-    expect(compacted.summary.apiCalls).toBe(full.summary.apiCalls);
-    expect(compacted.summary.tokens).toEqual(full.summary.tokens);
+    // The summarizer call is counted on top of the replaced calls.
+    expect(compacted.summary.apiCalls).toBe(full.summary.apiCalls + 1);
+    expect(compacted.summary.tokens.inputTokens).toBe(full.summary.tokens.inputTokens + 5_000);
+    expect(compacted.summary.tokens.outputTokens).toBe(full.summary.tokens.outputTokens + 300);
+    expect(compacted.summary.tokens.cacheReadTokens).toBe(full.summary.tokens.cacheReadTokens);
     expect(compacted.summary.costUsd).toBeCloseTo(full.summary.costUsd + 0.01, 6);
     expect(compacted.summary.compactions).toHaveLength(1);
 
     // A second compaction rolls the first one's totals up.
     const again = compactionTraceFor([summary, ...chat.slice(4)]);
-    expect(again.dropped.apiCalls).toBe(3);
+    expect(again.dropped.apiCalls).toBe(4); // 2 + summarizer + 1
     expect(again.dropped.costUsd).toBeCloseTo(full.summary.costUsd + 0.01, 6);
   });
 
@@ -159,5 +163,59 @@ describe('buildSessionTrace', () => {
     const t = build(sampleChat(), { toggles: { customBaseUrl: 'http://10.0.0.5:8080/v1', customModels: ['a', 'b'], provider: 'custom' } as never });
     expect(t.settings).toMatchObject({ customBaseUrl: '(set)', provider: 'custom' });
     expect((t.settings as Record<string, unknown>).customModels).toBeUndefined();
+  });
+
+  it('carries a tool list forward when a call stored none (unchanged)', () => {
+    const chat = sampleChat();
+    const second = chat[3];
+    second.call = call({ stopReason: 'end_turn', iteration: 1, request: { ...call().request, tools: undefined } });
+    const t = build(chat);
+    const calls = t.timeline.filter(e => e.kind === 'assistant') as { request: { tools: string[] | null } }[];
+    expect(calls[1].request.tools).toEqual(['runAndSave', 'renderViews']);
+  });
+
+  it('keeps reviews, carried attachments and auto-review prompts out of the agent counts', () => {
+    const chat = sampleChat();
+    seq = 100;
+    chat.push(
+      msg({ role: 'assistant', blocks: [{ type: 'review', provider: 'openai', model: 'gpt-5', text: 'looks fine' }], usage: { inputTokens: 1_000, outputTokens: 100, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 }, costUsd: 0.02 }),
+      msg({ role: 'user', blocks: [{ type: 'text', text: '[Automatic review] fix the base' }] }),
+      msg({ role: 'assistant', blocks: [{ type: 'text', text: 'fixed' }], usage: { inputTokens: 10, outputTokens: 5, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 }, costUsd: 0.001, call: call({ stopReason: 'end_turn' }) }),
+    );
+    const t = build(chat);
+    expect(t.summary.humanPrompts).toBe(2);
+    expect(t.summary.apiCalls).toBe(4);
+    expect(t.summary.reviews).toBe(1);
+    expect(t.summary.byModel['openai/gpt-5'].calls).toBe(1);
+    expect(t.timeline.map(e => e.kind)).toContain('review');
+    expect(t.timeline.map(e => e.kind)).toContain('auto_review_followup');
+    expect(t.turns).toHaveLength(2);
+    expect(t.turns[1].steps).toEqual(['(reply)', '(review: openai/gpt-5)', '(auto-review follow-up)', '(reply)']);
+  });
+
+  it('measures wall clock by time even when a compaction summary sorts first', () => {
+    const chat = sampleChat().slice(4);
+    const summary: ChatMessage = { id: 'c', sessionId: 's1', role: 'assistant', blocks: [{ type: 'text', text: '[compacted summary]' }], createdAt: 99_000, seq: -1, compacted: true };
+    const carried: ChatMessage = { id: 'r', sessionId: 's1', role: 'user', blocks: [{ type: 'text', text: CARRIED_ATTACHMENTS_NOTE }], createdAt: 99_000, seq: -2 };
+    const t = build([carried, summary, ...chat]);
+    expect(t.summary.wallClockMs).toBe(99_000 - 5_000);
+    expect(t.summary.humanPrompts).toBe(1);
+    expect(t.turns).toHaveLength(1);
+    expect(t.turns[0].wallMs).toBe(1_000);
+  });
+
+  it('marks the failing call when a batch runs the same tool twice', () => {
+    seq = 0;
+    const chat = [
+      msg({ role: 'user', blocks: [{ type: 'text', text: 'go' }] }),
+      msg({ role: 'assistant', toolCalls: [{ id: 'a', name: 'query', input: {} }, { id: 'b', name: 'query', input: {} }], call: call() }),
+      msg({ role: 'user', toolResults: [{ toolUseId: 'a', content: 'bad', isError: true }, { toolUseId: 'b', content: 'ok' }] }),
+    ];
+    expect(build(chat).turns[0].steps).toEqual(['query✗', 'query']);
+  });
+
+  it('does not report cache misses for providers without prompt caching', () => {
+    const chat = sampleChat().map(m => m.call ? { ...m, call: { ...m.call, provider: 'local' as const } } : m);
+    expect(build(chat).summary.cacheMisses).toEqual([]);
   });
 });

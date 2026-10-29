@@ -18,6 +18,7 @@ import { streamTurn as streamTurnCustom } from './custom';
 import { getKey, recordUsage, putMessages } from './db';
 import { resolveCustomApiKey } from './customEndpoints';
 import { recordEvent } from './diagnostics';
+import { redactSecrets } from '../diagnostics/logQuery';
 import { buildToolList, executeTool, type ToolDefinition, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, RETRY_SAFE_TOOLS, declinedToolMessage, preConfirmToolResult, unofferedToolMessage, LEGACY_TOOL_ALIASES, TURN_ENDING_TOOLS, type ToolExecResult } from './tools';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { loadSettings } from './settings';
@@ -353,6 +354,10 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     return workingHistory;
   }
 
+  // Last tool list recorded on an ApiCallTrace this turn — the next call only
+  // stores its list when it differs (see ApiCallTrace.request.tools).
+  const lastToolList = { key: '' };
+
   let iter = 0;
   for (; Number.isFinite(maxIter) ? iter < maxIter : true; iter++) {
     // Give the browser a frame between iterations so an agent running
@@ -501,7 +506,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       if (!signal?.aborted && transientAttempt < maxTransientRetries && isTransientError(err)) {
         transientAttempt++;
         const waitMs = transientBackoffMs(transientAttempt);
-        retries.push({ error: message, durationMs: Date.now() - apiCallStart });
+        retries.push({ error: redactSecrets(message), durationMs: Date.now() - apiCallStart });
         recordEvent({
           provider: toggles.provider,
           model: model ?? '(no model)',
@@ -597,7 +602,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
         stopReason: result.stopReason,
         thinking: toggles.thinking,
         iteration: iter,
-        request: requestShape(workingHistory, sentHistory, tools, systemPrompt, systemSuffix),
+        request: requestShape(workingHistory, sentHistory, tools, systemPrompt, systemSuffix, lastToolList),
         ...(retries.length > 0 ? { retries } : {}),
       },
     };
@@ -994,14 +999,20 @@ function requestShape(
   tools: { name: string }[],
   systemPrompt: string,
   systemSuffix: string,
+  lastToolList: { key: string },
 ): ApiCallTrace['request'] {
+  const names = tools.map(t => t.name);
+  const key = names.join(',');
+  const toolsChanged = key !== lastToolList.key;
+  lastToolList.key = key;
   const sentChars = historyChars(sentHistory);
   const sentImages = countImages(sentHistory);
   let toolSchemaChars = 0;
   try { toolSchemaChars = JSON.stringify(tools).length; } catch { /* unserializable schema — leave 0 */ }
   return {
     messages: sentHistory.length,
-    tools: tools.map(t => t.name),
+    ...(toolsChanged ? { tools: names } : {}),
+    toolCount: names.length,
     toolSchemaChars,
     systemPromptChars: systemPrompt.length,
     systemSuffixChars: systemSuffix.length,

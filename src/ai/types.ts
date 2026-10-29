@@ -361,8 +361,12 @@ export interface ApiCallTrace {
   request: {
     /** Messages in the request after image elision / payload pruning. */
     messages: number;
-    /** Tool names offered on this request, in order. */
-    tools: string[];
+    /** Tool names offered on this request, in order — written only when the
+     *  list differs from the previous call in the same user turn (omitted =
+     *  unchanged), so a long session doesn't store it on every call. */
+    tools?: string[];
+    /** How many tools were offered (always present). */
+    toolCount: number;
     /** JSON length of the tool definitions (a proxy for their token cost). */
     toolSchemaChars: number;
     systemPromptChars: number;
@@ -377,7 +381,8 @@ export interface ApiCallTrace {
     /** Images in the history that were elided from this request. */
     imagesElided: number;
   };
-  /** Transient failures retried before this call succeeded. */
+  /** Transient failures retried before this call succeeded (error text
+   *  secret-redacted before it is persisted). */
   retries?: { error: string; durationMs: number }[];
 }
 

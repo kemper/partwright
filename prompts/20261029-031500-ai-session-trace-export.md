@@ -53,3 +53,37 @@ entries and docs. No in-app AI tool: the trace is for a human or an external
 agent to analyze the session, not for the chat model to call on itself.
 The ai.md line was folded into the getDiagnosticLog entry to stay under the
 turn-0 context budget instead of raising the ceiling.
+
+## Assistant
+
+## Review follow-up
+
+A reviewer subagent found nothing blocking. I fixed these accuracy and size
+issues before marking the PR ready:
+
+- **Turns are now only the human's prompts.** The re-attached images that
+  follow a compaction and the automatic review's fix-up prompt no longer
+  start turns. Cross-provider reviews get their own `review` kind, counted in
+  `summary.reviews` instead of as agent calls under model "unknown".
+- **Wall clock is measured by time, not seq order.** A compaction summary
+  sorts first but is created last, which made the span negative.
+- **Summarizer calls are counted fully.** Their tokens and call count are now
+  included (rolled up through nested compactions), not just their cost.
+- **Persisted size and secrets.** `call.request.tools` is stored only when the
+  list changes within a turn; `toolCount` is always stored and the builder
+  carries the list forward. Retry error text is redacted before it is saved.
+- **Smaller fixes.**
+  - A failed step is marked by tool-use id, so a duplicate tool name in one
+    batch marks the right call.
+  - Providers without prompt caching (local, custom) report no cache misses.
+  - Toggles are deep-copied before redaction.
+  - The `data` skip only applies to image objects.
+  - `/trace` failures toast, so they reach the Diagnostic Log.
+  - The `/diagnostics` alias was dropped because it was ambiguous.
+
+Kept as is:
+
+- `call` still goes into session exports. It is now small and redacted, and
+  it makes a trace of an imported session useful.
+- `ai.md` keeps a single pointer, because the turn-0 budget test is at its
+  ceiling.
