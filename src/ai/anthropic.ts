@@ -510,21 +510,10 @@ function assistantBlocksToApi(
   thinkingBlocks?: ThinkingBlockData[],
 ): Anthropic.ContentBlockParam[] {
   const out: Anthropic.ContentBlockParam[] = [];
-  // Thinking blocks MUST lead the assistant message — before any text or
-  // tool_use — and keep their original signatures. With thinking enabled the
-  // API rejects an assistant turn whose tool_use isn't preceded by its
-  // signed thinking block ("Expected `thinking`... but found `tool_use`").
-  if (thinkingBlocks) {
-    for (const tb of thinkingBlocks) {
-      if (tb.type === 'thinking') {
-        out.push({ type: 'thinking', thinking: tb.thinking, signature: tb.signature });
-      } else {
-        out.push({ type: 'redacted_thinking', data: tb.data });
-      }
-    }
-  }
   for (const b of blocks) {
-    if (b.type === 'text' && b.text.length > 0) {
+    // Whitespace-only text is rejected by the API ("text content blocks must
+    // contain non-whitespace text"), same as the user-side serializer.
+    if (b.type === 'text' && b.text.trim().length > 0) {
       out.push({ type: 'text', text: b.text });
     } else if (b.type === 'review' && b.text.length > 0) {
       // Cross-provider review lands in the transcript as an assistant turn.
@@ -536,6 +525,23 @@ function assistantBlocksToApi(
   }
   for (const tc of toolCalls) {
     out.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.input });
+  }
+  // Thinking blocks MUST lead the assistant message — before any text or
+  // tool_use — and keep their original signatures. With thinking enabled the
+  // API rejects an assistant turn whose tool_use isn't preceded by its
+  // signed thinking block ("Expected `thinking`... but found `tool_use`").
+  // But a turn that stopped after thinking (max_tokens mid-thought, an empty
+  // final, an abort) has nothing after them, and the API also rejects an
+  // assistant message that ENDS in thinking ("The final block in an assistant
+  // message cannot be `thinking`"). Since it's persisted, that 400s every
+  // retry — so drop the thinking for such a turn (earlier turns may omit it).
+  if (thinkingBlocks && out.length > 0) {
+    const lead: Anthropic.ContentBlockParam[] = thinkingBlocks.map(tb =>
+      tb.type === 'thinking'
+        ? { type: 'thinking', thinking: tb.thinking, signature: tb.signature }
+        : { type: 'redacted_thinking', data: tb.data },
+    );
+    out.unshift(...lead);
   }
   return out;
 }
