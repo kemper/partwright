@@ -3,7 +3,7 @@
 // input row, the cost meter, and the compact button. State lives in the
 // ai/* modules; this file is mostly DOM wiring.
 
-import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens, runTurn as runTurnOnMainThread, buildActiveSystemPrompt, toolsForRequest, type RunTurnInput, type RunTurnCallbacks } from '../ai/chatLoop';
+import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens, runTurn as runTurnOnMainThread, buildActiveSystemPrompt, toolsForRequest, turnToolList, type RunTurnInput, type RunTurnCallbacks } from '../ai/chatLoop';
 import { getActiveImports } from '../import/importedMesh';
 import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerClient';
 import { getConfig } from '../config/appConfig';
@@ -31,7 +31,7 @@ import { gatherReviewContext, runReview } from '../ai/review';
 import { PLAN_FIRST_PREFIX, PLAN_REFINE_PREFIX, planApprovalText, planTurn } from '../ai/userWords';
 import { ASK_USER_TOOL, CARD_TOOL_ACK, PROPOSE_PLAN_TOOL, answersText, type AskUserQuestion, derivePendingPlan, latestPlanReply, parseAskUser, parseProposedPlan, pendingAskUser, planMarkdown } from '../ai/planReply';
 import { buildFixPrompt, countModelChangingCalls, latestUserRequest, overSpendCap, parseReviewVerdict, requestText, resolveReviewer, shouldActOnReview, shouldAutoReview, userConversation } from '../ai/autoReview';
-import { buildToolList, isModelChangingTool, confirmToolLabel } from '../ai/tools';
+import { isModelChangingTool, confirmToolLabel } from '../ai/tools';
 import { DEFAULT_CUSTOM_CONTEXT, REDUCED_TOOLS_NOTE, customContextWindow, resolveCustomPromptTier } from '../ai/customContext';
 import { carriedAttachments, CARRIED_ATTACHMENTS_NOTE } from '../ai/compactionAttachments';
 import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
@@ -157,7 +157,7 @@ let toolCharsMemo: { key: string; chars: number } | null = null;
  *  folds compact tool signatures into its own prompt budget (local.ts). */
 function requestToolChars(toggles: ChatToggles, history: readonly ChatMessage[]): number {
   if (toggles.provider === 'local') return 0;
-  const { tools } = toolsForRequest(toggles, buildToolList(toggles), history, sessionToolGroups());
+  const { tools } = toolsForRequest(toggles, turnToolList(toggles), history, sessionToolGroups());
   // Description lengths change with the Custom tier's compaction settings,
   // not just the tool names.
   const cfg = getConfig().ai;
@@ -3149,7 +3149,7 @@ function fillSystemPromptBody(pre: HTMLElement): void {
   void buildActiveSystemPrompt(toggles)
     .then((base) => {
       if (seq !== systemPromptFillSeq) return;
-      const { suffixLine } = toolsForRequest(toggles, buildToolList(toggles), state.history, sessionToolGroups());
+      const { suffixLine } = toolsForRequest(toggles, turnToolList(toggles), state.history, sessionToolGroups());
       pre.textContent = `${base}\n\n${toggleSuffix(toggles)}${suffixLine ? `\n\n${suffixLine}` : ''}`;
     })
     .catch(() => {

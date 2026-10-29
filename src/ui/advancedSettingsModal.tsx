@@ -353,11 +353,63 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('ai', 'cacheConversationHistory', v)}
         />
         <ToggleField cfgKey="ai.extendedCacheForDeepThinking"
-          label="1-hour cache for High+ thinking (Anthropic)"
-          hint="At High, XHigh or Max thinking a single step can think for more than 5 minutes, which expires Anthropic's default cache — the next step then re-writes the whole conversation at 1.25× input. The 1-hour cache costs 2× input to write but survives long thinking and pauses between messages."
+          label="1-hour cache for long steps (Anthropic)"
+          hint="At High, XHigh or Max thinking a single step can think for more than 5 minutes — and a delegated worker can run longer — which expires Anthropic's default cache, so the next step re-writes the whole conversation at 1.25× input. With this on, those turns (and any turn that can delegate) use the 1-hour cache: 2× input to write, but it survives long steps and pauses between messages."
           defaultValue={APP_CONFIG_DEFAULTS.ai.extendedCacheForDeepThinking}
           value={c.ai.extendedCacheForDeepThinking}
           onChange={v => set('ai', 'extendedCacheForDeepThinking', v)}
+        />
+        <ToggleField cfgKey="ai.delegateToWorker"
+          label="Delegate sub-tasks to a cheaper worker"
+          hint="Lets the agent hand a measurable sub-task (tune until a score or gate passes) to a cheaper model of the same provider — Sonnet under Opus, GPT-5 mini, Gemini Flash. The worker runs in its own fresh context and only its report comes back, so the main conversation stays small."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.delegateToWorker}
+          value={c.ai.delegateToWorker}
+          onChange={v => set('ai', 'delegateToWorker', v)}
+        />
+        <Field cfgKey="ai.workerMaxSteps"
+          label="Worker step limit"
+          unit="steps"
+          hint="Most agent steps one delegated worker may take."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.workerMaxSteps}
+          value={c.ai.workerMaxSteps}
+          min={1} max={60} integer
+          onChange={v => set('ai', 'workerMaxSteps', v)}
+        />
+        <Field cfgKey="ai.workerMaxSpendUsd"
+          label="Worker spend limit"
+          unit="USD"
+          hint="Most one delegated worker may spend. Also capped by what's left of the session's $ budget."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.workerMaxSpendUsd}
+          value={c.ai.workerMaxSpendUsd}
+          min={0.05} max={20} step={0.05}
+          onChange={v => set('ai', 'workerMaxSpendUsd', v)}
+        />
+        <Field cfgKey="ai.workerReportMaxChars"
+          label="Worker report length"
+          unit="chars"
+          hint="Longest worker report passed back to the main agent."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.workerReportMaxChars}
+          value={c.ai.workerReportMaxChars}
+          min={500} max={20000} integer
+          onChange={v => set('ai', 'workerReportMaxChars', v)}
+        />
+        <Field cfgKey="ai.workerStallTimeoutMs"
+          label="Worker stall timeout"
+          unit="ms"
+          hint="A worker request silent this long is stopped and its partial report returned. Time running its tools doesn't count."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.workerStallTimeoutMs}
+          value={c.ai.workerStallTimeoutMs}
+          min={10000} max={900000} integer
+          onChange={v => set('ai', 'workerStallTimeoutMs', v)}
+        />
+        <Field cfgKey="ai.workerMinBudgetUsd"
+          label="Worker minimum budget"
+          unit="USD"
+          hint="With less than this left in the session's $ budget, the agent can't start a worker."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.workerMinBudgetUsd}
+          value={c.ai.workerMinBudgetUsd}
+          min={0} max={5} step={0.01}
+          onChange={v => set('ai', 'workerMinBudgetUsd', v)}
         />
         <Field cfgKey="ai.cachedImageLimit"
           label="Render images before a trim (cached providers)"

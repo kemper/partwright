@@ -57,6 +57,11 @@ async function setUp(page: Page): Promise<void> {
     });
     const s = await import('/src/ai/settings.ts');
     s.saveSettings(s.setToggles(s.loadSettings(), { provider: 'anthropic', anthropicModel: model, thinking: 'high', maxSpend: 'high', autoReview: false, autoResume: false, planFirst: false }));
+    // Delegation also turns on the 1-hour cache; switch it off so this test
+    // checks the thinking-level rule on its own.
+    const c = await import('/src/config/appConfig.ts');
+    const cfg = c.loadAppConfig();
+    c.saveAppConfig({ ...cfg, ai: { ...cfg.ai, delegateToWorker: false } });
   }, MODEL);
   await page.reload();
   await waitForEditorReady(page);

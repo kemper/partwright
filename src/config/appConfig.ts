@@ -94,6 +94,25 @@ export interface AppConfig {
      *  level. Those steps can think for over 5 minutes, which expires the
      *  default cache and makes the next step re-write the whole conversation. */
     extendedCacheForDeepThinking: boolean;
+    /** Offer the main agent the delegateTask tool: it hands a measurable
+     *  sub-task to a cheaper model of the same provider (Sonnet under Opus,
+     *  …) running its own short loop, and gets back only a report. */
+    delegateToWorker: boolean;
+    /** Most agent steps one delegated worker may take (the main agent can ask
+     *  for fewer). */
+    workerMaxSteps: number;
+    /** Most one delegated worker may spend, in USD. Also capped by what's left
+     *  of the session's $ budget. */
+    workerMaxSpendUsd: number;
+    /** Longest worker report (chars) passed back to the main agent. */
+    workerReportMaxChars: number;
+    /** A worker's model request that sends nothing for this long (ms) is
+     *  treated as stalled: the worker is stopped and its partial report
+     *  returned. Time spent running its tools doesn't count. */
+    workerStallTimeoutMs: number;
+    /** Smallest budget (USD) worth starting a worker with; below it,
+     *  delegateTask refuses rather than overshoot the session $ cap. */
+    workerMinBudgetUsd: number;
     /** Render images allowed to accumulate in the request before a trim, for
      *  providers that cache the history (Anthropic with history caching on,
      *  OpenAI, Gemini). Cached images are cheap to re-send, and trimming edits
@@ -772,6 +791,12 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     keepRecentToolImages: 3,
     cacheConversationHistory: true,
     extendedCacheForDeepThinking: true,
+    delegateToWorker: true,
+    workerMaxSteps: 15,
+    workerMaxSpendUsd: 1,
+    workerReportMaxChars: 4000,
+    workerStallTimeoutMs: 120_000,
+    workerMinBudgetUsd: 0.05,
     cachedImageLimit: 15,
     cachedImageTrimTo: 8,
     autoCompactMaxTokens: 150_000,

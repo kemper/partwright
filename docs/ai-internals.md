@@ -68,6 +68,24 @@ Turning **off** is byte-for-byte the old behavior — no `finish` tool, no nudge
 
 Both share dangling-tool-call repair, image handling, and review serialization. Non-tool helpers (`validateKey`/`listModels`/`summarize`) always use Chat Completions.
 
+## Worker delegation (`delegateTask`)
+
+On hosted providers (not in plan mode, with at least one of run code / save versions / paint in scope, and `ai.delegateToWorker` on), the main agent is offered `delegateTask` (`src/ai/delegate.ts` for the schema and pure helpers; `turnToolList` in `chatLoop.ts` adds it). The call hands one self-contained, measurable sub-task (`task` + `acceptance` + optional `context`/`maxSteps`) to a **worker**.
+
+The worker is a nested `runTurn` in the same agent loop context. `executeAllWithRetry` answers the tool itself, as it does `loadTools`, because the worker needs the API key and the loop.
+
+- **Model.** The provider's cheaper default (`resolveWorkerModel`: Sonnet 5.5 / GPT-5 mini / Gemini Flash). It falls back to the main model when that is no more expensive or is unpriced.
+- **Toggles.** The main chat's, at Medium thinking (or Off/Low when the user chose that), with auto-continue, plan mode and auto-review off (`workerToggles`).
+- **History.** Empty: the worker's only user message is `buildWorkerBrief`. The main chat's loaded tool groups are preloaded.
+- **Persistence.** None: `persist: false` keeps its steps out of IndexedDB and the transcript.
+- **Tools.** Never `delegateTask`, `askUser`, `proposePlan`, or any confirm-gated tool (`WORKER_TOOL_EXCLUSIONS`): the user would be asked to approve an action from a conversation they can't see.
+- **Caps.** `maxIterationsOverride` (≤ `ai.workerMaxSteps`) and `spendCapUsd`, which is min(`ai.workerMaxSpendUsd`, what's left of the session $ budget). No worker starts below `ai.workerMinBudgetUsd`, or on a model with no known price (its cap couldn't be enforced). The main loop re-checks the session cap right after a worker's spend lands, before its next request.
+- **Stall.** A worker model request silent for `ai.workerStallTimeoutMs` is aborted through the worker's own `AbortController` (chained to the user's Stop), and its partial report comes back as an error. Tool runs don't count; they have their own timeout. `runWorkerTask` never throws: a failure becomes an error report carrying whatever the worker already spent, which is summed per step. The last two steps get a countdown note appended to the tool-result turn via `onDrainQueuedBlocks`, so the cache-friendly history still gets a report written in time.
+- **Result.** The worker's final reply (when it was cut off, its last message is flagged "not a final report"), headed `[Worker <model> finished · N steps · M tool calls · $X]` (`formatWorkerReport`, capped at `ai.workerReportMaxChars`), plus its last render image (render tools only). Its cost is added to the turn and stored as `costUsd` on the tool-result message, so `totalCost(history)` and the $ cap include it.
+- **Progress.** Its progress is relayed as the `tool` phase (`worker · <model> · step n/N · …`), which the panel's stall watchdog ignores, so a slow worker call can't abort and re-run the whole delegation.
+- **Auto-review.** `isModelChangingTool('delegateTask')` is true, so auto-review covers delegated work.
+- **Main cache.** A main turn that offers `delegateTask` uses the 1-hour prompt cache (with `ai.extendedCacheForDeepThinking`), because a worker run can outlast the 5-minute one and make the next main request re-write the whole conversation. The tool's schema is static, so editing a worker setting never changes the cached tool prefix.
+
 ## Context size: tool groups, Custom endpoints and stale tool payloads
 
 **Custom endpoint context profile** (`src/ai/customContext.ts`). The full hosted payload is about 100k tokens before the conversation starts (PREAMBLE + `ai.md` ≈ 39k, 160+ tool schemas ≈ 60k). That breaks a local model behind llama.cpp / vLLM / LM Studio / Ollama: the request is rejected, or truncated past Ollama's `num_ctx`. Each saved endpoint therefore carries a `context` profile (`SavedEndpoint.context` → `ChatToggles.customContext`):
