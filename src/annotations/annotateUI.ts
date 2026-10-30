@@ -147,7 +147,7 @@ export function initAnnotateUI(controlsContainer: HTMLElement): void {
     title: 'Annotate (draw / text)',
     hint: 'Tools',
     prefillSchema: {
-      mode: { type: 'enum', values: ['pen', 'text', 'select'], description: 'Sub-mode to start in (default pen).' },
+      mode: { type: 'enum', values: ['pen', 'text', 'select'], description: 'Sub-mode to start in (default select — the user picks a colour or Pen to draw).' },
       color: { type: 'color', description: 'Draw colour for strokes + text ([r,g,b] 0..1 or "#rrggbb").' },
       width: { type: 'number', min: 0.5, max: 64, description: 'Pen line width in px (presets 2 / 4 / 7 / 12).' },
       fontSize: { type: 'number', min: 4, max: 256, description: 'Text size in px (presets 16 / 22 / 32 / 48).' },
@@ -182,7 +182,7 @@ export function initAnnotateUI(controlsContainer: HTMLElement): void {
  *  colour / width / font size staged — the user draws. */
 function openAnnotateWithPrefill(p: Record<string, unknown> | undefined, ctx: ToolOpenContext): ToolOpenResult {
   const pre = p ?? {};
-  const mode = (pre.mode as 'pen' | 'text' | 'select' | undefined) ?? (isAnyActive() ? undefined : 'pen');
+  const mode = (pre.mode as 'pen' | 'text' | 'select' | undefined) ?? (isAnyActive() ? undefined : 'select');
   if (mode === 'pen') selectPenSubMode();
   else if (mode === 'text') selectTextSubMode();
   else if (mode === 'select') selectSelectSubMode();
@@ -212,8 +212,9 @@ function toggleAnnotateMode(): void {
     hidePlaneOutline();
     endSessionPlane();
   } else {
-    prepareOpen();
-    activatePen();
+    // Annotate opens at rest in Select: the view behaves as it did before
+    // the panel opened; Pen/Text (or picking a colour) start drawing.
+    selectSelectSubMode();
   }
 }
 
@@ -257,7 +258,7 @@ function updateStyleUI(): void {
   if (floatingTabBtn) floatingTabBtn.className = snapshot ? tabInactiveClass : tabActiveClass;
   if (styleInfo) {
     styleInfo.textContent = snapshot
-      ? 'Snapshot: mark up this frame (rotate/pan stay locked). Save view keeps the frame, its exact camera and your marks in the history below. Attach a view to the AI chat when you are ready.'
+      ? 'Snapshot: line up the view, then pick a colour or Pen to mark it up (the view holds still while you draw; Esc returns to Select). Save view keeps the frame, its exact camera and your marks in the history below. Attach a view to the AI chat when you are ready.'
       : 'Floating: marks stay pinned in space, saved with this version and drawn in every render. Save view also records this angle in the history.';
   }
   updateSaveButton();
@@ -389,10 +390,23 @@ function historyRow(v: AnnotationView): HTMLElement {
 
 const annotateRegistryEntry = { close(): void { closeAnnotatePanel(); } };
 
+/** Esc steps back one level: Pen/Text → Select; Select (nothing selected) →
+ *  close Annotate. Keys typed into a field (the text-label input, the view
+ *  title) are left to that field — its own Esc cancels the edit first. */
 function onAnnotateEscape(e: KeyboardEvent): void {
   if (e.key !== 'Escape') return;
   if (document.querySelector('[role="dialog"]')) return;
+  const t = e.target as HTMLElement | null;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  if (isPenActive() || isTextActive()) { selectSelectSubMode(); return; }
+  if (isSelectActive() && getSelectedId()) return; // select mode's own Esc deselects
   closeAnnotatePanel();
+}
+
+/** Picking a colour from Select means "I want to draw": jump to Pen. Text
+ *  keeps its mode (the colour applies to the next label). */
+function drawWithPickedColor(): void {
+  if (!isPenActive() && !isTextActive()) selectPenSubMode();
 }
 
 function updatePanelState(): void {
@@ -511,6 +525,13 @@ function createPickerPanel(): HTMLElement {
   const tabsRow = document.createElement('div');
   tabsRow.className = 'flex items-center gap-1.5 mb-2';
 
+  selectTabBtn = document.createElement('button');
+  selectTabBtn.className = tabInactiveClass;
+  selectTabBtn.textContent = '\u2196 Select';
+  selectTabBtn.title = 'Look around as usual; click an annotation to select it, drag to move, Delete to remove';
+  selectTabBtn.addEventListener('click', selectSelectSubMode);
+  tabsRow.appendChild(selectTabBtn);
+
   penTabBtn = document.createElement('button');
   penTabBtn.className = tabInactiveClass;
   penTabBtn.textContent = '\u270F\uFE0F Pen';
@@ -525,12 +546,6 @@ function createPickerPanel(): HTMLElement {
   textTabBtn.addEventListener('click', selectTextSubMode);
   tabsRow.appendChild(textTabBtn);
 
-  selectTabBtn = document.createElement('button');
-  selectTabBtn.className = tabInactiveClass;
-  selectTabBtn.textContent = '\u2716 Select';
-  selectTabBtn.title = 'Click an annotation to select; drag to move; Delete to remove';
-  selectTabBtn.addEventListener('click', selectSelectSubMode);
-  tabsRow.appendChild(selectTabBtn);
 
   content.appendChild(tabsRow);
 
@@ -553,6 +568,7 @@ function createPickerPanel(): HTMLElement {
       setTextColor(color);
       markActiveSwatch(grid, swatch);
       custom.setHex(rgbToHex(color)); // keep the custom swatch a truthful preview
+      drawWithPickedColor();
     });
     grid.appendChild(swatch);
   }
@@ -577,6 +593,7 @@ function createPickerPanel(): HTMLElement {
       for (const child of Array.from(grid.children)) {
         (child as HTMLElement).classList.remove('border-white/80', 'ring-1', 'ring-white/30');
       }
+      drawWithPickedColor();
     },
   });
   syncColorUI = (c) => {

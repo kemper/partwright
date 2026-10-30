@@ -9,6 +9,10 @@ mark:
 - **Text labels** (text sub-mode) -- pinned to a 3D anchor on the same plane and rendered as a
   screen-facing label.
 
+Annotate opens in **Select** (the view orbits as usual; click a mark to select/drag it). Picking
+a colour or the Pen/Text tab starts drawing and freezes the view until Esc returns to Select.
+`setAnnotateMode('pen' | 'text' | 'select' | null)` drives the same modes.
+
 Annotate has two **styles** (`getAnnotateStyle()` / `setAnnotateStyle()`):
 
 - **Snapshot** (default) -- the user marks up the frame they're looking at, then presses

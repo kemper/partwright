@@ -34,6 +34,7 @@ test.describe('annotation views', () => {
   });
 
   test('snapshot: draw, save view, history, attach to AI, render, export round-trip', async ({ page }) => {
+    test.setTimeout(60_000);
     await page.goto('/editor');
     await waitForEngine(page);
     await page.evaluate(async () => {
@@ -111,6 +112,7 @@ test.describe('annotation views', () => {
   });
 
   test('floating style keeps marks in the scene; delete removes a view', async ({ page }) => {
+    test.setTimeout(60_000);
     await page.goto('/editor');
     await waitForEngine(page);
     await page.evaluate(async () => {
@@ -123,6 +125,24 @@ test.describe('annotation views', () => {
     await drawLoop(page);
     await page.locator('#annotate-save-view').click();
     await expect(page.locator('#annotate-view-history [data-view-id]')).toHaveCount(1);
+
+    // Esc → Select; dragging the stroke moves it (and does not orbit the camera).
+    await page.keyboard.press('Escape');
+    expect(await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getAnnotateMode())).toBe('select');
+    const firstPoint = () => page.evaluate(() => ((window as unknown as { partwright: PW }).partwright.listAnnotations() as { points: number[][] }[])[0].points[0]);
+    const camPos = () => page.evaluate(async () => (await import('/src/renderer/viewport.ts')).getCameraPose().position);
+    const p0 = await firstPoint();
+    const c0 = await camPos();
+    const box = (await page.locator('canvas#viewport').boundingBox())!;
+    const r = Math.min(box.width, box.height) * 0.12;
+    await page.mouse.move(box.x + box.width / 2 + r, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + r + 60, box.y + box.height / 2 + 30, { steps: 6 });
+    await page.mouse.up();
+    expect(await firstPoint()).not.toEqual(p0);
+    const c1 = await camPos();
+    for (let k = 0; k < 3; k++) expect(Math.abs(c1[k] - c0[k])).toBeLessThan(1e-3);
+
     await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.setAnnotateMode(null));
     // Floating marks persist after close and after Save view.
     expect(await page.evaluate(() => ((window as unknown as { partwright: PW }).partwright.listAnnotations() as unknown[]).length)).toBe(1);
@@ -166,5 +186,60 @@ test.describe('annotation views', () => {
     });
     expect(await count('listAnnotations')).toBe(0);
     expect(await count('listAnnotationViews')).toBe(0);
+  });
+
+  test('Annotate opens in Select (view free, Lock off); colour → Pen freezes the view; Esc → Select', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+    await page.evaluate(async () => {
+      const p = (window as unknown as { partwright: PW }).partwright;
+      await p.createSession('annotate-modes');
+      await p.runAndSave('const { Manifold } = api;\nreturn Manifold.cube([20, 20, 20], true);', 'cube');
+    });
+    const lockText = await page.locator('#orbit-lock-toggle').textContent();
+    const pose = () => page.evaluate(async () => (await import('/src/renderer/viewport.ts')).getCameraPose());
+    const userLocked = () => page.evaluate(async () => (await import('/src/renderer/viewport.ts')).isUserOrbitLocked());
+
+    // The real entry point: the toolbar button.
+    await page.evaluate(() => (document.getElementById('annotate-toggle') as HTMLButtonElement).click());
+    await expect(page.locator('#annotate-picker-panel')).toBeVisible();
+    expect(await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getAnnotateMode())).toBe('select');
+    const tabs = page.locator('#annotate-picker-panel button', { hasText: /Select|Pen|Text/ });
+    await expect(tabs.first()).toContainText('Select');
+    expect(await userLocked()).toBe(false);
+    await expect(page.locator('#orbit-lock-toggle')).toHaveText(lockText!);
+
+    // Select: dragging empty space orbits as usual.
+    const box = (await page.locator('canvas#viewport').boundingBox())!;
+    const before = await pose();
+    await page.mouse.move(box.x + 60, box.y + box.height - 60);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 200, box.y + box.height - 80, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+    const afterOrbit = await pose();
+    expect(afterOrbit.position).not.toEqual(before.position);
+
+    // Picking a colour jumps to Pen; the view is frozen (wheel does nothing) and Lock stays off.
+    await page.locator('#annotate-picker-panel button[title="#2196f2"]').click();
+    expect(await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getAnnotateMode())).toBe('pen');
+    expect(await userLocked()).toBe(false);
+    await expect(page.locator('#orbit-lock-toggle')).toHaveText(lockText!);
+    await page.waitForTimeout(400);
+    const penStart = await pose();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.wheel(0, -400);
+    await page.waitForTimeout(400);
+    // Frozen: a wheel zoom would move the camera by whole units; allow only
+    // the last of the orbit damping settling (~1e-6).
+    const penEnd = await pose();
+    for (let k = 0; k < 3; k++) expect(Math.abs(penEnd.position[k] - penStart.position[k])).toBeLessThan(1e-3);
+
+    // Esc leaves Pen for Select (panel stays open); Esc again closes it.
+    await page.keyboard.press('Escape');
+    expect(await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getAnnotateMode())).toBe('select');
+    await expect(page.locator('#annotate-picker-panel')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#annotate-picker-panel')).toBeHidden();
   });
 });

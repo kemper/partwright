@@ -25615,6 +25615,10 @@ async function main() {
       // Let select-mode handle Escape first when an annotation is selected
       // (it deselects). A subsequent Escape will close the menu.
       if (isSelectActive() && getSelectedAnnotationId()) return;
+      // In Annotate's Pen/Text, Escape steps back to Select (annotateUI's own
+      // handler); only Escape from Select closes the panel.
+      const annotateMode = getAnnotateSubMode();
+      if (annotateMode === 'pen' || annotateMode === 'text') return;
 
       let closed = false;
       if (isAnnotateOpen()) { closeAnnotateMenu(); closed = true; }
