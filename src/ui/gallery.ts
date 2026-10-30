@@ -1,6 +1,7 @@
 // Gallery view — grid of version thumbnails for comparing iterations,
 // plus a read-only strip of attached reference images at the top.
 
+import { showLightbox } from './lightbox';
 import { listCurrentVersions, loadVersion, getState } from '../storage/sessionManager';
 import { getImageAttachments, sortImagesByPreset, type SessionAttachment } from '../renderer/multiview';
 import { createVersionTile } from './versionTile';
@@ -112,48 +113,3 @@ function createImagesSection(images: SessionAttachment[]): HTMLElement {
   return section;
 }
 
-function showLightbox(src: string, label: string): void {
-  const overlay = document.createElement('div');
-  overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm';
-
-  // Single close path so every dismissal (overlay click, close button, Escape)
-  // tears down the DOM AND the document keydown listener — otherwise closing by
-  // any route except Escape would leak the listener.
-  const close = () => {
-    overlay.remove();
-    document.removeEventListener('keydown', onKey);
-  };
-  const onKey = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') close();
-  };
-
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) close();
-  });
-
-  const container = document.createElement('div');
-  container.className = 'relative max-w-[90vw] max-h-[90vh] flex flex-col items-center';
-
-  const img = document.createElement('img');
-  img.src = src;
-  img.className = 'max-w-full max-h-[85vh] object-contain rounded-lg shadow-2xl';
-  container.appendChild(img);
-
-  if (label) {
-    const caption = document.createElement('div');
-    caption.className = 'text-sm text-zinc-300 font-mono mt-2';
-    caption.textContent = label;
-    container.appendChild(caption);
-  }
-
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'absolute -top-3 -right-3 w-8 h-8 rounded-full bg-zinc-700 text-zinc-300 hover:bg-zinc-600 flex items-center justify-center text-lg';
-  closeBtn.textContent = '\u00D7';
-  closeBtn.addEventListener('click', close);
-  container.appendChild(closeBtn);
-
-  overlay.appendChild(container);
-  document.body.appendChild(overlay);
-
-  document.addEventListener('keydown', onKey);
-}

@@ -262,6 +262,8 @@ import {
 import {
   setAnnotationsVisible as setAnnotationsVisibleOverlay,
   isAnnotationsVisible as isAnnotationsVisibleOverlay,
+  clearViewMarks,
+  getShownViewMarksId,
 } from './annotations/annotationOverlay';
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth, addStrokeFromPoints } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
@@ -23188,13 +23190,30 @@ async function main() {
 
     /** Snap the camera to the angle the given annotation was originally
      *  drawn from. Useful when reviewing where an annotation belongs. */
-    restoreAnnotationView(id: string) {
-      const bad = argError(() => assertString(id, 'restoreAnnotationView(id)'));
+    restoreAnnotationView(id: string, opts?: { marks?: boolean }) {
+      const bad = argError(() => {
+        assertString(id, 'restoreAnnotationView(id)');
+        if (opts === undefined) return;
+        const o = assertObject(opts, 'restoreAnnotationView(opts)')!;
+        assertNoUnknownKeys(o, ['marks'], 'restoreAnnotationView(opts)');
+        assertBoolean(o.marks, 'restoreAnnotationView(opts).marks', { optional: true });
+      });
       if (bad) return bad;
       const view = getAnnotationView(id);
-      if (view) { restoreAnnotationViewCamera(view); return { restored: true }; }
+      if (view) {
+        restoreAnnotationViewCamera(view, { marks: opts?.marks });
+        return { restored: true, marksShown: getShownViewMarksId() === view.id };
+      }
       const ok = restoreAnnotationViewById(id);
       return ok ? { restored: true } : { error: `No annotation or annotation view with id ${id}` };
+    },
+
+    /** Stop showing a saved view's marks in the viewport (the history's
+     *  "Hide marks"). -> { hidden } (false when none were shown) */
+    hideAnnotationViewMarks() {
+      const had = getShownViewMarksId() !== null;
+      clearViewMarks();
+      return { hidden: had };
     },
 
     /** Annotate style: 'snapshot' (mark up a frozen frame, then save it as an
@@ -23963,7 +23982,8 @@ async function main() {
         'getAnnotationWidth': { signature: 'getAnnotationWidth() -- Current line width (pixels)', docs: '/ai/annotations.md' },
         'setAnnotationFontSize': { signature: 'setAnnotationFontSize(px) -- Set font size for new text labels (4..256 px)', docs: '/ai/annotations.md' },
         'getAnnotationFontSize': { signature: 'getAnnotationFontSize() -- Current text label font size (pixels)', docs: '/ai/annotations.md' },
-        'restoreAnnotationView': { signature: 'restoreAnnotationView(id) -- Snap the camera to the angle an annotation (or a saved annotation view) was made from', docs: '/ai/annotations.md' },
+        'restoreAnnotationView': { signature: 'restoreAnnotationView(id, {marks?}) -- Snap the camera to the angle an annotation (or a saved annotation view) was made from; a view also redraws its marks unless marks:false', docs: '/ai/annotations.md' },
+        'hideAnnotationViewMarks': { signature: 'hideAnnotationViewMarks() -- Stop showing a saved view\'s redrawn marks -> {hidden}', docs: '/ai/annotations.md' },
         'getAnnotateStyle':    { signature: 'getAnnotateStyle() -- Annotate style: "snapshot" (mark up a frozen frame, save as a view) or "floating"', docs: '/ai/annotations.md' },
         'setAnnotateStyle':    { signature: 'setAnnotateStyle("snapshot"|"floating") -- Switch the Annotate style -> {style}', docs: '/ai/annotations.md' },
         'saveAnnotationView':  { signature: 'await saveAnnotationView({title?}) -- Save the live frame + exact camera + marks (+ what they hit) to the annotation history -> view summary', docs: '/ai/annotations.md' },
