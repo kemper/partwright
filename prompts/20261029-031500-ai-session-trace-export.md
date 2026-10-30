@@ -87,3 +87,19 @@ Kept as is:
   it makes a trace of an imported session useful.
 - `ai.md` keeps a single pointer, because the turn-0 budget test is at its
   ceiling.
+
+## Human
+
+fix conflicts then merge it
+
+## Assistant
+
+## Merge with main
+
+`main` changed the AI Call Log in parallel: it now mirrors to the tab's
+sessionStorage and survives a reload. The conflicts (chatLoop imports and the
+CLAUDE.md call-log paragraph) kept both sides. I corrected my copy that
+assumed an empty log after a reload: the modal text, the trace readme, the
+iteration-workflow doc, and the e2e assertion that the log is empty after a
+reload. The trace still matters because it covers other tabs, closed tabs,
+and the full persisted history.

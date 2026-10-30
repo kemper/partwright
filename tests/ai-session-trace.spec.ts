@@ -5,8 +5,8 @@ import { openAiPanel, waitForEditorReady } from './helpers/aiPanel';
 // The AI session trace: a real (mocked-provider) turn runs in the agent
 // Worker, the chat loop persists per-call telemetry + tool timings on the chat
 // messages, and the 🩺 modal's "Download session trace" writes it all out as
-// one JSON file — from the saved chat, so it survives a reload (the AI Call
-// Log itself is in-memory and starts empty after one).
+// one JSON file — from the saved chat, so it survives a reload and covers
+// calls from other tabs too.
 
 function sse(obj: unknown): string {
   return `data: ${JSON.stringify(obj)}\n\n`;
@@ -60,7 +60,7 @@ test('AI session trace: telemetry is persisted and downloadable after a reload',
   await expect(page.locator('#ai-panel')).toContainText('The code returns a cube.', { timeout: 30_000 });
   expect(requests).toBe(2);
 
-  // Reload: the in-memory call log is gone, the trace still has everything.
+  // Reload: the trace is read from the saved chat, so it still has everything.
   await page.reload();
   await waitForEditorReady(page);
   await openAiPanel(page);
@@ -69,7 +69,6 @@ test('AI session trace: telemetry is persisted and downloadable after a reload',
   await page.locator('#ai-panel button[title^="AI Call Log"]').dispatchEvent('click');
   const modal = page.locator('.bg-zinc-800.rounded-xl').filter({ hasText: 'AI Call Log' });
   await expect(modal).toBeVisible();
-  await expect(modal).toContainText('No AI calls have been made in this tab since the page loaded.');
 
   const downloadPromise = page.waitForEvent('download');
   await modal.getByRole('button', { name: 'Download session trace' }).click();

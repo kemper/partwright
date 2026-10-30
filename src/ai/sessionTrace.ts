@@ -29,7 +29,7 @@ const README = [
   'Tokens: inputTokens = uncached prompt tokens; cacheReadTokens = prompt tokens served from the provider cache; cacheWriteTokens = prompt tokens written to cache; promptTokens = their sum. cacheHitRate = cacheRead / promptTokens.',
   'costUsd was recorded at call time; uncachedCostUsd re-prices the call with the CURRENT pricing table as if nothing were cached, so cacheSavingsUsd = uncached − actual (negative = cache writes cost more than they saved; a pricing change since the call also shows up here).',
   'Messages replaced by a compaction are deleted; their totals survive on the compaction_summary entry (compaction.dropped) and are included in summary.totals.',
-  'callLog: the AI Call Log for this browser tab since page load (also covers calls that left no message: errors, compaction, reviews, key checks). errors: AI entries from the Diagnostic Log, secrets redacted.',
+  'callLog: the AI Call Log for this browser tab (kept until the tab closes; also covers calls that left no message: errors, compaction, reviews, key checks). errors: AI entries from the Diagnostic Log, secrets redacted.',
   'Messages written before per-call telemetry existed have no `call`; their provider/model show as "unknown".',
 ].join('\n');
 

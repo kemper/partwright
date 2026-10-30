@@ -21,6 +21,13 @@ In streaming, the signature can ride the `functionCall` part, the answer text pa
 - **OpenAI** — maps to `reasoning.effort` on the Responses API, sent only for reasoning models (`isReasoningModel`), clamped to the catalog's per-model effort list: `off` → `none` where listed (gpt-5.1+) else omitted; `default` omits it; e.g. gpt-5-pro only ever gets `high`. Without catalog data, xhigh needs gpt-5.2+ and max gpt-5.6+. Non-reasoning models go via Chat Completions and never see a reasoning request. The **Custom** provider sends `include_reasoning: true` above Off, plus the level as `reasoning_effort` only when the user opted in on the Custom tab.
 - **Local** — no effect (`<think>` is stripped).
 
+**Default and cost.** The Standard preset defaults to **Medium** (settings rev 2 lowers a stored pre-rev-2 High once — `migrateThinking` in `settings.ts`). On a hard modeling step, High on Opus 5.x can think for 30k+ tokens and 5+ minutes per agent step. Two consequences are handled explicitly:
+
+- **Cache expiry.** Anthropic's default prompt cache lives 5 minutes. A step that thinks longer than that expires it, and the next step re-writes the whole conversation at 1.25× input. With `ai.extendedCacheForDeepThinking` on (default), High/XHigh/Max turns put the 1-hour TTL on every breakpoint (`cacheTtlForThinking` / `cacheControlFor` in `anthropicCache.ts`; one TTL per request because the API requires longer-lived entries to precede shorter ones). 1-hour writes bill at 2× input: `TurnUsage.cacheCreation1hInputTokens` carries the 1-hour part, priced in `cost.ts`.
+- **Cut off while thinking.** A `max_tokens` stop with no text and no tool call gets outcome detail `MAX_TOKENS_WHILE_THINKING`. The unfinished thinking is dropped from history (an assistant turn can't end in thinking), so the panel says the step will restart and offers "Retry at <one level lower> thinking" (`lowerThinkingLevel`) ahead of "Keep going at this level".
+
+The AI Call Log (🩺) records cache reads, cache writes (with the 1-hour part) and per-call cost, so an expired cache shows up as a large cache write on a mid-conversation call.
+
 ## Auto-continue (the ♾ pill)
 
 `ChatToggles.autoResume` (boolean, **off by default**; on only in the explicit max-autonomy full preset) keeps the agent working until the model calls the **`finish`** sentinel tool instead of stopping at every `end_turn`. It's off in standard (the app default) and minimal because auto-continuing surprises users — the agent presses past a clarifying question instead of waiting for an answer. The default lives in `DEFAULT_TOGGLES_BY_PRESET`; turning it on (or off) writes a `custom` preset that `mergeWithDefaults` preserves (an explicit choice is never overwritten).

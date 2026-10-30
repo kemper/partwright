@@ -361,7 +361,7 @@ chat command.
   content, `durationMs` and `attempts`. Assistant entries carry the per-call `request` shape
   (offered tool names, tool-schema chars, system prompt + suffix chars, history chars, chars
   pruned, images sent/elided) and transient `retries`.
-- `callLog` / `errors` — this tab's AI Call Log since load, and AI entries from the Diagnostic
+- `callLog` / `errors` — this tab's AI Call Log, and AI entries from the Diagnostic
   Log. Secrets are redacted everywhere.
 
 Turns compacted away are deleted, but their totals stay on the `compaction_summary` entry and in

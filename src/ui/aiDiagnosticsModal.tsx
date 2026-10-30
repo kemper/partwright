@@ -1,4 +1,4 @@
-// AI Diagnostics modal. In-memory ring buffer of recent provider events
+// AI Diagnostics modal. Ring buffer of recent provider events (kept for the tab's life)
 // with full error messages — the only place to see why "ended (unknown)"
 // really happened.
 //
@@ -16,6 +16,7 @@ import {
 } from '../ai/diagnostics';
 import { showToast } from './toast';
 import { providerLabel } from '../ai/settings';
+import { formatUsd } from '../ai/cost';
 import { mountPreactModal } from './preact/mount';
 import { confirmDialog } from './dialogs';
 import { BUTTON_PRIMARY } from './styleConstants';
@@ -51,7 +52,7 @@ function DiagnosticsBody() {
     <>
       <TraceSection />
       <p class="text-xs text-zinc-400 leading-snug">
-        Most recent AI provider calls in <strong>this tab since the page loaded</strong>, newest first. Use this when a turn ends with an opaque status like "ended (unknown)" — the full error and the request shape land here. Calls from before a reload or from another tab aren't listed; the session trace above has them.
+        Most recent AI provider calls in <strong>this tab</strong> (kept across reloads until the tab closes), newest first. Use this when a turn ends with an opaque status like "ended (unknown)" — the full error and the request shape land here. Calls made in other tabs or before this tab was opened aren't listed; the session trace above has the whole chat.
       </p>
       <div class="flex items-center justify-between gap-2 border-b border-zinc-800 pb-2">
         <span class="text-xs text-zinc-500">{statsText}</span>
@@ -95,7 +96,7 @@ function DiagnosticsBody() {
         {visible.length === 0
           ? <p class="text-zinc-500 text-xs italic">
               {events.value.length === 0
-                ? 'No AI calls have been made in this tab since the page loaded.'
+                ? 'No AI calls have been made in this tab yet.'
                 : 'No events match the current filter.'}
             </p>
           : visible.map(evt => <EventRow key={evt.id} evt={evt} />)}
@@ -184,7 +185,9 @@ function EventRow(props: { evt: DiagnosticEvent }) {
   if (evt.status === 'ok') {
     if (evt.stopReason) subParts.push(`stop: ${evt.stopReason}`);
     if (typeof evt.outputTokens === 'number') subParts.push(`${evt.outputTokens}t out`);
+    if (evt.cacheWriteTokens) subParts.push(`${evt.cacheWriteTokens}t cache write`);
     if (evt.toolCallCount) subParts.push(`${evt.toolCallCount} tool call(s)`);
+    if (typeof evt.costUsd === 'number') subParts.push(formatUsd(evt.costUsd));
   } else if (evt.status === 'error') {
     subParts.push(truncate(evt.errorMessage ?? 'error', 80));
   } else if (evt.status === 'aborted') {
@@ -214,8 +217,9 @@ function EventRow(props: { evt: DiagnosticEvent }) {
           <>
             {evt.stopReason && <Kv label="Stop reason" value={evt.stopReason} />}
             {typeof evt.inputTokens === 'number' && (
-              <Kv label="Tokens" value={`${evt.inputTokens} in · ${evt.outputTokens ?? 0} out${evt.cachedTokens ? ` · ${evt.cachedTokens} cached` : ''}`} />
+              <Kv label="Tokens" value={tokenSummary(evt)} />
             )}
+            {typeof evt.costUsd === 'number' && <Kv label="Cost" value={formatUsd(evt.costUsd)} />}
             {evt.textPreview && evt.textPreview.length > 0 && <KvBlock label="Text preview" value={evt.textPreview} />}
           </>
         )}
@@ -223,6 +227,18 @@ function EventRow(props: { evt: DiagnosticEvent }) {
       </div>
     </details>
   );
+}
+
+/** "in · out · cache read · cache write" — the write count is what shows an
+ *  expired cache: a mid-conversation call that re-writes the whole history. */
+function tokenSummary(evt: DiagnosticEvent): string {
+  const parts = [`${evt.inputTokens} in`, `${evt.outputTokens ?? 0} out`];
+  if (evt.cachedTokens) parts.push(`${evt.cachedTokens} cache read`);
+  if (evt.cacheWriteTokens) {
+    const oneHour = evt.cacheWrite1hTokens ? ` (${evt.cacheWrite1hTokens} at 1h)` : '';
+    parts.push(`${evt.cacheWriteTokens} cache write${oneHour}`);
+  }
+  return parts.join(' · ');
 }
 
 function Kv(props: { label: string; value: string }) {

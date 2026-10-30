@@ -17,13 +17,14 @@ import { streamTurn as streamTurnGemini, type StreamCallbacks as GeminiStreamCal
 import { streamTurn as streamTurnCustom } from './custom';
 import { getKey, recordUsage, putMessages } from './db';
 import { resolveCustomApiKey } from './customEndpoints';
-import { recordEvent } from './diagnostics';
+import { recordEvent, usageEventFields } from './diagnostics';
 import { redactSecrets } from '../diagnostics/logQuery';
 import { buildToolList, executeTool, type ToolDefinition, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, RETRY_SAFE_TOOLS, declinedToolMessage, preConfirmToolResult, unofferedToolMessage, LEGACY_TOOL_ALIASES, TURN_ENDING_TOOLS, type ToolExecResult } from './tools';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { loadSettings } from './settings';
 import { turnCostUsd } from './cost';
-import { activeModel, ITERATION_CAP, SPEND_CAP_USD, type ApiCallTrace, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type Provider, type TurnOutcomeReason } from './types';
+import { cacheTtlForThinking } from './anthropicCache';
+import { activeModel, ITERATION_CAP, MAX_TOKENS_WHILE_THINKING, SPEND_CAP_USD, type ApiCallTrace, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type Provider, type TurnOutcomeReason } from './types';
 import { getConfig } from '../config/appConfig';
 import { isTransientError, isTransientToolFailure } from './transientError';
 import { elideStaleToolImages, providerCachesHistory, pruneStaleToolPayloads } from './historyElision';
@@ -439,6 +440,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           tools,
           thinking: toggles.thinking,
           cacheHistory: aiCfg.cacheConversationHistory,
+          cacheTtl: cacheTtlForThinking(toggles.thinking, aiCfg.extendedCacheForDeepThinking),
         }, streamCallbacks, signal);
       } else if (toggles.provider === 'openai') {
         // sendMessage passes the active provider's key as `apiKey`; fall
@@ -541,6 +543,12 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     const durationMs = Date.now() - apiCallStart;
     turnApiTimeMs += durationMs;
 
+    // null = the model has no known pricing (the user authorized it anyway
+    // in the panel's preflight) — recorded as "cost unknown", never $0.
+    const pricedCost = turnCostUsd(toggles.provider, model ?? '', result.usage);
+    const turnCost = pricedCost ?? 0;
+    totalCostUsd += turnCost;
+
     recordEvent({
       provider: toggles.provider,
       model: model ?? '(no model)',
@@ -548,19 +556,11 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       durationMs,
       status: result.stopReason === 'aborted' ? 'aborted' : 'ok',
       stopReason: result.stopReason,
-      inputTokens: result.usage.inputTokens,
-      outputTokens: result.usage.outputTokens,
-      cachedTokens: result.usage.cacheReadInputTokens,
+      ...usageEventFields(result.usage, pricedCost),
       toolCallCount: result.toolCalls.length,
       textPreview: result.text.slice(0, 200),
       requestSummary,
     });
-
-    // null = the model has no known pricing (the user authorized it anyway
-    // in the panel's preflight) — recorded as "cost unknown", never $0.
-    const pricedCost = turnCostUsd(toggles.provider, model ?? '', result.usage);
-    const turnCost = pricedCost ?? 0;
-    totalCostUsd += turnCost;
 
     const aborted = result.stopReason === 'aborted' || signal?.aborted === true;
 
@@ -709,7 +709,17 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       if (effectiveStopReason === 'end_turn') reason = hasText ? 'end_turn' : 'empty_final';
       else if (effectiveStopReason === 'max_tokens') reason = 'max_tokens';
       else if (effectiveStopReason === 'refusal') reason = 'refusal';
-      callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason, detail: effectiveStopReason, iterations: iter + 1 });
+      // A max_tokens stop that thought but produced no text and no tool call
+      // ran out of room while still thinking. That reasoning is dropped from
+      // history (the API won't accept a turn that ends in thinking), so "keep
+      // going" restarts the step rather than continuing it — the panel says
+      // so. A Local tool call cut off mid-way also lands here with no text,
+      // but that's not a thinking problem, so it keeps its own hint.
+      const thought = !!result.thinking?.trim() || (result.thinkingBlocks?.length ?? 0) > 0;
+      const detail = reason === 'max_tokens' && !hasText && result.toolCalls.length === 0 && thought && !localTruncated
+        ? MAX_TOKENS_WHILE_THINKING
+        : effectiveStopReason;
+      callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason, detail, iterations: iter + 1 });
       return workingHistory;
     }
 

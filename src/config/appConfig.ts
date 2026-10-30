@@ -89,6 +89,11 @@ export interface AppConfig {
      *  rate (~10% of input) instead of full price. OpenAI and Gemini cache a
      *  repeated prefix automatically. */
     cacheConversationHistory: boolean;
+    /** Use Anthropic's 1-hour prompt cache (2× input to write, vs 1.25× for
+     *  the default 5 minutes) on turns at the High, XHigh or Max thinking
+     *  level. Those steps can think for over 5 minutes, which expires the
+     *  default cache and makes the next step re-write the whole conversation. */
+    extendedCacheForDeepThinking: boolean;
     /** Render images allowed to accumulate in the request before a trim, for
      *  providers that cache the history (Anthropic with history caching on,
      *  OpenAI, Gemini). Cached images are cheap to re-send, and trimming edits
@@ -525,6 +530,11 @@ export interface AppConfig {
      *  reached. After it fades, "Recover deleted" in the Objects list still
      *  restores the item. */
     undoToastDurationMs: number;
+    /** How long the collapsed model-console pill (shown when a run prints with
+     *  console.log / warn) stays in the viewport corner before fading away
+     *  (ms). 0 keeps it until dismissed. Output with errors never auto-hides;
+     *  "Show console output" in the command palette brings it back. */
+    modelConsoleAutoHideMs: number;
     /** Days a deleted object stays in the "Recover deleted" bin before it is
      *  permanently purged (checked whenever the bin is read). */
     deletedObjectRetentionDays: number;
@@ -761,6 +771,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     imageTokenEstimate: 1500,
     keepRecentToolImages: 3,
     cacheConversationHistory: true,
+    extendedCacheForDeepThinking: true,
     cachedImageLimit: 15,
     cachedImageTrimTo: 8,
     autoCompactMaxTokens: 150_000,
@@ -891,6 +902,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     maxAppliedNoteChars: 400,
     toastDurationMs: 2200,
     undoToastDurationMs: 8000,
+    modelConsoleAutoHideMs: 10_000,
     deletedObjectRetentionDays: 30,
     tooltipDelayMs: 150,
     exportColorMergeTolerance: 10,

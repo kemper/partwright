@@ -352,6 +352,13 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ai.cacheConversationHistory}
           onChange={v => set('ai', 'cacheConversationHistory', v)}
         />
+        <ToggleField cfgKey="ai.extendedCacheForDeepThinking"
+          label="1-hour cache for High+ thinking (Anthropic)"
+          hint="At High, XHigh or Max thinking a single step can think for more than 5 minutes, which expires Anthropic's default cache — the next step then re-writes the whole conversation at 1.25× input. The 1-hour cache costs 2× input to write but survives long thinking and pauses between messages."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.extendedCacheForDeepThinking}
+          value={c.ai.extendedCacheForDeepThinking}
+          onChange={v => set('ai', 'extendedCacheForDeepThinking', v)}
+        />
         <Field cfgKey="ai.cachedImageLimit"
           label="Render images before a trim (cached providers)"
           unit="images"
@@ -1968,6 +1975,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.undoToastDurationMs}
           min={2000} max={60_000} integer
           onChange={v => set('ui', 'undoToastDurationMs', v)}
+        />
+        <Field cfgKey="ui.modelConsoleAutoHideMs"
+          label="Console pill auto-hide"
+          unit="ms"
+          hint="How long the console pill stays in the viewport corner after a run prints. 0 = until dismissed."
+          tooltip="When model code prints with console.log or console.warn, a small Console pill with the line count appears in the viewport's lower-left corner. Click it to read the output. It fades after this long; output with errors stays until you dismiss it. Show console output in the command palette brings it back."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.modelConsoleAutoHideMs}
+          value={c.ui.modelConsoleAutoHideMs}
+          min={0} max={600_000} integer
+          onChange={v => set('ui', 'modelConsoleAutoHideMs', v)}
         />
         <Field cfgKey="ui.deletedObjectRetentionDays"
           label="Keep deleted objects"
