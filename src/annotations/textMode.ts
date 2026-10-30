@@ -18,8 +18,7 @@ import {
 } from './sessionPlane';
 import {
   getRenderer,
-  setUserOrbitLock,
-  isUserOrbitLocked,
+  setDrawLock,
 } from '../renderer/viewport';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
 import { registerExclusiveMode, deactivateMode } from '../ui/modeExclusion';
@@ -28,7 +27,6 @@ const DEFAULT_COLOR: [number, number, number] = [0.95, 0.20, 0.45];
 const DEFAULT_FONT_SIZE = 28;
 
 let active = false;
-let priorOrbitLock = false;
 let currentColor: [number, number, number] = [...DEFAULT_COLOR] as [number, number, number];
 let currentFontSize = DEFAULT_FONT_SIZE;
 
@@ -76,8 +74,6 @@ export function activate(): void {
   if (!getActiveSession()) startSession();
 
   active = true;
-  priorOrbitLock = isUserOrbitLocked();
-  setUserOrbitLock(true);
 
   const overlay = getOverlayGroup();
   if (overlay) showPlaneOutline(overlay);
@@ -90,13 +86,15 @@ export function activate(): void {
 
   // Stop pen mode but keep the session alive so we share the plane.
   deactivateMode('pen', { keepSession: true });
+  // Freeze the frame AFTER pen's deactivate (which releases the same lock).
+  setDrawLock(true);
 }
 
 export function deactivate(): void {
   if (!active) return;
   active = false;
   cancelInProgress();
-  if (!priorOrbitLock) setUserOrbitLock(false);
+  setDrawLock(false);
 
   const canvas = getRenderer().domElement;
   canvas.removeEventListener('click', onCanvasClick);

@@ -538,6 +538,9 @@ export interface AppConfig {
     /** Days a deleted object stays in the "Recover deleted" bin before it is
      *  permanently purged (checked whenever the bin is read). */
     deletedObjectRetentionDays: number;
+    /** Widest a saved annotation view's captured frame is stored at (px);
+     *  larger viewports are scaled down. Bigger = sharper views, more storage. */
+    annotationViewMaxWidth: number;
     /** Hover-tooltip show delay (ms). */
     tooltipDelayMs: number;
     /** 3MF export "Filament colors" step: the merge tolerance (CIE76 ΔE) it opens
@@ -904,6 +907,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     undoToastDurationMs: 8000,
     modelConsoleAutoHideMs: 10_000,
     deletedObjectRetentionDays: 30,
+    annotationViewMaxWidth: 1280,
     tooltipDelayMs: 150,
     exportColorMergeTolerance: 10,
     codeEditorErrorIdleMs: 800,

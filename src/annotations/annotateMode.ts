@@ -25,8 +25,7 @@ import {
 } from './sessionPlane';
 import {
   getRenderer,
-  setUserOrbitLock,
-  isUserOrbitLocked,
+  setDrawLock,
 } from '../renderer/viewport';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
 import { registerExclusiveMode, deactivateMode } from '../ui/modeExclusion';
@@ -43,7 +42,6 @@ let currentWidth = DEFAULT_WIDTH;
 
 let drawing = false;
 let currentPoints: THREE.Vector3[] = [];
-let priorOrbitLock = false;
 
 let previewLine: Line2 | null = null;
 
@@ -97,8 +95,9 @@ export function activate(): void {
   if (!getActiveSession()) startSession();
 
   active = true;
-  priorOrbitLock = isUserOrbitLocked();
-  setUserOrbitLock(true);
+  // Freeze the frame being marked up (rotate, pan and zoom) without lighting
+  // the toolbar's Lock toggle.
+  setDrawLock(true);
 
   const overlay = getOverlayGroup();
   if (overlay) showPlaneOutline(overlay);
@@ -118,7 +117,7 @@ export function deactivate(): void {
   if (!active) return;
   active = false;
   cancelInProgress();
-  if (!priorOrbitLock) setUserOrbitLock(false);
+  setDrawLock(false);
 
   const canvas = getRenderer().domElement;
   canvas.removeEventListener('pointerdown', onPointerDown);

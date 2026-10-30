@@ -40,7 +40,21 @@ import {
   clearAll,
 } from './annotations';
 import { setAnnotationsVisible, isAnnotationsVisible } from './annotationOverlay';
-import { endSession as endSessionPlane, hidePlaneOutline } from './sessionPlane';
+import { endSession as endSessionPlane, hidePlaneOutline, restoreCameraView } from './sessionPlane';
+import { setDraftScope, getDrafts } from './annotations';
+import {
+  getAnnotateStyle,
+  setAnnotateStyle,
+  onAnnotateStyleChange,
+  getAnnotationViews,
+  onAnnotationViewsChange,
+  deleteAnnotationView,
+  type AnnotateStyle,
+} from './annotationViews';
+import { captureAnnotationView, restoreAnnotationViewCamera, attachAnnotationViewToChat } from './viewCapture';
+import { describeViewHits, type AnnotationView } from './annotationViewTypes';
+import { showToast } from '../ui/toast';
+import { BUTTON_SMALL_PRIMARY, BUTTON_SMALL_SECONDARY, BUTTON_SMALL_DANGER } from '../ui/styleConstants';
 import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewportPanelDrag';
 import { viewportToolsMount } from '../ui/popoverMenu';
@@ -91,6 +105,13 @@ let annotateContentEl: HTMLElement | null = null;
 let syncColorUI: ((c: [number, number, number]) => void) | null = null;
 let syncWidthUI: (() => void) | null = null;
 let syncFontUI: (() => void) | null = null;
+let snapshotTabBtn: HTMLButtonElement | null = null;
+let floatingTabBtn: HTMLButtonElement | null = null;
+let styleInfo: HTMLElement | null = null;
+let saveViewBtn: HTMLButtonElement | null = null;
+let viewTitleInput: HTMLInputElement | null = null;
+let historyHeader: HTMLElement | null = null;
+let historyList: HTMLElement | null = null;
 
 const inactiveBtnClass = TOOL_TOGGLE_IDLE;
 const activeBtnClass = TOOL_TOGGLE_ACTIVE;
@@ -126,7 +147,7 @@ export function initAnnotateUI(controlsContainer: HTMLElement): void {
     title: 'Annotate (draw / text)',
     hint: 'Tools',
     prefillSchema: {
-      mode: { type: 'enum', values: ['pen', 'text', 'select'], description: 'Sub-mode to start in (default pen).' },
+      mode: { type: 'enum', values: ['pen', 'text', 'select'], description: 'Sub-mode to start in (default select — the user picks a colour or Pen to draw).' },
       color: { type: 'color', description: 'Draw colour for strokes + text ([r,g,b] 0..1 or "#rrggbb").' },
       width: { type: 'number', min: 0.5, max: 64, description: 'Pen line width in px (presets 2 / 4 / 7 / 12).' },
       fontSize: { type: 'number', min: 4, max: 256, description: 'Text size in px (presets 16 / 22 / 32 / 48).' },
@@ -146,6 +167,11 @@ export function initAnnotateUI(controlsContainer: HTMLElement): void {
   onTextActiveChange(updatePanelState);
   onSelectActiveChange(updatePanelState);
   onSelectionChange(updateSelectionInfo);
+  onAnnotateStyleChange(onStyleChanged);
+  onAnnotationViewsChange(renderHistory);
+  onStrokesChange(updateSaveButton);
+  updateStyleUI();
+  renderHistory();
   updateCountBadge();
   updatePanelState();
   updateSelectionInfo(null);
@@ -156,7 +182,7 @@ export function initAnnotateUI(controlsContainer: HTMLElement): void {
  *  colour / width / font size staged — the user draws. */
 function openAnnotateWithPrefill(p: Record<string, unknown> | undefined, ctx: ToolOpenContext): ToolOpenResult {
   const pre = p ?? {};
-  const mode = (pre.mode as 'pen' | 'text' | 'select' | undefined) ?? (isAnyActive() ? undefined : 'pen');
+  const mode = (pre.mode as 'pen' | 'text' | 'select' | undefined) ?? (isAnyActive() ? undefined : 'select');
   if (mode === 'pen') selectPenSubMode();
   else if (mode === 'text') selectTextSubMode();
   else if (mode === 'select') selectSelectSubMode();
@@ -186,31 +212,201 @@ function toggleAnnotateMode(): void {
     hidePlaneOutline();
     endSessionPlane();
   } else {
-    activatePen();
+    // Annotate opens at rest in Select: the view behaves as it did before
+    // the panel opened; Pen/Text (or picking a colour) start drawing.
+    selectSelectSubMode();
   }
+}
+
+/** Before Annotate opens (not on a sub-mode switch): in Snapshot style, enter
+ *  the draft layer and, when unsaved drafts are waiting, snap the camera back
+ *  to the frame they were drawn on so they line up again. */
+function prepareOpen(): void {
+  if (isAnyActive()) return;
+  if (getAnnotateStyle() !== 'snapshot') return;
+  setDraftScope(true);
+  const draft = getDrafts()[0];
+  if (draft) restoreCameraView(draft.camera);
 }
 
 function selectPenSubMode(): void {
   if (isPenActive()) return;
+  prepareOpen();
   activatePen();
 }
 
 function selectTextSubMode(): void {
   if (isTextActive()) return;
+  prepareOpen();
   activateText();
 }
 
 function selectSelectSubMode(): void {
   if (isSelectActive()) return;
+  prepareOpen();
   activateSelect();
+}
+
+function onStyleChanged(): void {
+  if (isAnyActive()) setDraftScope(getAnnotateStyle() === 'snapshot');
+  updateStyleUI();
+}
+
+function updateStyleUI(): void {
+  const snapshot = getAnnotateStyle() === 'snapshot';
+  if (snapshotTabBtn) snapshotTabBtn.className = snapshot ? tabActiveClass : tabInactiveClass;
+  if (floatingTabBtn) floatingTabBtn.className = snapshot ? tabInactiveClass : tabActiveClass;
+  if (styleInfo) {
+    styleInfo.textContent = snapshot
+      ? 'Snapshot: line up the view, then pick a colour or Pen to mark it up (the view holds still while you draw; Esc returns to Select). Save view keeps the frame, its exact camera and your marks in the history below. Attach a view to the AI chat when you are ready.'
+      : 'Floating: marks stay pinned in space, saved with this version and drawn in every render. Save view also records this angle in the history.';
+  }
+  updateSaveButton();
+}
+
+function updateSaveButton(): void {
+  if (!saveViewBtn) return;
+  saveViewBtn.textContent = getAnnotateStyle() === 'snapshot' && getDrafts().length === 0
+    ? '\u{1F4F7} Save view (no marks)'
+    : '\u{1F4F7} Save view';
+}
+
+async function saveView(): Promise<void> {
+  if (!saveViewBtn) return;
+  saveViewBtn.disabled = true;
+  try {
+    const r = await captureAnnotationView({ title: viewTitleInput?.value });
+    if ('error' in r) { showToast(r.error, { variant: 'warn', source: 'app' }); return; }
+    if (viewTitleInput) viewTitleInput.value = '';
+    showToast(`Saved "${r.title}" to the annotation history`, { variant: 'success', source: 'app' });
+  } catch (err) {
+    showToast(`Could not save the view: ${(err as Error)?.message ?? String(err)}`, { variant: 'warn', source: 'app' });
+  } finally {
+    saveViewBtn.disabled = false;
+    updateSaveButton();
+  }
+}
+
+function formatAgo(ms: number): string {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return new Date(ms).toLocaleDateString();
+}
+
+const historyBtnClass = `${BUTTON_SMALL_SECONDARY} min-h-[44px] md:min-h-0 whitespace-nowrap`;
+const historyDangerClass = `${BUTTON_SMALL_DANGER} border border-red-800/60 whitespace-nowrap`;
+
+function renderHistory(): void {
+  if (!historyList || !historyHeader) return;
+  const views = [...getAnnotationViews()].reverse();
+  historyHeader.textContent = `History (${views.length})`;
+  historyList.replaceChildren();
+  if (views.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'text-[10px] text-zinc-500 py-1';
+    empty.textContent = 'No saved views yet.';
+    historyList.appendChild(empty);
+    return;
+  }
+  for (const v of views) historyList.appendChild(historyRow(v));
+}
+
+function historyRow(v: AnnotationView): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'flex gap-2 items-start py-1.5 border-b border-zinc-700/60 last:border-b-0';
+  row.dataset.viewId = v.id;
+
+  const thumb = document.createElement('img');
+  thumb.src = v.image;
+  thumb.alt = v.title;
+  thumb.className = 'w-16 h-11 shrink-0 rounded object-cover border border-zinc-600 cursor-pointer hover:border-zinc-300';
+  thumb.title = 'Snap the camera to this view';
+  thumb.addEventListener('click', () => restoreAnnotationViewCamera(v));
+  row.appendChild(thumb);
+
+  const body = document.createElement('div');
+  body.className = 'min-w-0 flex-1';
+  const title = document.createElement('div');
+  title.className = 'text-[11px] text-zinc-200 truncate';
+  title.textContent = v.title;
+  body.appendChild(title);
+  const meta = document.createElement('div');
+  meta.className = 'text-[10px] text-zinc-500 truncate';
+  meta.textContent = `${describeViewHits(v)} · ${formatAgo(v.createdAt)}${v.attachedAt ? ' · attached' : ''}`;
+  meta.title = meta.textContent;
+  body.appendChild(meta);
+
+  const btns = document.createElement('div');
+  btns.className = 'flex flex-wrap items-center gap-1 mt-1';
+  const attach = document.createElement('button');
+  attach.className = historyBtnClass;
+  attach.textContent = '\u{1F4CE} Attach to AI';
+  attach.title = 'Add this view (image + summary) to the AI chat input — nothing is sent until you press Send';
+  attach.addEventListener('click', async () => {
+    const r = await attachAnnotationViewToChat(v);
+    if ('error' in r) showToast(r.error, { variant: 'warn', source: 'app' });
+    else showToast(`Attached "${v.title}" to the AI chat`, { variant: 'success', source: 'app' });
+  });
+  btns.appendChild(attach);
+
+  const view = document.createElement('button');
+  view.className = historyBtnClass;
+  view.textContent = 'View';
+  view.title = 'Snap the camera to this view';
+  view.addEventListener('click', () => restoreAnnotationViewCamera(v));
+  btns.appendChild(view);
+
+  const del = document.createElement('button');
+  del.className = historyBtnClass;
+  del.textContent = 'Delete';
+  del.title = 'Delete this view from the history';
+  // Two-step delete: the first click arms "Confirm" for a few seconds (and
+  // disarms on blur), so a stray later click can't delete.
+  let disarmTimer: ReturnType<typeof setTimeout> | null = null;
+  const disarm = () => {
+    if (disarmTimer) clearTimeout(disarmTimer);
+    disarmTimer = null;
+    del.textContent = 'Delete';
+    del.className = historyBtnClass;
+  };
+  del.addEventListener('blur', disarm);
+  del.addEventListener('click', () => {
+    if (!disarmTimer) {
+      del.textContent = 'Confirm';
+      del.className = historyDangerClass;
+      disarmTimer = setTimeout(disarm, 4000);
+      return;
+    }
+    disarm();
+    deleteAnnotationView(v.id).catch(err => showToast(`Could not delete the view: ${(err as Error)?.message ?? String(err)}`, { variant: 'warn', source: 'app' }));
+  });
+  btns.appendChild(del);
+  body.appendChild(btns);
+  row.appendChild(body);
+  return row;
 }
 
 const annotateRegistryEntry = { close(): void { closeAnnotatePanel(); } };
 
+/** Esc steps back one level: Pen/Text → Select; Select (nothing selected) →
+ *  close Annotate. Keys typed into a field (the text-label input, the view
+ *  title) are left to that field — its own Esc cancels the edit first. */
 function onAnnotateEscape(e: KeyboardEvent): void {
   if (e.key !== 'Escape') return;
   if (document.querySelector('[role="dialog"]')) return;
+  const t = e.target as HTMLElement | null;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  if (isPenActive() || isTextActive()) { selectSelectSubMode(); return; }
+  if (isSelectActive() && getSelectedId()) return; // select mode's own Esc deselects
   closeAnnotatePanel();
+}
+
+/** Picking a colour from Select means "I want to draw": jump to Pen. Text
+ *  keeps its mode (the colour applies to the next label). */
+function drawWithPickedColor(): void {
+  if (!isPenActive() && !isTextActive()) selectPenSubMode();
 }
 
 function updatePanelState(): void {
@@ -218,6 +414,13 @@ function updatePanelState(): void {
   const open = isAnyActive();
   const wasOpen = pickerPanel ? !pickerPanel.classList.contains('hidden') : false;
   annotateBtn.className = open ? activeBtnClass : inactiveBtnClass;
+  // Drafts are only in scope while Annotate is open in Snapshot style. A
+  // sub-mode switch passes through a moment with no mode active (the old one
+  // deactivates before the new one activates), so leaving the draft layer is
+  // deferred to a microtask and skipped if Annotate reopened by then —
+  // otherwise every switch would flicker the overlay and drop redo.
+  if (open) setDraftScope(getAnnotateStyle() === 'snapshot');
+  else queueMicrotask(() => { if (!isAnyActive()) setDraftScope(false); });
   if (open) {
     pickerPanel?.classList.remove('hidden');
     if (!wasOpen && pickerPanel) {
@@ -279,7 +482,10 @@ function createPickerPanel(): HTMLElement {
   const panel = document.createElement('div');
   panel.id = 'annotate-picker-panel';
   panel.className = 'hidden absolute z-20 bg-zinc-800/95 backdrop-blur border border-zinc-600/60 rounded-lg shadow-xl';
-  panel.style.minWidth = '220px';
+  // Fixed width: the panel sits over the viewport, so it must not grow wide
+  // enough to cover the frame being marked up.
+  panel.style.width = '288px';
+  panel.style.maxWidth = 'calc(100vw - 32px)';
 
   // Header: drag handle + title + × close button (shared tool-panel chrome).
   const header = createToolPanelHeader('✏️ Annotate', () => { toggleAnnotateMode(); }, 'Close annotate menu');
@@ -292,15 +498,39 @@ function createPickerPanel(): HTMLElement {
   panel.appendChild(content);
   annotateContentEl = content;
 
-  // Info banner — explains the purpose of annotations to the user.
-  const info = document.createElement('div');
-  info.className = 'mb-2 p-2 rounded bg-blue-500/10 border border-blue-400/30 text-[10px] text-blue-200 leading-snug';
-  info.textContent = 'Annotations are saved with this session and exported in the JSON. Use them to point out specific improvements for an AI working on the model.';
-  content.appendChild(info);
+  // Style: Snapshot (mark up a frozen frame, save it as a view) or Floating
+  // (marks pinned in space, saved per version).
+  const styleRow = document.createElement('div');
+  styleRow.className = 'flex items-center gap-1.5 mb-2';
+  const mkStyleBtn = (label: string, value: AnnotateStyle, tip: string): HTMLButtonElement => {
+    const b = document.createElement('button');
+    b.className = tabInactiveClass;
+    b.textContent = label;
+    b.title = tip;
+    b.dataset.annotateStyle = value;
+    b.addEventListener('click', () => setAnnotateStyle(value));
+    styleRow.appendChild(b);
+    return b;
+  };
+  snapshotTabBtn = mkStyleBtn('\u{1F4F7} Snapshot', 'snapshot', 'Mark up the current frame; save it with its camera angle as a view the AI can look at');
+  floatingTabBtn = mkStyleBtn('\u{1FAE7} Floating', 'floating', 'Marks float on a plane in space and are saved with the version');
+  content.appendChild(styleRow);
+
+  // Info banner — explains the active style.
+  styleInfo = document.createElement('div');
+  styleInfo.className = 'mb-2 p-2 rounded bg-blue-500/10 border border-blue-400/30 text-[10px] text-blue-200 leading-snug';
+  content.appendChild(styleInfo);
 
   // Sub-mode tabs
   const tabsRow = document.createElement('div');
   tabsRow.className = 'flex items-center gap-1.5 mb-2';
+
+  selectTabBtn = document.createElement('button');
+  selectTabBtn.className = tabInactiveClass;
+  selectTabBtn.textContent = '\u2196 Select';
+  selectTabBtn.title = 'Look around as usual; click an annotation to select it, drag to move, Delete to remove';
+  selectTabBtn.addEventListener('click', selectSelectSubMode);
+  tabsRow.appendChild(selectTabBtn);
 
   penTabBtn = document.createElement('button');
   penTabBtn.className = tabInactiveClass;
@@ -316,12 +546,6 @@ function createPickerPanel(): HTMLElement {
   textTabBtn.addEventListener('click', selectTextSubMode);
   tabsRow.appendChild(textTabBtn);
 
-  selectTabBtn = document.createElement('button');
-  selectTabBtn.className = tabInactiveClass;
-  selectTabBtn.textContent = '\u2716 Select';
-  selectTabBtn.title = 'Click an annotation to select; drag to move; Delete to remove';
-  selectTabBtn.addEventListener('click', selectSelectSubMode);
-  tabsRow.appendChild(selectTabBtn);
 
   content.appendChild(tabsRow);
 
@@ -344,6 +568,7 @@ function createPickerPanel(): HTMLElement {
       setTextColor(color);
       markActiveSwatch(grid, swatch);
       custom.setHex(rgbToHex(color)); // keep the custom swatch a truthful preview
+      drawWithPickedColor();
     });
     grid.appendChild(swatch);
   }
@@ -368,6 +593,7 @@ function createPickerPanel(): HTMLElement {
       for (const child of Array.from(grid.children)) {
         (child as HTMLElement).classList.remove('border-white/80', 'ring-1', 'ring-white/30');
       }
+      drawWithPickedColor();
     },
   });
   syncColorUI = (c) => {
@@ -518,6 +744,32 @@ function createPickerPanel(): HTMLElement {
   actions.appendChild(clearAllBtn);
 
   content.appendChild(actions);
+
+  // Save view: title + capture button.
+  const saveRow = document.createElement('div');
+  saveRow.className = 'flex items-center gap-1.5 mt-2 pt-2 border-t border-zinc-700';
+  viewTitleInput = document.createElement('input');
+  viewTitleInput.type = 'text';
+  viewTitleInput.placeholder = 'View title (optional)';
+  viewTitleInput.className = 'min-w-0 flex-1 px-2 py-1 rounded text-[11px] bg-zinc-900/70 border border-zinc-600 text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-blue-400';
+  viewTitleInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') void saveView(); });
+  saveRow.appendChild(viewTitleInput);
+  saveViewBtn = document.createElement('button');
+  saveViewBtn.id = 'annotate-save-view';
+  saveViewBtn.className = `${BUTTON_SMALL_PRIMARY} whitespace-nowrap`;
+  saveViewBtn.title = 'Save this frame, its exact camera and your marks to the annotation history';
+  saveViewBtn.addEventListener('click', () => { void saveView(); });
+  saveRow.appendChild(saveViewBtn);
+  content.appendChild(saveRow);
+
+  // History of saved views, newest first.
+  historyHeader = document.createElement('div');
+  historyHeader.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mt-2 mb-1 font-medium';
+  content.appendChild(historyHeader);
+  historyList = document.createElement('div');
+  historyList.id = 'annotate-view-history';
+  historyList.className = 'max-h-56 overflow-y-auto pr-1';
+  content.appendChild(historyList);
 
   return panel;
 }

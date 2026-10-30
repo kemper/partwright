@@ -3,6 +3,8 @@
 // input row, the cost meter, and the compact button. State lives in the
 // ai/* modules; this file is mostly DOM wiring.
 
+import { registerAiComposerAttach } from './aiComposerBridge';
+import { getAnnotationViews } from '../annotations/annotationViews';
 import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens, runTurn as runTurnOnMainThread, buildActiveSystemPrompt, toolsForRequest, type RunTurnInput, type RunTurnCallbacks } from '../ai/chatLoop';
 import { getActiveImports } from '../import/importedMesh';
 import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerClient';
@@ -175,7 +177,11 @@ function requestToolChars(toggles: ChatToggles, history: readonly ChatMessage[])
  *  that would load the whole group on nearly every chat.) */
 function sessionToolGroups(): string[] {
   try {
-    return getActiveImports().length > 0 ? ['import', 'parts'] : [];
+    const groups = getActiveImports().length > 0 ? ['import', 'parts'] : [];
+    // An annotation view the user attached to the chat: viewAnnotationView
+    // (inspect) re-renders it from their camera.
+    if (getAnnotationViews().some(v => v.attachedAt !== undefined)) groups.push('inspect');
+    return groups;
   } catch {
     return [];
   }
@@ -427,6 +433,22 @@ export async function initAiPanel(opts: AiPanelOptions = {}): Promise<void> {
     const text = pendingPrefill;
     pendingPrefill = null;
     prefillAiInput(text);
+  }
+  registerAiComposerAttach(stageAttachment);
+}
+
+/** Stage an image + text in the composer for the user to send (Annotate's
+ *  "Attach to AI"). The text is appended on its own line; nothing is sent. */
+function stageAttachment(image: ImageSource, text: string): void {
+  if (!state.open) showDrawer(false);
+  state.pendingImages.push(image);
+  renderPendingImages();
+  if (inputEl && text) {
+    const cur = inputEl.value.replace(/\s+$/, '');
+    inputEl.value = cur ? `${cur}\n${text}` : text;
+    inputEl.focus();
+    inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+    inputEl.dispatchEvent(new Event('input', { bubbles: true }));
   }
 }
 

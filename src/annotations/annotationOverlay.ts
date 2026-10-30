@@ -14,7 +14,9 @@ import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import {
   getStrokes,
   getTexts,
+  getFloatingAnnotations,
   onChange,
+  type Annotation,
   type StrokeAnnotation,
   type TextAnnotation,
 } from './annotations';
@@ -96,13 +98,24 @@ function rebuildLiveOverlay(): void {
  *  offscreen renders — they are a viewport-only UX cue. */
 export function buildStrokesGroup(resolution: THREE.Vector2): THREE.Group | null {
   if (!visible) return null;
-  const strokes = getStrokes();
-  const texts = getTexts();
-  if (strokes.length === 0 && texts.length === 0) return null;
+  // Floating marks only: unsaved Snapshot drafts are not part of the version,
+  // so they stay out of agent renders and version thumbnails.
+  const list = getFloatingAnnotations();
+  if (list.length === 0) return null;
   const g = new THREE.Group();
   g.name = 'annotation-overlay-snapshot';
-  for (const s of strokes) g.add(strokeToLine2(s, resolution, false));
-  for (const t of texts) g.add(textToSprite(t, false));
+  for (const a of list) g.add(a.type === 'stroke' ? strokeToLine2(a, resolution, false) : textToSprite(a, false));
+  return g;
+}
+
+/** Like {@link buildStrokesGroup}, but for an explicit annotation list (a
+ *  saved annotation view's marks) rather than the live store. Ignores the
+ *  global visibility toggle — the caller asked for these marks. */
+export function buildGroupFromAnnotations(list: readonly Annotation[], resolution: THREE.Vector2): THREE.Group | null {
+  if (list.length === 0) return null;
+  const g = new THREE.Group();
+  g.name = 'annotation-view-snapshot';
+  for (const a of list) g.add(a.type === 'stroke' ? strokeToLine2(a, resolution, false) : textToSprite(a, false));
   return g;
 }
 

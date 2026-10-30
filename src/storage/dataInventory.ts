@@ -4,9 +4,9 @@
 
 import { openPartwrightDB } from './db';
 
-export type StoreName = 'sessions' | 'versions' | 'parts' | 'notes' | 'drafts' | 'reliefSources' | 'aiKeys' | 'aiEndpoints' | 'aiChats' | 'aiAttachments' | 'importInbox' | 'exportInbox' | 'deletedObjects' | 'paintRefineCache';
+export type StoreName = 'sessions' | 'versions' | 'parts' | 'notes' | 'drafts' | 'reliefSources' | 'aiKeys' | 'aiEndpoints' | 'aiChats' | 'aiAttachments' | 'importInbox' | 'exportInbox' | 'deletedObjects' | 'paintRefineCache' | 'annotationViews';
 
-export const ALL_STORES: StoreName[] = ['sessions', 'versions', 'parts', 'notes', 'drafts', 'reliefSources', 'aiKeys', 'aiEndpoints', 'aiChats', 'aiAttachments', 'importInbox', 'exportInbox', 'deletedObjects', 'paintRefineCache'];
+export const ALL_STORES: StoreName[] = ['sessions', 'versions', 'parts', 'notes', 'drafts', 'reliefSources', 'aiKeys', 'aiEndpoints', 'aiChats', 'aiAttachments', 'importInbox', 'exportInbox', 'deletedObjects', 'paintRefineCache', 'annotationViews'];
 
 export const STORE_LABELS: Record<StoreName, string> = {
   sessions: 'Sessions',
@@ -23,6 +23,7 @@ export const STORE_LABELS: Record<StoreName, string> = {
   exportInbox: 'Recent exports',
   deletedObjects: 'Recently deleted objects',
   paintRefineCache: 'Smooth-paint mesh cache',
+  annotationViews: 'Annotation views',
 };
 
 function reqToPromise<T>(req: IDBRequest<T>): Promise<T> {
@@ -185,7 +186,7 @@ export async function wipeData(sel: WipeSelection): Promise<void> {
   // previously omitted here, and since the DB delete below targets the LEGACY
   // 'mainifold' database (DB_NAME is now 'partwright'), they survived every wipe
   // as orphaned rows. db.ts's deleteSession/clearAllData already sweep them.
-  if (sel.modelingData) stores.push('sessions', 'versions', 'parts', 'notes', 'drafts', 'reliefSources', 'importInbox', 'exportInbox', 'deletedObjects', 'paintRefineCache');
+  if (sel.modelingData) stores.push('sessions', 'versions', 'parts', 'notes', 'drafts', 'reliefSources', 'importInbox', 'exportInbox', 'deletedObjects', 'paintRefineCache', 'annotationViews');
   if (sel.chats) stores.push('aiChats');
   // Saved endpoints carry their API keys, so they go with the keys.
   if (sel.apiKeys) stores.push('aiKeys', 'aiEndpoints');

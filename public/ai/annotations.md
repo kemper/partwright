@@ -1,25 +1,77 @@
 # Annotations
 
-The user can mark up the model surface using the **Annotate** tool (✏️ button in the viewport
-overlay). Two kinds of annotations:
+The user can mark up the model with the **Annotate** tool (✏️ in the viewport Tools). Two kinds of
+mark:
 
-- **Freehand strokes** drawn with the pen sub-mode -- raycast onto the mesh and stored as 3D
-  polylines (color + pixel-width per stroke).
-- **Text labels** placed with the text sub-mode -- pinned to a 3D anchor on the surface and
-  rendered as a screen-facing label (so they stay readable from any angle).
+- **Freehand strokes** (pen sub-mode) -- drawn on a flat plane frozen just in front of the model,
+  perpendicular to the camera, and stored as 3D polylines on that plane (color + pixel width).
+  They do **not** sit on the mesh surface.
+- **Text labels** (text sub-mode) -- pinned to a 3D anchor on the same plane and rendered as a
+  screen-facing label.
 
-Both kinds are **not part of the model** -- they're a visual feedback layer that
-survives orbiting and appears in **every** rendered output: the live viewport and the
-`renderView()` / `renderViews()` images.
+Annotate opens in **Select** (the view orbits as usual; click a mark to select/drag it). Picking
+a colour or the Pen/Text tab starts drawing and freezes the view until Esc returns to Select.
+`setAnnotateMode('pen' | 'text' | 'select' | null)` drives the same modes.
 
-**Lifecycle**: annotations are scoped to the current version. `runAndSave` /
-`saveVersion` snapshots the current annotations into the new version, and
-`loadVersion` / `navigateVersion` swap them back in when you return. Unsaved
-annotations are dropped when you switch versions -- same as unsaved code.
+Annotate has two **styles** (`getAnnotateStyle()` / `setAnnotateStyle()`):
+
+- **Snapshot** (default) -- the user marks up the frame they're looking at, then presses
+  **Save view**. That stores an **annotation view** in the session's history: the exact camera,
+  the frame as they saw it (marks drawn on it), the marks, and what each mark points at on the
+  model. Unsaved Snapshot marks are *drafts*: they never persist on a version, never appear
+  in renders or thumbnails, and are dropped on a session/object switch. **While the user has
+  Annotate open in Snapshot style, `listAnnotations()` / `addStrokeAnnotation()` /
+  `addTextAnnotation()` / `clear*` read and write those drafts** (so an agent can add a mark
+  for `saveAnnotationView` to capture); with Annotate closed they act on the floating marks. The user picks which views to send to the AI with
+  each view's **Attach to AI** button, which stages the image plus a line like
+  `[Annotation view "View 2" (av_…): 1 stroke · on handle. …]` in the chat input.
+- **Floating** -- the original behavior: marks stay pinned in space, are snapshotted onto each
+  saved version, and are drawn in **every** render (the live viewport and `renderView()` /
+  `renderViews()` images). **Save view** works here too and copies the floating marks into a view.
+
+**Floating lifecycle**: marks are scoped to the current version. `runAndSave` / `saveVersion`
+snapshots them into the new version, and `loadVersion` / `navigateVersion` swap them back in.
+Unsaved floating marks are dropped when you switch versions -- same as unsaved code.
+
+## Annotation views
+
+A view answers "what was the user looking at, and what did they point at?" without a screenshot:
+
+- `camera` -- `{position, target, up, fov, aspect}`, the live viewport camera when they saved.
+- `marks2D` -- each mark in normalized image coordinates (`[0,0]` top-left, `[1,1]`
+  bottom-right). A stroke with `closed: true` is a loop drawn **around** something.
+- `hits` -- per mark, the result of ray-casting its screen points (plus the interior of a closed
+  loop) from that camera: `{samples, hits, centroid, bbox, parts: [{name, hits}]}`. `parts` are the
+  `api.label` names under the mark, most-hit first; `hits: 0` means the mark is off the model
+  (e.g. "extend up to here" drawn in empty space -- read it from the image).
+- `summary` -- the same thing in one line.
+
+```js
+await partwright.saveAnnotationView({ title: 'thinner handle' })  // capture the live frame -> summary
+partwright.listAnnotationViews()        // -> [{id, title, createdAt, camera, size, marks2D, hits, summary, context}]
+partwright.getAnnotationView(id, { includeImage: true })   // + image: the frame the user saw (JPEG data URL)
+partwright.renderAnnotationView(id)     // CURRENT model from that exact camera, marks on top -> {image}
+partwright.renderAnnotationView(id, { marks: false, width: 800 })
+partwright.restoreAnnotationView(id)    // snap the live camera to the view
+await partwright.renameAnnotationView(id, 'new title')
+await partwright.deleteAnnotationView(id)
+await partwright.attachAnnotationViewToChat(id)  // stage it in the AI chat input (not sent)
+partwright.setAnnotateStyle('floating') // or 'snapshot'
+```
+
+Views are saved per session (IndexedDB) and exported in `.partwright.json` (schema 1.23+);
+share links drop them.
+
+**In-app chat:** `listAnnotations` also returns `views: [{id, title, summary, createdAt,
+attached}]`, and **`viewAnnotationView({id})`** (inspect group) returns the frame plus the hit
+data; `fresh: true` re-renders the current model from the same camera so you can check a fix
+from the angle the user flagged.
 
 When the user has annotated, treat the marks as a directional cue tied to the geometry under
-them. Inspect them via `listAnnotations()` / `listTextAnnotations()`, infer which feature is
-being pointed at from the 3D points/anchors, and confirm your interpretation before making
+them. For a saved view, `hits[].parts` / `centroid` already
+name the feature under each mark. For floating marks, inspect `listAnnotations()` /
+`listTextAnnotations()` and infer the feature from the 3D points/anchors (they're on the plane
+in front of the model, so cast along the mark's `camera` with `probeRay`), and confirm your interpretation before making
 changes.
 
 **In-app chat:** the read-only **`listAnnotations`** tool returns strokes, text labels and the

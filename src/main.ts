@@ -266,6 +266,9 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth, addStrokeFromPoints } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
+import { setAnnotationViewSession, getAnnotationViews, getAnnotationView, updateAnnotationView, deleteAnnotationView, getAnnotateStyle, setAnnotateStyle } from './annotations/annotationViews';
+import { configureViewCapture, captureAnnotationView, restoreAnnotationViewCamera, renderAnnotationViewImage, attachAnnotationViewToChat } from './annotations/viewCapture';
+import { describeViewHits, type AnnotationView } from './annotations/annotationViewTypes';
 import { takeStaleRestoredRegions, setRegionMeshProvider } from './color/regions';
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, setPartScopeResolver, intersectWithScope, runAsUndoGroup, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, isPainted, setCurrentMeshResolver, descriptorPartLabel, setRegionDescriptor, updateRegionColor, updateRegionName, canRedoRegion, canUndoClear, undoClear, clearRegionsBySource, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { resolvePaintOps, resolvePaintDescriptor } from './color/paintOpsResolve';
@@ -618,6 +621,22 @@ function refreshParamsPanelUI(silentReveal: boolean): void {
 }
 
 let currentMeshData: MeshData | null = null;
+
+/** An annotation view without its (large) image — the API / AI shape. */
+function summarizeAnnotationView(v: AnnotationView) {
+  return {
+    id: v.id,
+    title: v.title,
+    createdAt: v.createdAt,
+    camera: v.camera,
+    size: { width: v.width, height: v.height },
+    marks2D: v.marks2D,
+    hits: v.hits,
+    summary: describeViewHits(v),
+    context: v.context,
+    ...(v.attachedAt ? { attachedAt: v.attachedAt } : {}),
+  };
+}
 /** The voxel grid behind the last successful voxel render, as transferable
  *  data from the engine Worker, tagged with the code + Customizer values that
  *  produced it. VOX / greedy-mesh export and Voxel Studio rebuild the grid from
@@ -2011,7 +2030,7 @@ function colorRegionStats(): { name: string; kind: RegionDescriptor['kind']; lab
  *  clears any that were on screen for the previously-active version. */
 function applyVersionAnnotations(version: Version | null | undefined): void {
   const snapshot = (version?.annotations ?? []) as SerializedAnnotation[];
-  loadAnnotations(snapshot);
+  loadAnnotations(snapshot, { keepDrafts: true });
 }
 
 /** Rehydrate color regions from a version's geometryData.
@@ -3787,6 +3806,34 @@ async function main() {
   // Worker before the next session's code runs. The build pool listens too.
   setEngineTrustDomain(sessionTrustDomain(getState().session?.id ?? null));
   onStateChange((state) => { setEngineTrustDomain(sessionTrustDomain(state.session?.id ?? null)); });
+
+  // Annotation-view history follows the open session; captures ray-cast the
+  // live model (and its labelled parts) from the captured camera.
+  void setAnnotationViewSession(getState().session?.id ?? null);
+  onStateChange((state) => { void setAnnotationViewSession(state.session?.id ?? null); });
+  configureViewCapture({
+    castRay: (origin, direction) => {
+      const mesh = currentMeshData;
+      if (!mesh) return null;
+      const hit = probeRay(mesh, origin, direction).hits[0];
+      if (!hit) return null;
+      let part: string | null = null;
+      if (currentLabelMap) {
+        for (const name of currentLabelMap.keys()) {
+          if (partTrianglesOnMesh(name, mesh)?.has(hit.triangleId)) { part = name; break; }
+        }
+      }
+      return { point: hit.point, part };
+    },
+    context: () => {
+      const st = getState();
+      return {
+        ...(st.currentPart ? { objectId: st.currentPart.id, objectName: st.currentPart.name } : {}),
+        ...(st.currentVersion ? { versionIndex: st.currentVersion.index } : {}),
+      };
+    },
+    mesh: () => (currentMeshData ? applyTriColorsIfVisible(currentMeshData) : null),
+  });
 
   // Rehydrate the Recent Imports / Recent Exports lists from IndexedDB so they
   // survive a refresh. Fire-and-forget: each notifies its subscribers (the
@@ -23144,8 +23191,113 @@ async function main() {
     restoreAnnotationView(id: string) {
       const bad = argError(() => assertString(id, 'restoreAnnotationView(id)'));
       if (bad) return bad;
+      const view = getAnnotationView(id);
+      if (view) { restoreAnnotationViewCamera(view); return { restored: true }; }
       const ok = restoreAnnotationViewById(id);
-      return ok ? { restored: true } : { error: `No annotation with id ${id}` };
+      return ok ? { restored: true } : { error: `No annotation or annotation view with id ${id}` };
+    },
+
+    /** Annotate style: 'snapshot' (mark up a frozen frame, then save it as an
+     *  annotation view) or 'floating' (marks pinned in space, saved per
+     *  version). -> 'snapshot' | 'floating' */
+    getAnnotateStyle() {
+      return getAnnotateStyle();
+    },
+
+    /** Switch the Annotate style ('snapshot' | 'floating'). -> { style } */
+    setAnnotateStyle(style: 'snapshot' | 'floating') {
+      const bad = argError(() => assertEnum(style, ['snapshot', 'floating'] as const, 'setAnnotateStyle(style)'));
+      if (bad) return bad;
+      setAnnotateStyle(style);
+      return { style: getAnnotateStyle() };
+    },
+
+    /** Save the live viewport frame + its exact camera + the marks in scope
+     *  (Snapshot drafts, or the floating marks) as an annotation view in the
+     *  session's history. Each mark is ray-cast from that camera so the view
+     *  records what it points at (incl. labelled parts).
+     *  -> view summary (see listAnnotationViews) or { error } */
+    async saveAnnotationView(opts?: { title?: string }) {
+      const bad = argError(() => {
+        if (opts === undefined) return;
+        const o = assertObject(opts, 'saveAnnotationView(opts)')!;
+        assertNoUnknownKeys(o, ['title'], 'saveAnnotationView(opts)');
+        assertString(o.title, 'saveAnnotationView(opts).title', { optional: true, allowEmpty: true });
+      });
+      if (bad) return bad;
+      const r = await captureAnnotationView({ title: opts?.title });
+      return 'error' in r ? r : summarizeAnnotationView(r);
+    },
+
+    /** The session's saved annotation views, oldest first, without images.
+     *  -> [{id, title, createdAt, camera, size, marks2D, hits, summary, context, attachedAt?}] */
+    listAnnotationViews() {
+      return getAnnotationViews().map(summarizeAnnotationView);
+    },
+
+    /** One annotation view in full; `includeImage: true` adds the captured
+     *  frame (JPEG data URL) as `image`. -> view or { error } */
+    getAnnotationView(id: string, opts?: { includeImage?: boolean }) {
+      const bad = argError(() => {
+        assertString(id, 'getAnnotationView(id)');
+        if (opts === undefined) return;
+        const o = assertObject(opts, 'getAnnotationView(opts)')!;
+        assertNoUnknownKeys(o, ['includeImage'], 'getAnnotationView(opts)');
+        assertBoolean(o.includeImage, 'getAnnotationView(opts).includeImage', { optional: true });
+      });
+      if (bad) return bad;
+      const v = getAnnotationView(id);
+      if (!v) return { error: `No annotation view with id ${id}` };
+      return { ...summarizeAnnotationView(v), ...(opts?.includeImage ? { image: v.image } : {}) };
+    },
+
+    /** Render the CURRENT model from a saved view's exact camera (white
+     *  background), with the view's marks on top unless `marks: false` — to
+     *  check a fix from the angle the user marked it up. -> { image } (PNG
+     *  data URL) or { error } */
+    renderAnnotationView(id: string, opts?: { marks?: boolean; width?: number }) {
+      const bad = argError(() => {
+        assertString(id, 'renderAnnotationView(id)');
+        if (opts === undefined) return;
+        const o = assertObject(opts, 'renderAnnotationView(opts)')!;
+        assertNoUnknownKeys(o, ['marks', 'width'], 'renderAnnotationView(opts)');
+        assertBoolean(o.marks, 'renderAnnotationView(opts).marks', { optional: true });
+        assertNumber(o.width, 'renderAnnotationView(opts).width', { optional: true, min: 64, max: 2048 });
+      });
+      if (bad) return bad;
+      const v = getAnnotationView(id);
+      if (!v) return { error: `No annotation view with id ${id}` };
+      const image = renderAnnotationViewImage(v, opts);
+      return image ? { image } : { error: 'No model to render — run some code first.' };
+    },
+
+    /** Rename an annotation view. -> { id, title } or { error } */
+    async renameAnnotationView(id: string, title: string) {
+      const bad = argError(() => {
+        assertString(id, 'renameAnnotationView(id)');
+        assertString(title, 'renameAnnotationView(title)', { allowEmpty: false });
+        if (title.trim() === '') throw new ValidationError('renameAnnotationView(title) must not be blank. See /ai.md#argument-validation');
+      });
+      if (bad) return bad;
+      const v = await updateAnnotationView(id, { title: title.trim() });
+      return v ? { id: v.id, title: v.title } : { error: `No annotation view with id ${id}` };
+    },
+
+    /** Delete an annotation view from the history. -> { deleted } or { error } */
+    async deleteAnnotationView(id: string) {
+      const bad = argError(() => assertString(id, 'deleteAnnotationView(id)'));
+      if (bad) return bad;
+      return (await deleteAnnotationView(id)) ? { deleted: true } : { error: `No annotation view with id ${id}` };
+    },
+
+    /** Stage a view's frame + a one-line summary in the AI chat input (the
+     *  history row's "Attach to AI"); nothing is sent. -> { attached } or { error } */
+    async attachAnnotationViewToChat(id: string) {
+      const bad = argError(() => assertString(id, 'attachAnnotationViewToChat(id)'));
+      if (bad) return bad;
+      const v = getAnnotationView(id);
+      if (!v) return { error: `No annotation view with id ${id}` };
+      return attachAnnotationViewToChat(v);
     },
 
     /** Show or hide annotations without removing them.
@@ -23811,7 +23963,16 @@ async function main() {
         'getAnnotationWidth': { signature: 'getAnnotationWidth() -- Current line width (pixels)', docs: '/ai/annotations.md' },
         'setAnnotationFontSize': { signature: 'setAnnotationFontSize(px) -- Set font size for new text labels (4..256 px)', docs: '/ai/annotations.md' },
         'getAnnotationFontSize': { signature: 'getAnnotationFontSize() -- Current text label font size (pixels)', docs: '/ai/annotations.md' },
-        'restoreAnnotationView': { signature: 'restoreAnnotationView(id) -- Snap the camera to the angle the annotation was made from', docs: '/ai/annotations.md' },
+        'restoreAnnotationView': { signature: 'restoreAnnotationView(id) -- Snap the camera to the angle an annotation (or a saved annotation view) was made from', docs: '/ai/annotations.md' },
+        'getAnnotateStyle':    { signature: 'getAnnotateStyle() -- Annotate style: "snapshot" (mark up a frozen frame, save as a view) or "floating"', docs: '/ai/annotations.md' },
+        'setAnnotateStyle':    { signature: 'setAnnotateStyle("snapshot"|"floating") -- Switch the Annotate style -> {style}', docs: '/ai/annotations.md' },
+        'saveAnnotationView':  { signature: 'await saveAnnotationView({title?}) -- Save the live frame + exact camera + marks (+ what they hit) to the annotation history -> view summary', docs: '/ai/annotations.md' },
+        'listAnnotationViews': { signature: 'listAnnotationViews() -- Saved annotation views, oldest first (no images) -> [{id, title, camera, marks2D, hits, summary, ...}]', docs: '/ai/annotations.md' },
+        'getAnnotationView':   { signature: 'getAnnotationView(id, {includeImage?}) -- One annotation view; includeImage adds the captured frame (data URL)', docs: '/ai/annotations.md' },
+        'renderAnnotationView':{ signature: 'renderAnnotationView(id, {marks?, width?}) -- Render the CURRENT model from a saved view\'s exact camera -> {image}', docs: '/ai/annotations.md' },
+        'renameAnnotationView':{ signature: 'await renameAnnotationView(id, title) -- Rename a saved annotation view -> {id, title}', docs: '/ai/annotations.md' },
+        'deleteAnnotationView':{ signature: 'await deleteAnnotationView(id) -- Delete a saved annotation view -> {deleted}', docs: '/ai/annotations.md' },
+        'attachAnnotationViewToChat': { signature: 'await attachAnnotationViewToChat(id) -- Stage a view\'s frame + summary in the AI chat input (not sent) -> {attached}', docs: '/ai/annotations.md' },
         // UI control -- open a tool for the user (AI hand-off)
         'listUiCommands':  { signature: 'listUiCommands() -- Every drivable UI action: tools (openable with a prefill; prefill = their documented keys) + run-only palette commands -> [{id, title, hint, kind, enabled, open, prefill}]', docs: '/ai/ui-control.md' },
         'openTool':        { signature: "await openTool(id, prefill?, {note?}) -- Open a tool panel FOR THE USER with fields pre-set (e.g. openTool('tool-surface', {tab:'knit', mode:'whole', stitchWidth:3}, {note:'tweak and Apply'})). Never applies; unknown keys / out-of-range values rejected -> {ok, applied, ignored} | {error}", docs: '/ai/ui-control.md' },
@@ -25496,6 +25657,10 @@ async function main() {
       // Let select-mode handle Escape first when an annotation is selected
       // (it deselects). A subsequent Escape will close the menu.
       if (isSelectActive() && getSelectedAnnotationId()) return;
+      // In Annotate's Pen/Text, Escape steps back to Select (annotateUI's own
+      // handler); only Escape from Select closes the panel.
+      const annotateMode = getAnnotateSubMode();
+      if (annotateMode === 'pen' || annotateMode === 'text') return;
 
       let closed = false;
       if (isAnnotateOpen()) { closeAnnotateMenu(); closed = true; }

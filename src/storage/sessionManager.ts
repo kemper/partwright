@@ -32,6 +32,8 @@ import {
   purgeDeletedObjects as dbPurgeDeletedObjects,
   addNote as dbAddNote,
   listNotes as dbListNotes,
+  listAnnotationViews as dbListAnnotationViews,
+  putAnnotationView as dbPutAnnotationView,
   deleteNote as dbDeleteNote,
   updateNote as dbUpdateNote,
   getDraft as dbGetDraft,
@@ -67,6 +69,8 @@ import {
   type SerializedAnnotation,
 } from '../annotations/annotations';
 import { setActiveImports, type ImportedMesh, type ImportedMeshParts } from '../import/importedMesh';
+import { reloadAnnotationViews, newAnnotationViewId } from '../annotations/annotationViews';
+import { parseExportedAnnotationView, type AnnotationView, type ExportedAnnotationView } from '../annotations/annotationViewTypes';
 import { normalizeImportParts } from '../import/importParts';
 import type { PersistedSurfaceTexture } from '../surface/surfaceOpSpec';
 import { parseModelFingerprint, type ModelFingerprint } from '../geometry/modelFingerprint';
@@ -228,8 +232,13 @@ import { isQuotaError } from './quota';
  *           included — written only with the export's `includeLatestMeshes`
  *           option. Both restore on import; malformed ones are dropped. Older
  *           readers ignore them.
+ *  - `1.23` — annotation-view history (`annotationViews`, top level): each
+ *           saved Snapshot markup's exact camera, captured frame (JPEG data
+ *           URL), marks (3D + projected 2D) and per-mark model hits. Written
+ *           with `includeAnnotations`; dropped from share links. Malformed
+ *           entries are skipped on import. Additive; older readers ignore it.
  */
-export const SCHEMA_VERSION = '1.22';
+export const SCHEMA_VERSION = '1.23';
 
 const CURRENT_MAJOR = 1;
 
@@ -378,6 +387,11 @@ export interface ExportedSession {
     latestMesh?: ExportedMesh;
   }[];
   notes?: { text: string; timestamp: number }[];
+  /**
+   * Saved annotation views (Snapshot markups), oldest first.
+   * @since 1.23
+   */
+  annotationViews?: ExportedAnnotationView[];
   /**
    * The session's AI chat transcript, oldest first. Stored without the volatile
    * `id`/`sessionId`/`errored` fields — those are regenerated/re-keyed on
@@ -2200,6 +2214,9 @@ export function initSessionTabSync(): void {
       case 'notes':
         if (cur && msg.sessionId === cur) notifyNotes();
         break;
+      case 'annotation-views':
+        reloadAnnotationViews(msg.sessionId);
+        break;
       case 'chat':
         break; // handled by the AI panel's own subscription
     }
@@ -2345,6 +2362,7 @@ export async function exportSession(
 
   const notes = opts.includeNotes ? await dbListNotes(id) : [];
   const chat = opts.includeChat ? await dbListMessages(id) : [];
+  const annotationViews = opts.includeAnnotations ? await dbListAnnotationViews(id).catch(() => []) : [];
 
   // Multi-part sessions also get a composite contact-sheet thumbnail (schema
   // 1.18) — the session-level identity image the catalog tile prefers.
@@ -2395,6 +2413,18 @@ export async function exportSession(
     }),
     ...(notes.length > 0 ? { notes: notes.map(n => ({ text: n.text, timestamp: n.timestamp })) } : {}),
     ...(chat.length > 0 ? { chat: chat.map(toExportedChatMessage) } : {}),
+    ...(annotationViews.length > 0 ? { annotationViews: annotationViews.map(toExportedAnnotationView) } : {}),
+  };
+}
+
+function toExportedAnnotationView(v: AnnotationView): ExportedAnnotationView {
+  const { id: _id, sessionId: _sid, context, ...rest } = v;
+  return {
+    ...rest,
+    context: {
+      ...(context.objectName ? { objectName: context.objectName } : {}),
+      ...(context.versionIndex !== undefined ? { versionIndex: context.versionIndex } : {}),
+    },
   };
 }
 
@@ -2581,6 +2611,16 @@ export async function importSession(
   if (data.notes) {
     for (const n of data.notes) {
       await dbAddNote(session.id, n.text);
+    }
+  }
+
+  // Restore the annotation-view history (schema 1.23+). Object ids don't
+  // survive an import, so a view keeps only its object's name.
+  if (Array.isArray(data.annotationViews)) {
+    for (const raw of data.annotationViews) {
+      const v = parseExportedAnnotationView(raw);
+      if (!v) continue;
+      await dbPutAnnotationView({ ...v, id: newAnnotationViewId(), sessionId: session.id, context: v.context ?? {} });
     }
   }
 
