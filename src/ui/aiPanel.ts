@@ -43,6 +43,8 @@ import { showCompactConfirmModal } from './aiCompactModal';
 import { showAttachmentModal } from './aiAttachmentModal';
 import { putAttachment } from '../ai/attachments';
 import { exportChatMarkdown } from '../export/chat';
+import { downloadAiSessionTrace } from '../export/aiTrace';
+import { compactionTraceFor } from '../ai/sessionTrace';
 import { getState, setSessionAiPreference, refreshCurrentSession } from '../storage/sessionManager';
 import { onTabSync, publishTabSync } from '../storage/tabSync';
 import { onOwnershipChange } from '../storage/sessionLock';
@@ -222,7 +224,11 @@ function contextLimitFor(settings: AiSettings): number {
  *  cap), so a reference photo survives compaction instead of becoming a
  *  text placeholder. The order [user: references][assistant: summary]
  *  [kept turns…] keeps roles alternating for every provider. */
-async function persistCompaction(dropped: ChatMessage[], summaryText: string): Promise<void> {
+async function persistCompaction(
+  dropped: ChatMessage[],
+  summaryText: string,
+  summarizer: { model: string; costUsd: number; usage: { inputTokens: number; outputTokens: number } },
+): Promise<void> {
   const seq = nextCompactedSeq(state.history);
   const carried = carriedAttachments(dropped, getConfig().ai.compactionKeepImages);
   const messages: ChatMessage[] = [];
@@ -244,6 +250,14 @@ async function persistCompaction(dropped: ChatMessage[], summaryText: string): P
     createdAt: Date.now(),
     seq,
     compacted: true,
+    // The dropped turns are deleted below — keep their totals so the session
+    // trace (🩺 → Download session trace) still accounts for their spend.
+    compaction: compactionTraceFor(dropped, {
+      model: summarizer.model,
+      inputTokens: summarizer.usage.inputTokens,
+      outputTokens: summarizer.usage.outputTokens,
+      costUsd: summarizer.costUsd,
+    }),
   });
   await deleteMessages(dropped.map(m => m.id));
   await putMessages(messages);
@@ -996,7 +1010,7 @@ function buildDrawer(): void {
   header.appendChild(promptsBtn);
 
   const diagBtn = createIconButton('AI Call Log', '🩺');
-  diagBtn.title = 'AI Call Log — recent provider API calls: request shape, stop reason, token usage, full error messages. Open this when a turn ends with a confusing status.';
+  diagBtn.title = 'AI Call Log — recent provider API calls: request shape, stop reason, token usage, full error messages — and a download of the whole chat as a session trace (tool calls, thinking, tokens, cache, cost) for analysis.';
   diagBtn.addEventListener('click', () => { showAiDiagnosticsModal(); });
   header.appendChild(diagBtn);
 
@@ -2031,6 +2045,21 @@ function exportCurrentChat(): void {
   const sessionName = state.sessionId === GLOBAL_CHAT_BUCKET ? null : (getState().session?.name ?? null);
   exportChatMarkdown(state.history, sessionName);
   setTransientStatus('Chat exported as Markdown.');
+}
+
+/** /trace: download the chat as a JSON session trace (src/export/aiTrace.ts) —
+ *  the same file the 🩺 modal's "Download session trace" button writes. */
+async function exportCurrentTrace(): Promise<void> {
+  if (state.history.length === 0) {
+    setTransientStatus('Nothing to trace — the chat is empty.');
+    return;
+  }
+  try {
+    const r = await downloadAiSessionTrace({ sessionId: state.sessionId });
+    setTransientStatus(r ? `Session trace saved as ${r.filename}.` : 'Nothing to trace — the chat is empty.');
+  } catch (err) {
+    showToast(`Couldn't build the session trace: ${err instanceof Error ? err.message : String(err)}`, { variant: 'warn', source: 'ai' });
+  }
 }
 
 /** Clear chat history for the current session. Confirms first; refuses to
@@ -3795,6 +3824,7 @@ const SLASH_HANDLERS: Record<SlashCommandName, () => void> = {
   repair: () => { void repairCurrentChat(); },
   review: () => { void launchReview(); },
   export: () => { exportCurrentChat(); },
+  trace: () => { void exportCurrentTrace(); },
   models: () => { void showAiSettingsModal({ onChange: afterAiSettingsChange }); },
   help: () => { openSlashHelp(); },
   portrait: () => { prefillAiInput(PHOTO_BUST_PROMPT); },
@@ -4921,7 +4951,7 @@ async function maybeAutoCompact(): Promise<void> {
     }
   }
 
-  await persistCompaction(proposal.drop, `[auto-compacted ${proposal.drop.length} turn(s)]\n${proposal.summary}`);
+  await persistCompaction(proposal.drop, `[auto-compacted ${proposal.drop.length} turn(s)]\n${proposal.summary}`, proposal);
   // Dropping the summarized tail can sever a tool round — leaving a kept
   // tool_result whose originating tool_use is now gone. Clear that dangling
   // reference so the very next turn doesn't 400 on an orphaned tool_use_id.
@@ -4997,7 +5027,7 @@ async function runCompact(): Promise<void> {
       }
     }
     // Replace the dropped tail with one synthetic summary message
-    await persistCompaction(proposal.drop, `[compacted summary]\n${summary}`);
+    await persistCompaction(proposal.drop, `[compacted summary]\n${summary}`, proposal);
     // Dropping the summarized tail can sever a tool round — leaving a kept
     // tool_result whose originating tool_use is now gone. Clear that dangling
     // reference so the very next turn doesn't 400 on an orphaned tool_use_id.

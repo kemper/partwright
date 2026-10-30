@@ -406,6 +406,18 @@ let referenceGeometryGen = 0;
  *  reasons"), so API callers get that reason instead of the generic (and
  *  AI-retryable) "superseded". Cleared at the start of every run. */
 let lastRunRejection: string | null = null;
+/** Validate the getAiSessionTrace / downloadAiSessionTrace options. */
+function parseAiTraceOpts(opts: unknown, fn: string): AiTraceOptions | { error: string } {
+  return guard(() => {
+    const o = assertObject(opts ?? {}, `${fn}(opts)`)!;
+    assertNoUnknownKeys(o, ['sessionId', 'includeImages', 'includeSystemPrompt'], `${fn}(opts)`);
+    assertString(o.sessionId, `${fn}(opts).sessionId`, { optional: true, allowEmpty: false });
+    assertBoolean(o.includeImages, `${fn}(opts).includeImages`, { optional: true });
+    assertBoolean(o.includeSystemPrompt, `${fn}(opts).includeSystemPrompt`, { optional: true });
+    return o as AiTraceOptions;
+  });
+}
+
 function runFailedMessage(): string {
   return lastRunRejection ?? 'Run was superseded by a concurrent execution — retry';
 }
@@ -443,6 +455,7 @@ import { photoMatch as scorePhotoMatch, buildTriangleRegions, photoMatchTuningFr
 import { nextStarter, isStarterCode, BLANK_OBJECT_CODE } from './editor/starters';
 import { insertRemovalLine, removePartCall, removePieceCall, removePieceComment, findRemovalLines, removeRemovalLine, pieceAnchorPoint, type RemovalLine } from './editor/removalCode';
 import { parseLabelColor } from './color/labelColor';
+import { collectAiSessionTrace, downloadAiSessionTrace, type AiTraceOptions } from './export/aiTrace';
 import { extractPositions, maxEdgeLength, minEdgeLength, estimateRefineTriangles } from './surface/meshSubdivide';
 
 /** The viewport clip-plane Z slider + typed box (bound in initClipControls). */
@@ -19936,6 +19949,33 @@ async function main() {
       });
     },
 
+    /** The AI chat as a session trace: every prompt, thinking block, tool
+     *  call + result, and per-API-call telemetry (tokens, cache hits, cost,
+     *  latency, request shape, retries), with per-turn / per-tool / per-model
+     *  rollups — for auditing an agent's spend and approach. Read from the
+     *  persisted chat (survives reloads). `sessionId` defaults to the open
+     *  session (or the pre-session global chat); `includeImages` embeds base64
+     *  images; `includeSystemPrompt` embeds the prompt text. Secrets redacted.
+     *  -> { format, version, summary, turns, timeline, callLog, errors, … }
+     *  or { error } (empty chat / bad args) */
+    async getAiSessionTrace(opts: { sessionId?: string; includeImages?: boolean; includeSystemPrompt?: boolean } = {}) {
+      const check = parseAiTraceOpts(opts, 'getAiSessionTrace');
+      if ('error' in check) return check;
+      const trace = await collectAiSessionTrace(check);
+      return trace ?? { error: 'getAiSessionTrace: this chat is empty — nothing to trace.' };
+    },
+
+    /** Same trace as getAiSessionTrace, downloaded as a JSON file (the 🩺 AI
+     *  Call Log's "Download session trace" button / the /trace command).
+     *  -> { filename, bytes, summary } or { error } */
+    async downloadAiSessionTrace(opts: { sessionId?: string; includeImages?: boolean; includeSystemPrompt?: boolean } = {}) {
+      const check = parseAiTraceOpts(opts, 'downloadAiSessionTrace');
+      if ('error' in check) return check;
+      const r = await downloadAiSessionTrace(check);
+      if (!r) return { error: 'downloadAiSessionTrace: this chat is empty — nothing to trace.' };
+      return { filename: r.filename, bytes: r.bytes, summary: r.trace.summary };
+    },
+
     /** Import a MagicaVoxel `.vox` file from base64 bytes (bare or `data:`
      *  URL) as voxel code — the Import → .vox flow. `opts.target`:
      *  'new-session' (default), 'new-object', or 'current-object' (baked and
@@ -23558,6 +23598,8 @@ async function main() {
         'setEngineSandboxMode': { signature: "setEngineSandboxMode('origin'|'off') -- Run model code in a separate-origin iframe sandbox ('origin', the default where configured) or not ('off', the kill switch); this browser, reload to apply -> {mode, previous, note}", docs: '/ai.md#console-api--windowpartwright' },
         'runWithoutEngineSandbox': { signature: 'runWithoutEngineSandbox() -- After the engine sandbox became unavailable (model code blocked), run model code WITHOUT it for this tab only -> {ok, note} or {error}', docs: '/ai.md#console-api--windowpartwright' },
         'getWorkerHealth':     { signature: 'getWorkerHealth() -- Worker health panel data: per-worker liveness/restarts + recent geometry runs (durationMs vs workerMs) -> {workers, runs}', docs: '/ai.md#console-api--windowpartwright' },
+        'getAiSessionTrace':   { signature: 'await getAiSessionTrace({sessionId?, includeImages?, includeSystemPrompt?}) -- The AI chat as a JSON session trace: prompts, thinking, tool calls + results, per-call tokens/cache/cost/latency, per-turn/tool/model rollups -> trace or {error}', docs: '/ai/iteration-workflow.md#ai-session-trace' },
+        'downloadAiSessionTrace': { signature: 'await downloadAiSessionTrace({sessionId?, includeImages?, includeSystemPrompt?}) -- Download the AI session trace as JSON -> {filename, bytes, summary} or {error}', docs: '/ai/iteration-workflow.md#ai-session-trace' },
         'getDiagnosticLog':    { signature: 'await getDiagnosticLog({level?, source?, limit?}) -- Read the Diagnostic Log (newest first; secrets incl. your saved API keys redacted) -> {entries, matched, total}', docs: '/ai.md#console-api--windowpartwright' },
         'importVoxData':       { signature: 'await importVoxData(base64, filename, {sessionName?, target?}) -- Import MagicaVoxel .vox bytes as voxel code (target as importMeshData) -> {sessionId, target, object, voxelCount}', docs: '/ai/file-io.md' },
         'importStepData':      { signature: 'await importStepData(base64, filename, {mode?: "brep"|"mesh", sessionName?, target?}) -- Import STEP bytes as an exact BREP object (default) or a tessellated mesh -> {sessionId, target, object, mode}', docs: '/ai/file-io.md' },
