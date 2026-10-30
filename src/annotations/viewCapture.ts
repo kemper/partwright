@@ -19,7 +19,7 @@ import {
   clearDrafts,
   deserializeList,
 } from './annotations';
-import { buildGroupFromAnnotations, disposeStrokesGroup, getOverlayGroup } from './annotationOverlay';
+import { buildGroupFromAnnotations, disposeStrokesGroup, getOverlayGroup, showViewMarks } from './annotationOverlay';
 import { getSelectedId, setSelectedId } from './selectionState';
 import { restoreCameraView } from './sessionPlane';
 import {
@@ -94,7 +94,7 @@ function grabFrame(): { image: string; width: number; height: number } {
   const overlay = getOverlayGroup();
   const hidden: THREE.Object3D[] = [];
   overlay?.traverse(obj => {
-    if (obj.visible && /^annotation-(session-plane|preview)/.test(obj.name)) {
+    if (obj.visible && /^annotation-(session-plane|preview|view-marks)/.test(obj.name)) {
       obj.visible = false;
       hidden.push(obj);
     }
@@ -178,9 +178,12 @@ export async function captureAnnotationView(opts: { title?: string } = {}): Prom
   return view;
 }
 
-/** Snap the live camera back to a view's camera. */
-export function restoreAnnotationViewCamera(view: AnnotationView): void {
+/** Snap the live camera back to a view's camera and redraw its marks there
+ *  (`marks: false` moves the camera only). The marks stay until
+ *  hideAnnotationViewMarks / another view / Annotate closes. */
+export function restoreAnnotationViewCamera(view: AnnotationView, opts: { marks?: boolean } = {}): void {
   restoreCameraView({ position: view.camera.position, target: view.camera.target, up: view.camera.up });
+  if (opts.marks !== false) showViewMarks(view.id, deserializeList(view.marks));
   requestRender();
 }
 
