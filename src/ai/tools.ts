@@ -15,6 +15,7 @@
 // so the same checks apply to console/MCP callers, not just the model.
 
 import { ASK_USER_TOOL, CARD_TOOL_ACK, PROPOSE_PLAN_TOOL } from './planReply';
+import { planEstimateInputError } from './planEstimate';
 import { detectorIds, paramsJsonSchema } from '../segmentation/registry';
 import type { ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
@@ -74,6 +75,7 @@ export const SUBDOC_NAMES_LIST = [
   'fasteners', 'joints', 'gears', 'threads', 'reference-images', 'file-io', 'annotations',
   'printing', 'relief', 'textures', 'mechanisms', 'iteration-workflow', 'gotchas',
   'visual-verification', 'spending', 'manifold-api', 'reconstruction', 'deform', 'segmentation', 'ui-control',
+  'feasibility',
   // Deprecated: 'print-fit' split into 'fasteners' + 'joints'. Kept so an older
   // cached prompt requesting it gets the redirect stub instead of an error.
   'print-fit',
@@ -2539,13 +2541,27 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: PROPOSE_PLAN_TOOL,
-    description: 'Present your plan as a card the user can build, revise or discard. Plan mode only. This ENDS your turn. Keep it concrete: a short summary of what you will make, the ordered steps you will take, and the assumptions you made so the user can correct them. If you need answers before you can plan well, call askUser instead.',
+    description: 'Present your plan as a card the user can build, revise or discard. Plan mode only. This ENDS your turn. Keep it concrete: a short summary of what you will make, the ordered steps you will take, and the assumptions you made so the user can correct them. Always include an honest `estimate` — the build is stopped for the user\'s go-ahead at roundsMax, so an optimistic estimate only means an earlier checkpoint. If you need answers before you can plan well, call askUser instead.',
     input_schema: {
       type: 'object',
       properties: {
         summary: { type: 'string', description: 'One short paragraph: what you will build and the overall approach.' },
         steps: { type: 'array', minItems: 1, items: { type: 'string' }, description: 'The concrete steps, in order.' },
         assumptions: { type: 'array', items: { type: 'string' }, description: 'Defaults you chose that the user may want to change.' },
+        estimate: {
+          type: 'object',
+          description: 'How likely this is to land. A round = one of your tool round-trips while building.',
+          properties: {
+            difficulty: { type: 'string', enum: ['easy', 'medium', 'hard', 'research'], description: 'For this app and its tools: research = no known reliable route.' },
+            confidence: { type: 'integer', minimum: 0, maximum: 100, description: 'Chance (%) of reaching `quality` within roundsMax.' },
+            roundsMin: { type: 'integer', minimum: 1, maximum: 200 },
+            roundsMax: { type: 'integer', minimum: 1, maximum: 200, description: 'Realistic upper bound, including verification and fixes.' },
+            quality: { type: 'string', description: 'What the result will realistically look like (e.g. "clean blockout", "close to the photo").' },
+            gaps: { type: 'array', items: { type: 'string' }, description: 'Tools missing or weak for this task.' },
+            risks: { type: 'array', items: { type: 'string' }, description: 'What is most likely to go wrong.' },
+          },
+          required: ['difficulty', 'roundsMin', 'roundsMax'],
+        },
       },
       required: ['summary', 'steps'],
     },
@@ -3402,7 +3418,7 @@ function proposePlanInputError(input: Record<string, unknown>): string | null {
   if (input.assumptions !== undefined && (!Array.isArray(input.assumptions) || input.assumptions.some(s => typeof s !== 'string'))) {
     return 'proposePlan: `assumptions` must be an array of strings.';
   }
-  return null;
+  return planEstimateInputError(input.estimate);
 }
 
 export async function executeTool(name: string, rawInput: Record<string, unknown>): Promise<ToolExecResult> {
