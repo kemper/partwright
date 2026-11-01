@@ -17,6 +17,7 @@ import { showToast } from './toast';
 import { confirmDialog, promptDialog } from './dialogs';
 import { updateAppHistory } from './appHistory';
 import { appPath } from '../deployment';
+import { jsonToBlob } from '../export/jsonBlob';
 
 let modalEl: HTMLElement | null = null;
 /** Loads the session `openSession` just opened into the editor — its version
@@ -240,7 +241,7 @@ async function createSessionRow(session: Session): Promise<HTMLElement> {
       );
       return;
     }
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const blob = jsonToBlob(data, 2);
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
     link.download = `${session.name.replace(/[^a-zA-Z0-9_-]/g, '_')}.partwright.json`;
