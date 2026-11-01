@@ -32,8 +32,9 @@ import {
   type GridSpec,
 } from './meshSdf';
 import { carryRunsByNearest } from './labelCarry';
+import { fitSeam, frameMatrix, maskAreaNormal, normalize, projectMask, runsFromIds, triangleIds } from './splitPartsMath';
 import { nearestSurfaceTriangleMap } from '../surface/colorTransfer';
-import { activeLabelIds, parseSelectOpts, parseSelector, selectTrianglesActive, type Selector, type Vec3 } from './selector';
+import { activeLabelIds, activeLabelLookup, parseSelectOpts, parseSelector, selectTrianglesActive, type Selector, type Vec3 } from './selector';
 
 const DEFAULT_MAX_RES = 192;
 
@@ -344,7 +345,7 @@ function spliceScoped(Manifold: any, base: Float32Array, edited: Float32Array, w
 }
 
 export function createMeshSdfOps(module: any) {
-  const { Manifold } = module;
+  const { Manifold, CrossSection } = module;
 
   /** `keepLabels`: re-attach the inputs' part provenance to the remeshed
    *  output (each triangle takes its nearest input triangle's originalID), so
@@ -716,6 +717,25 @@ export function createMeshSdfOps(module: any) {
    *  the two exact distances on a lattice around the selection; booleans keep
    *  every input face exact. `seamId` is the cut faces' originalID. */
   function splitPart(m: any, mesh: any, mask: Uint8Array, sel: { min: Vec3; max: Vec3 }, resolution: number): { part: any; rest: any | null; seamId: number; voxel: number } {
+    const mf = medialField(m, mesh, mask, sel, resolution);
+    // The selection is the whole model: nothing to cut, the edit applies to all of it.
+    if (!mf) return { part: m, rest: null, seamId: -1, voxel: 1 };
+    const { field, spec, voxel } = mf;
+    // levelSet can still emit zero-size shells on lattice planes; drop them
+    // before they seed slivers in the booleans.
+    const raw = levelSetFromField(Manifold, field, spec);
+    const seamId = raw.originalID();
+    const region = dropSlivers(raw, voxel);
+    // Where the two distances nearly tie the cut can also chip off loose
+    // voxel-sized crumbs; they'd float once the part moves, so drop them.
+    return { part: dropSlivers(m.intersect(region), voxel, 4, [m]), rest: dropSlivers(m.subtract(region), voxel, 4, [m]), seamId, voxel };
+  }
+
+  /** The lattice field behind splitPart: negative where the selected faces
+   *  are nearer than all the others, cleaned of islands and blurred, with the
+   *  lattice's outer layer forced outside (= `voxel`). Null when the
+   *  selection is the whole mesh. */
+  function medialField(m: any, mesh: any, mask: Uint8Array, sel: { min: Vec3; max: Vec3 }, resolution: number, blurPasses = 1): { field: Float32Array; spec: GridSpec; voxel: number } | null {
     const numTri = mesh.triVerts.length / 3;
     const pick = (want: number) => {
       const tv: number[] = [];
@@ -726,8 +746,7 @@ export function createMeshSdfOps(module: any) {
       };
     };
     const selMesh = pick(1), otherMesh = pick(0);
-    // The selection is the whole model: nothing to cut, the edit applies to all of it.
-    if (otherMesh.numTri === 0) return { part: m, rest: null, seamId: -1, voxel: 1 };
+    if (otherMesh.numTri === 0) return null;
     // The part's solid can reach past its faces' box (a patch on a flat face
     // owns material behind it), so grow the box by half its diagonal, clipped
     // to the model.
@@ -790,19 +809,12 @@ export function createMeshSdfOps(module: any) {
     // A jagged cut leaves sub-voxel bridges and tunnels where the edited part
     // meets the rest again; one blur pass makes the cut surface smooth. (The
     // outer layer stays forced outside.)
-    blurField(field, spec);
+    for (let pass = 0; pass < blurPasses; pass++) blurField(field, spec);
     for (let i = 0; i < n; i++) {
       const ix = i % spec.nx, iy = Math.floor(i / spec.nx) % spec.ny, iz = Math.floor(i / (spec.nx * spec.ny));
       if (ix === 0 || iy === 0 || iz === 0 || ix === spec.nx - 1 || iy === spec.ny - 1 || iz === spec.nz - 1) field[i] = voxel;
     }
-    // levelSet can still emit zero-size shells on lattice planes; drop them
-    // before they seed slivers in the booleans.
-    const raw = levelSetFromField(Manifold, field, spec);
-    const seamId = raw.originalID();
-    const region = dropSlivers(raw, voxel);
-    // Where the two distances nearly tie the cut can also chip off loose
-    // voxel-sized crumbs; they'd float once the part moves, so drop them.
-    return { part: dropSlivers(m.intersect(region), voxel, 4, [m]), rest: dropSlivers(m.subtract(region), voxel, 4, [m]), seamId, voxel };
+    return { field, spec, voxel };
   }
 
   /** Per-triangle mask of the faces carrying originalID `id`. */
@@ -951,6 +963,302 @@ export function createMeshSdfOps(module: any) {
     try { return weld(); } catch { return finish(rest.add(next)); }
   }
 
+  // ---------------------------------------------------------------------
+  // splitParts — cut a solid into separate printable pieces along its part
+  // boundaries (detected import parts or api.label parts).
+  // ---------------------------------------------------------------------
+
+  type SeamMode = 'auto' | 'medial' | 'flat' | 'plug';
+  interface SeamSpec { mode: SeamMode; axis?: Vec3; depth?: number; normal?: Vec3 }
+
+  interface SplitPartsOpts {
+    /** Pieces to cut out: part names, or arrays of names (or 'a+b' strings)
+     *  that stay together as one piece. Default: every labelled part, one piece each. */
+    parts?: Array<string | string[]>;
+    /** Seam per piece (keyed by its name, or a group's first name):
+     *  'auto' (default), 'medial', 'flat', 'plug', or { mode, axis?, depth?, normal? }. */
+    seams?: Record<string, unknown>;
+    /** The piece that keeps whatever is left (default: the largest). */
+    keep?: string;
+    /** Gap between mating faces, taken from the kept side (default 0). */
+    clearance?: number;
+    /** Cut lattice resolution along each part's box (default 96, 32..192). */
+    resolution?: number;
+    /** Move pieces apart from the model's centre by this factor (default 0). */
+    explode?: number;
+    /** 'auto' picks a flat cut when the seam is one loop whose RMS distance
+     *  from its best-fit plane is under this fraction of its radius (default 0.08). */
+    flatTolerance?: number;
+    /** Loose bits under this fraction of their piece's volume are handed
+     *  back across the seam (or dropped) (default 0.02). */
+    minFragment?: number;
+    /** Blur passes over a medial cut's lattice field — smoother cut faces,
+     *  at the cost of following the contact less tightly (default 4, 0..12). */
+    smoothing?: number;
+  }
+
+  function parseSeam(raw: unknown, where: string): SeamSpec {
+    const modes: SeamMode[] = ['auto', 'medial', 'flat', 'plug'];
+    if (typeof raw === 'string') {
+      need(modes.includes(raw as SeamMode), `${where} must be one of ${modes.join(', ')} (got "${raw}")`);
+      return { mode: raw as SeamMode };
+    }
+    need(!!raw && typeof raw === 'object' && !Array.isArray(raw), `${where} must be a mode string or { mode, axis?, depth?, normal? }`);
+    const o = raw as Record<string, unknown>;
+    for (const k of Object.keys(o)) need(['mode', 'axis', 'depth', 'normal'].includes(k), `${where}: unknown key "${k}" (allowed: mode, axis, depth, normal)`);
+    const mode = (o.mode ?? 'auto') as SeamMode;
+    need(modes.includes(mode), `${where}.mode must be one of ${modes.join(', ')}`);
+    const vec = (v: unknown, n: string): Vec3 | undefined => {
+      if (v === undefined) return undefined;
+      need(Array.isArray(v) && v.length === 3 && v.every(isFiniteNum) && Math.hypot(v[0], v[1], v[2]) > 0, `${where}.${n} must be a non-zero [x, y, z]`);
+      return v as Vec3;
+    };
+    const axis = vec(o.axis, 'axis');
+    const normal = vec(o.normal, 'normal');
+    need(o.depth === undefined || (isFiniteNum(o.depth) && o.depth >= 0), `${where}.depth must be a distance >= 0`);
+    need(axis === undefined && o.depth === undefined || mode === 'plug', `${where}: axis / depth only apply to mode 'plug'`);
+    need(normal === undefined || mode === 'flat', `${where}: normal only applies to mode 'flat'`);
+    return { mode, axis, depth: o.depth as number | undefined, normal };
+  }
+
+  /** Give every face of `piece` whose originalID isn't one of `keep` the id
+   *  `id` — the piece's cut faces (and any stray faces of a neighbour it
+   *  took) then belong to its part. */
+  function relabelPiece(piece: any, keep: Set<number>, id: number): any {
+    const pm = piece.getMesh();
+    const ids = triangleIds(pm);
+    let changed = false;
+    for (let t = 0; t < ids.length; t++) if (!keep.has(ids[t])) { ids[t] = id; changed = true; }
+    if (!changed) return piece;
+    const runs = runsFromIds(ids);
+    const mesh: Record<string, unknown> = {
+      numProp: pm.numProp, vertProperties: pm.vertProperties, triVerts: pm.triVerts,
+      runIndex: runs.runIndex, runOriginalID: runs.runOriginalID,
+    };
+    if (pm.mergeFromVert && pm.mergeFromVert.length > 0) { mesh.mergeFromVert = pm.mergeFromVert; mesh.mergeToVert = pm.mergeToVert; }
+    return Manifold.ofMesh(mesh);
+  }
+
+  /** The lattice field `f` shifted by `d` (outer layer kept outside). */
+  function shiftField(f: Float32Array, spec: GridSpec, d: number): Float32Array {
+    const out = new Float32Array(f.length);
+    for (let i = 0; i < f.length; i++) {
+      const ix = i % spec.nx, iy = Math.floor(i / spec.nx) % spec.ny, iz = Math.floor(i / (spec.nx * spec.ny));
+      const edge = ix === 0 || iy === 0 || iz === 0 || ix === spec.nx - 1 || iy === spec.ny - 1 || iz === spec.nz - 1;
+      out[i] = edge ? f[i] : f[i] - d;
+    }
+    return out;
+  }
+
+  /** Cut `m` into separate solids along its part boundaries and return them
+   *  together (one connected piece per part / group, labels kept, each cut
+   *  face labelled with its piece). Logs a `[splitParts] {json}` report. */
+  function splitParts(m: any, opts: SplitPartsOpts = {}): any {
+    need(isManifold(m), 'splitParts(m, opts): m must be a Manifold');
+    need(!m.isEmpty(), 'splitParts(m): input manifold is empty');
+    need(!!opts && typeof opts === 'object' && !Array.isArray(opts), 'splitParts: opts must be an object');
+    const allowed = ['parts', 'seams', 'keep', 'clearance', 'resolution', 'explode', 'flatTolerance', 'minFragment', 'smoothing'];
+    for (const k of Object.keys(opts)) need(allowed.includes(k), `splitParts: unknown option "${k}" (allowed: ${allowed.join(', ')})`);
+    const resolution = opts.resolution ?? 96;
+    need(Number.isInteger(resolution) && resolution >= 32 && resolution <= 192, 'splitParts.resolution must be an integer in 32..192');
+    const clearance = opts.clearance ?? 0;
+    need(isFiniteNum(clearance) && clearance >= 0, 'splitParts.clearance must be a distance >= 0');
+    const explode = opts.explode ?? 0;
+    need(isFiniteNum(explode) && explode >= 0, 'splitParts.explode must be a number >= 0');
+    const flatTol = opts.flatTolerance ?? 0.08;
+    need(isFiniteNum(flatTol) && flatTol >= 0, 'splitParts.flatTolerance must be a number >= 0');
+    const minFragment = opts.minFragment ?? 0.02;
+    need(isFiniteNum(minFragment) && minFragment >= 0 && minFragment < 1, 'splitParts.minFragment must be in [0, 1)');
+
+    const smoothing = opts.smoothing ?? 4;
+    need(Number.isInteger(smoothing) && smoothing >= 0 && smoothing <= 12, 'splitParts.smoothing must be an integer in 0..12');
+    const lookup = activeLabelLookup();
+    need(!!lookup, 'splitParts: only works inside model code');
+    const mesh = m.getMesh();
+    const triIds = triangleIds(mesh);
+    const present = new Set<number>(triIds);
+    const idsOf = (name: string) => (lookup!.ids(name) ?? []).filter(id => present.has(id));
+
+    let groups: string[][];
+    if (opts.parts !== undefined) {
+      need(Array.isArray(opts.parts) && opts.parts.length > 0, 'splitParts.parts must be a non-empty array of part names (or arrays of names)');
+      groups = opts.parts.map((g, i) => {
+        // 'torso+tail' is shorthand for ['torso', 'tail'] (unless a part is literally named that).
+        const names = typeof g === 'string' ? (g.includes('+') && idsOf(g).length === 0 ? g.split('+').map(x => x.trim()) : [g]) : g;
+        need(Array.isArray(names) && names.length > 0 && names.every(n => typeof n === 'string' && n.length > 0), `splitParts.parts[${i}] must be a part name or a non-empty array of names`);
+        return names as string[];
+      });
+    } else {
+      groups = lookup!.names().filter(n => idsOf(n).length > 0).map(n => [n]);
+    }
+    const seen = new Set<string>();
+    for (const g of groups) for (const n of g) {
+      need(!seen.has(n), `splitParts.parts: "${n}" is listed twice`);
+      seen.add(n);
+      need(idsOf(n).length > 0, `splitParts: no part named "${n}" on this shape (parts here: ${lookup!.names().filter(x => idsOf(x).length > 0).join(', ') || 'none'})`);
+    }
+    need(groups.length >= 2, 'splitParts: needs at least two parts to split between (label them with api.label, or detect and accept parts on an import)');
+
+    interface Group { name: string; labels: string[]; ids: Set<number>; primary: number; mask: Uint8Array; area: number; seam: SeamSpec }
+    const seams = opts.seams ?? {};
+    need(!!seams && typeof seams === 'object' && !Array.isArray(seams), 'splitParts.seams must be an object keyed by piece name');
+    const items: Group[] = groups.map(labels => {
+      const name = labels.join('+');
+      const ids = new Set<number>(labels.flatMap(idsOf));
+      const mask = new Uint8Array(triIds.length);
+      for (let t = 0; t < triIds.length; t++) if (ids.has(triIds[t])) mask[t] = 1;
+      const an = maskAreaNormal(mesh, mask);
+      const rawSeam = (seams as Record<string, unknown>)[name] ?? (seams as Record<string, unknown>)[labels[0]];
+      return { name, labels, ids, primary: idsOf(labels[0])[0], mask, area: an ? an.area : 0, seam: rawSeam === undefined ? { mode: 'auto' } : parseSeam(rawSeam, `splitParts.seams["${name}"]`) };
+    });
+    for (const k of Object.keys(seams)) need(items.some(g => g.name === k || g.labels[0] === k), `splitParts.seams: no piece named "${k}" (pieces: ${items.map(g => g.name).join(', ')})`);
+    let keepItem = items.reduce((a, b) => (b.area > a.area ? b : a));
+    if (opts.keep !== undefined) {
+      const k = items.find(g => g.name === opts.keep || g.labels.includes(opts.keep as string));
+      need(!!k, `splitParts.keep: no piece named "${opts.keep}" (pieces: ${items.map(g => g.name).join(', ')})`);
+      keepItem = k!;
+    }
+    need(keepItem.seam.mode === 'auto', `splitParts.seams["${keepItem.name}"]: the kept piece takes what is left, so it has no seam of its own — set the seam on its neighbours, or pick another { keep }`);
+    // Inserts first (their socket is cut before a neighbour takes the rim),
+    // then the smallest parts, so a big part's cut never swallows a small one.
+    const order = items.filter(g => g !== keepItem).sort((a, b) => {
+      const pa = a.seam.mode === 'plug' ? 0 : 1, pb = b.seam.mode === 'plug' ? 0 : 1;
+      return pa !== pb ? pa - pb : a.area - b.area;
+    });
+
+    const report: { pieces: Record<string, unknown>[]; warnings: string[] } = { pieces: [], warnings: [] };
+    const pieces: { item: Group; solid: any }[] = [];
+    let rest = m;
+    // Faces of pieces already cut away: their seams no longer count.
+    const gone = new Uint8Array(triIds.length);
+    for (const g of order) {
+      const box = facesCentroid(mesh, g.mask)!;
+      let mode = g.seam.mode;
+      const fit = mode === 'auto' || mode === 'flat' ? fitSeam(mesh, g.mask, gone) : null;
+      for (let t = 0; t < gone.length; t++) if (g.mask[t]) gone[t] = 1;
+      if (mode === 'auto') mode = fit && fit.loops === 1 && fit.rms <= flatTol * fit.radius ? 'flat' : 'medial';
+      if (mode === 'flat' && !fit) {
+        report.warnings.push(`${g.name}: no seam to fit a plane to (already a separate piece?) — cut medially`);
+        mode = 'medial';
+      }
+      let region: any, grown: any, voxel: number;
+      const info: Record<string, unknown> = { name: g.name, mode };
+      if (mode === 'plug') {
+        const an = maskAreaNormal(mesh, g.mask)!;
+        const axis = normalize(g.seam.axis ?? an.normal);
+        const { u, v } = frameMatrix(axis, [0, 0, 0]);
+        const proj = projectMask(mesh, g.mask, u, v, axis);
+        let cs = new CrossSection(proj.polys, 'Positive');
+        const size = Math.sqrt(Math.max(cs.area(), 1e-12));
+        voxel = size / resolution;
+        // Close the hairline cracks between projected triangles, then round
+        // off the outline's triangle-edge stair-steps (close + open), so the
+        // socket wall is a clean curve rather than the mesh's jagged rim —
+        // then grow it back past the rim's zigzag, so no sliver of the part's
+        // own surface is left on the neighbour (the plug takes a thin, clean
+        // ring of the neighbour instead).
+        const eps = Math.max(voxel, size * 0.015);
+        cs = cs.offset(eps, 'Round').offset(-2 * eps, 'Round').offset(2 * eps, 'Round').simplify(eps * 0.02);
+        const depth = g.seam.depth ?? 0.35 * size;
+        const bottom = proj.minA - depth;
+        const top = proj.maxA + 0.02 * size;
+        const at = (s: number): Vec3 => [axis[0] * s, axis[1] * s, axis[2] * s];
+        region = cs.extrude(top - bottom).transform(frameMatrix(axis, at(bottom)).mat);
+        grown = clearance > 0
+          ? cs.offset(clearance, 'Round').extrude(top - bottom + clearance).transform(frameMatrix(axis, at(bottom - clearance)).mat)
+          : region;
+        info.axis = axis.map(x => +x.toFixed(3));
+        info.depth = +depth.toFixed(3);
+      } else {
+        const mf = medialField(m, mesh, g.mask, box, resolution, smoothing);
+        need(!!mf, `splitParts: "${g.name}" covers the whole shape`);
+        const { spec } = mf!;
+        voxel = mf!.voxel;
+        let field = mf!.field;
+        if (mode === 'flat') {
+          let n = fit!.normal;
+          if (g.seam.normal) {
+            const nn = normalize(g.seam.normal);
+            n = nn[0] * n[0] + nn[1] * n[1] + nn[2] * n[2] < 0 ? [-nn[0], -nn[1], -nn[2]] : nn;
+          }
+          const c = fit!.point;
+          // The plane cuts only near this part: where the medial region,
+          // grown by `margin`, still applies. Far from the seam (where the
+          // plane would slice through another part) the medial cut wins.
+          const margin = Math.max(0.5 * fit!.radius, 3 * voxel);
+          const flat = new Float32Array(field.length);
+          for (let i = 0; i < field.length; i++) {
+            if (field[i] === voxel) { flat[i] = voxel; continue; }
+            const x = spec.origin[0] + (i % spec.nx) * voxel - c[0];
+            const y = spec.origin[1] + (Math.floor(i / spec.nx) % spec.ny) * voxel - c[1];
+            const z = spec.origin[2] + Math.floor(i / (spec.nx * spec.ny)) * voxel - c[2];
+            const plane = -(x * n[0] + y * n[1] + z * n[2]);
+            flat[i] = Math.max(plane, field[i] - margin);
+          }
+          field = flat;
+          info.planeRms = +fit!.rms.toFixed(3);
+          info.normal = n.map(x => +x.toFixed(3));
+        }
+        region = dropSlivers(levelSetFromField(Manifold, field, spec), voxel);
+        grown = clearance > 0 ? dropSlivers(levelSetFromField(Manifold, shiftField(field, spec, clearance), spec), voxel) : region;
+      }
+      let piece = dropSlivers(rest.intersect(region), voxel, 4, [m]);
+      rest = dropSlivers(rest.subtract(grown), voxel, 4, [m]);
+      if (piece.isEmpty()) {
+        report.warnings.push(`${g.name}: the cut took no material — it stays with ${keepItem.name}`);
+        continue;
+      }
+      // One connected solid per piece: loose bits too small to matter go
+      // back across the seam (they touch it unless there's a clearance).
+      const comps = piece.decompose().sort((a: any, b: any) => b.volume() - a.volume());
+      if (comps.length > 1) {
+        const mainVol = comps[0].volume();
+        const keepComps = [comps[0]];
+        let handedBack = 0;
+        for (const c of comps.slice(1)) {
+          const vol = c.volume();
+          if (vol < 0) { keepComps.push(c); continue; } // an inner cavity
+          if (vol < minFragment * mainVol) { if (clearance === 0) rest = rest.add(c); handedBack++; } else keepComps.push(c);
+        }
+        piece = keepComps.length === 1 ? keepComps[0] : Manifold.compose(keepComps);
+        if (handedBack) info.fragmentsHandedBack = handedBack;
+        const loose = keepComps.filter((c: any) => c.volume() > 0).length;
+        if (loose > 1) report.warnings.push(`${g.name}: came out as ${loose} separate solids — check its seam (try another mode, or a higher resolution)`);
+      }
+      pieces.push({ item: g, solid: relabelPiece(piece, g.ids, g.primary) });
+      report.pieces.push(info);
+    }
+    // What's left is the kept piece; small crumbs a cut stranded are dropped.
+    if (!rest.isEmpty()) {
+      const comps = rest.decompose().sort((a: any, b: any) => b.volume() - a.volume());
+      const mainVol = comps[0].volume();
+      const kept = comps.filter((c: any, i: number) => i === 0 || c.volume() < 0 || c.volume() >= minFragment * mainVol);
+      const dropped = comps.length - kept.length;
+      const loose = kept.filter((c: any) => c.volume() > 0).length;
+      const info: Record<string, unknown> = { name: keepItem.name, mode: 'kept' };
+      if (dropped) info.fragmentsDropped = dropped;
+      if (loose > 1) report.warnings.push(`${keepItem.name}: came out as ${loose} separate solids`);
+      pieces.push({ item: keepItem, solid: relabelPiece(kept.length === 1 ? kept[0] : Manifold.compose(kept), keepItem.ids, keepItem.primary) });
+      report.pieces.push(info);
+    }
+    for (const p of pieces) {
+      const info = report.pieces.find(r => r.name === p.item.name)!;
+      info.volume = +p.solid.volume().toPrecision(5);
+      info.triangles = p.solid.numTri();
+    }
+    // Explode: each piece moves away from the model's centre.
+    const mb = bboxOf(m);
+    const mc: Vec3 = [(mb.min[0] + mb.max[0]) / 2, (mb.min[1] + mb.max[1]) / 2, (mb.min[2] + mb.max[2]) / 2];
+    const placed = pieces.map(p => {
+      if (explode === 0) return p.solid;
+      const b = bboxOf(p.solid);
+      const off: Vec3 = [0, 1, 2].map(k => ((b.min[k] + b.max[k]) / 2 - mc[k]) * explode) as Vec3;
+      return p.solid.translate(off);
+    });
+    console.log('[splitParts] ' + JSON.stringify(report));
+    return Manifold.compose(placed);
+  }
+
   /** A part cut along a curved seam and then scaled or turned no longer
    *  matches the rest's side of the seam, and where the edited part's rim
    *  still overlaps the rest the gap between them is sealed into a hidden
@@ -965,5 +1273,5 @@ export function createMeshSdfOps(module: any) {
     return kept.length === pieces.length ? out : Manifold.compose(kept);
   }
 
-  return { round, offset, shell, smoothWeld, editPart };
+  return { round, offset, shell, smoothWeld, editPart, splitParts };
 }

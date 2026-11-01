@@ -1492,6 +1492,25 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'splitIntoPieces',
+    description: 'Cut the model into separate printable pieces along its PART boundaries (after acceptParts, or api.label parts). Use this instead of hand-placed planes across fused contacts. preview (default) pulls pieces apart + renders, no save; then same options with preview:false saves. Read /ai/segmentation.md#split-into-printable-pieces.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        parts: { type: 'array', items: { type: 'string' }, description: 'Piece names; "a+b" = one piece. Default: every part.' },
+        seams: { type: 'array', description: 'Seam per piece (others auto).', items: { type: 'object', properties: { piece: { type: 'string' }, mode: { type: 'string', enum: ['auto', 'medial', 'flat', 'plug'] }, axis: { type: 'array', items: { type: 'number' } }, depth: { type: 'number' }, normal: { type: 'array', items: { type: 'number' } } }, required: ['piece', 'mode'] } },
+        keep: { type: 'string', description: 'Piece that keeps the rest (default largest).' },
+        clearance: { type: 'number', minimum: 0 },
+        resolution: { type: 'integer', minimum: 32, maximum: 192 },
+        smoothing: { type: 'integer', minimum: 0, maximum: 12 },
+        explode: { type: 'number', minimum: 0 },
+        preview: { type: 'boolean' },
+        remove: { type: 'boolean' },
+        label: { type: 'string' },
+      },
+    },
+  },
+  {
     name: 'discardParts',
     description: 'Drop the part draft and its overlay.',
     input_schema: { type: 'object', properties: {} },
@@ -2758,6 +2777,7 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   'healCurrent', 'replaceColor', 'setRegionVisibility', 'paintAirbrush', 'renderSection',
   'getObjectPartInfo', 'setObjectPartColor', 'renameObjectPart', 'bakeObjectPartColor',
   'extractObjectPiece', 'extractObjectParts', 'reassignPaint', 'partAction', 'undoPartEdit',
+  'splitIntoPieces',
 ]);
 
 // The shared `object` target schema, injected into every targetable tool so the
@@ -3054,7 +3074,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams', 'setCurvatureQuality']);
-const SAVE_GATED = new Set(['runAndSave', 'forkVersion', 'loadVersion', 'saveVersion', 'resolveModelDrift', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts', 'partAction', 'undoPartEdit']);
+const SAVE_GATED = new Set(['runAndSave', 'forkVersion', 'loadVersion', 'saveVersion', 'resolveModelDrift', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts', 'partAction', 'undoPartEdit', 'splitIntoPieces']);
 /** SAVE_GATED tools that touch version history WITHOUT executing new code, so
  *  they only need the saveVersions scope (not runCode). */
 const SAVE_NON_RUNNING = new Set(['loadVersion', 'saveVersion', 'renameVersion', 'deleteVersion', 'saveAllObjects']);
@@ -4159,6 +4179,27 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.setPartsOverlay(input.visible);
     case 'acceptParts':
       return api.acceptParts(input);
+    case 'splitIntoPieces': {
+      // The schema carries seams as [{piece, mode, axis?, depth?, normal?}]
+      // (every object param declares its fields); the API takes { piece: seam }.
+      const args: Record<string, unknown> = { ...input };
+      if (Array.isArray(input.seams)) {
+        const seams: Record<string, unknown> = {};
+        for (const raw of input.seams as Record<string, unknown>[]) {
+          if (!raw || typeof raw.piece !== 'string') return { error: 'splitIntoPieces: each seams entry needs a piece name and a mode.' };
+          const { piece, ...spec } = raw;
+          seams[piece as string] = Object.keys(spec).length === 1 && typeof spec.mode === 'string' ? spec.mode : spec;
+        }
+        args.seams = seams;
+      }
+      const result = await api.splitIntoPieces(args) as Record<string, unknown>;
+      if (!result || typeof result !== 'object' || 'error' in result) return result;
+      const image = result.image as string | undefined;
+      delete result.image;
+      const img = typeof image === 'string' ? parseImageDataUrl(image) : null;
+      if (!img) return result;
+      return { content: `splitIntoPieces: ${JSON.stringify(result)}`, isError: false, image: { ...img, label: 'splitIntoPieces preview' } } satisfies ToolExecResult;
+    }
     case 'discardParts':
       return api.discardParts();
     case 'listObjectParts':

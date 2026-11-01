@@ -183,6 +183,7 @@ import { nearestTriangleMap, remapTriangleSets, selectTrianglesNearSeeds } from 
 import { surfaceCacheStatus, computeChain, surfaceChainKey, seedSurfaceCache, meshContentKey, cancelSurfaceCompute, surfaceComputeInFlight, SurfaceComputeCancelled, type SurfaceOp } from './surface/surfaceOps';
 import { SURFACE_OP_IDS, SURFACE_OP_FIELDS, SURFACE_SCOPE_KEYS, parseSurfaceOpts, isSurfaceOpId, type SurfaceOpId, type PersistedSurfaceTexture, type ResolvedScope } from './surface/surfaceOpSpec';
 import { upsertSurfaceCall } from './surface/surfaceCodegen';
+import { parseSplitReport, removeSplitCall, upsertSplitCall } from './editor/splitCode';
 import { initSurfaceUI } from './ui/surfaceModal';
 import { initCharacterCreatorUI } from './ui/characterCreatorPanel';
 import { createPartDetection, importMeshKey, type PartDetectionApi } from './segmentation/partDetection';
@@ -193,6 +194,7 @@ import { normalizeSpec, validateSpec, decodeSpecComment, SPEC_VERSION, CHARACTER
 import { randomSpec, seededRandom } from './figure/characterRandom';
 import { initResizeUI } from './ui/resizeModal';
 import { initConvertToCodeUI, openConvertToCodeModal } from './ui/convertToCodeModal';
+import { initSplitPiecesUI } from './ui/splitPiecesModal';
 import { initPlaceUI } from './ui/placeModal';
 import { generateRelief, generateReliefFromSvg } from './relief/imageToRelief';
 import { DEFAULT_RELIEF_OPTIONS, type ReliefOptions, type ReliefImportMode, type ReliefCommonOptions, type SeedRegion, type PreviewMode, type GenerateReliefResult } from './relief/types';
@@ -14620,6 +14622,99 @@ async function main() {
         geometry: getGeometryDataObj(),
       };
     },
+    /** Cut the current model into separate printable pieces along its part
+     *  boundaries: wraps the code's final return as `return api.splitParts(…)`
+     *  (or updates that wrap), runs it and reports each piece. preview (the
+     *  default) pulls the pieces apart and does NOT save; preview:false saves
+     *  a version with the pieces in place; remove:true unwraps the split. */
+    async splitIntoPieces(opts?: Record<string, unknown>) {
+      const kernelKeys = ['parts', 'seams', 'keep', 'clearance', 'resolution', 'explode', 'flatTolerance', 'minFragment', 'smoothing'];
+      const check = guard(() => {
+        if (opts !== undefined) {
+          const o = assertObject(opts, 'splitIntoPieces(opts)')!;
+          assertNoUnknownKeys(o, [...kernelKeys, 'preview', 'remove', 'label', 'render'], 'splitIntoPieces(opts)');
+          assertBoolean(o.preview, 'splitIntoPieces(opts).preview', { optional: true });
+          assertBoolean(o.remove, 'splitIntoPieces(opts).remove', { optional: true });
+          assertBoolean(o.render, 'splitIntoPieces(opts).render', { optional: true });
+          if (o.label !== undefined) assertString(o.label, 'splitIntoPieces(opts).label');
+          if (o.parts !== undefined) assertArray(o.parts, 'splitIntoPieces(opts).parts');
+          if (o.seams !== undefined) assertObject(o.seams, 'splitIntoPieces(opts).seams');
+          if (o.keep !== undefined) assertString(o.keep, 'splitIntoPieces(opts).keep');
+          for (const k of ['clearance', 'resolution', 'explode', 'flatTolerance', 'minFragment', 'smoothing']) {
+            if (o[k] !== undefined) assertNumber(o[k], `splitIntoPieces(opts).${k}`, { min: 0 });
+          }
+        }
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (isSharedPreview()) return { error: SHARED_PREVIEW_REFUSAL };
+      if (getActiveLanguage() !== 'manifold-js') {
+        return { error: `splitIntoPieces works on manifold-js models — this session is ${getActiveLanguage()}. Bake it to a mesh first (e.g. scale it 1× in bake mode), then detect and accept parts.` };
+      }
+      const o = (opts ?? {}) as Record<string, unknown>;
+      const previousCode = getValue();
+      const preview = o.preview !== false;
+      let next: string;
+      let call: string | null = null;
+      if (o.remove) {
+        const r = removeSplitCall(previousCode);
+        if (r === null) return { error: 'The code has no `return api.splitParts(…)` to remove.' };
+        next = r;
+      } else {
+        const kernel: Record<string, unknown> = {};
+        for (const k of kernelKeys) if (o[k] !== undefined) kernel[k] = o[k];
+        if (preview && kernel.explode === undefined) kernel.explode = 0.6;
+        const up = upsertSplitCall(previousCode, kernel);
+        if (!up) return { error: 'Could not find a top-level `return` in the code to wrap with api.splitParts.' };
+        next = up.code;
+        call = up.call;
+      }
+      setValue(next);
+      const applied = await runCodeSync(next);
+      if (!applied) return { error: runFailedMessage() };
+      const geo = getGeometryDataObj() as { status?: string; error?: string; componentCount?: number; isManifold?: boolean } | null;
+      if (geo?.status === 'error') {
+        setValue(previousCode);
+        await runCodeSync(previousCode);
+        return { error: `splitIntoPieces failed: ${geo.error ?? 'run error'}. The code was restored.` };
+      }
+      if (o.remove) {
+        return { ok: true, removed: true, saved: false, note: 'The split was removed and the model re-run; save a version (runAndSave / saveVersion) to keep this.' };
+      }
+      const report = parseSplitReport(lastRunLogs);
+      const view = currentObjectPartsView();
+      const warnings = [...(report?.warnings ?? [])];
+      const pieces = (view?.pieces ?? []).map(p => ({ index: p.index, triangles: p.triangleCount, part: p.part ?? null }));
+      const expected = report?.pieces.length ?? 0;
+      if (expected > 0 && pieces.length !== expected) {
+        warnings.push(`${pieces.length} separate solids for ${expected} pieces — a piece has loose bits (see the per-piece triangle counts; compare listObjectParts().pieces).`);
+      }
+      if (geo?.isManifold === false) warnings.push('The result is not manifold.');
+      const out: Record<string, unknown> = {
+        ok: true,
+        preview,
+        call,
+        pieces: report?.pieces ?? [],
+        solids: pieces,
+        ...(warnings.length > 0 ? { warnings } : {}),
+      };
+      if (preview) {
+        out.saved = false;
+        out.note = 'Preview only: the pieces are pulled apart and nothing was saved. Look at each seam (renderView from the angles that show the cut faces), then call splitIntoPieces with the same options and preview:false to save, or { remove: true } to undo.';
+        if (o.render !== false) {
+          const img = await partwrightAPI.renderViews({ views: 'auto' });
+          if (typeof img === 'string') out.image = img;
+        }
+      } else {
+        const saved = await saveCurrentVersion(typeof o.label === 'string' ? o.label : 'Split into pieces');
+        out.saved = 'id' in saved;
+        if ('id' in saved) out.version = { id: saved.id, index: saved.index, label: saved.label };
+        if ('error' in saved) out.saveWarning = saved.error;
+        if ('skipped' in saved) out.saveSkipped = saved.reason;
+        out.export = "Each piece is its own solid now. Export one 3MF object per piece with export3MFObjects(undefined, 'name', { split: { '<object name>': 'parts' } }).";
+      }
+      return out;
+    },
     /** Apply a surface texture by the best available path — the auto-routing
      *  twin of the Surface panel's Apply (and the in-app AI's single texture
      *  tool). mode 'auto' (default): a manifold-js session gets the texture AS
@@ -23973,6 +24068,7 @@ async function main() {
         'previewSurfaceModifier': { signature: "previewSurfaceModifier(id, opts?, preserveColor?) -- Non-destructive viewport preview of a modifier; id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'knurl'|'voronoi'|'voronoiLamp'|'engrave'|'smooth'|'voxelize' -> {ok} or {error}", docs: '/ai/textures.md' },
         'clearSurfacePreview': { signature: 'clearSurfacePreview() -- Discard a live surface preview and restore the current mesh', docs: '/ai/textures.md' },
         'applySurfaceTexture': { signature: "await applySurfaceTexture(id, opts?, mode?) -- Texture by the best path: mode 'auto' (default) writes api.surface.<id> as code on manifold-js, bakes elsewhere; 'code'/'bake' force a path. opts may scope the code path with label:'name' or region:{point,radius}. Returns the result plus path: 'code'|'bake'", docs: '/ai/textures.md' },
+        'splitIntoPieces': { signature: "await splitIntoPieces({parts?, seams?, keep?, clearance?, resolution?, smoothing?, explode?, preview?, remove?, label?}) -- Cut the model into separate printable pieces along its part boundaries (detected import parts or api.label parts): wraps the final return in api.splitParts(…). seams per piece: 'auto' (flat when the seam is planar, else medial), 'medial' (follows a fused contact), 'flat', 'plug' (straight-walled insert + socket: eyes, buttons) or {mode:'plug', axis?, depth?}. preview (default true) pulls pieces apart, renders, does NOT save; preview:false saves; remove:true unwraps -> {ok, pieces:[{name, mode, volume, triangles…}], solids, warnings?, image?, version?}", docs: '/ai/segmentation.md' },
         'applySurfaceTextureAsCode': { signature: "await applySurfaceTextureAsCode(id, opts?) -- Write api.surface.<id>({…}) into the code (insert before the final return, or update the existing call) instead of baking; re-runs and saves a version. manifold-js only. opts may add a scope: label:'name' (an api.label region) or region:{point:[x,y,z],radius}. id: 'fuzzy'|'knit'|'cable'|'waffle'|'fur'|'woven'|'knurl'|'voronoi'|'smooth'", docs: '/ai/textures.md' },
         'applyFuzzySkin':  { signature: 'await applyFuzzySkin({amplitude?, scale?, octaves?, seed?, quality?, preserveColor?}) -- BAKE fuzzy-skin noise; saves a new version. In-code alternative: api.surface.fuzzy', docs: '/ai/textures.md' },
         'applyKnitTexture':{ signature: 'await applyKnitTexture({amplitude?, stitchWidth?, stitchHeight?, rowOffset?, roundness?, grainAngleDeg?, variation?, seed?, quality?, algorithm?, selectedTriangles?, preserveColor?}) -- BAKE knit stitches; saves a new version. In-code alternative: api.surface.knit', docs: '/ai/textures.md' },
@@ -24122,6 +24218,7 @@ async function main() {
   // Resize/scale UI (viewport ⇲ Resize button + command-palette entry).
   initResizeUI(partwrightAPI as unknown as Parameters<typeof initResizeUI>[0]);
   initConvertToCodeUI(partwrightAPI as unknown as Parameters<typeof initConvertToCodeUI>[0]);
+  initSplitPiecesUI(partwrightAPI as unknown as Parameters<typeof initSplitPiecesUI>[0]);
   // Placement UI (viewport ⤓ Place button + command-palette entries).
   initPlaceUI(partwrightAPI as unknown as Parameters<typeof initPlaceUI>[0]);
 

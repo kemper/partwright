@@ -16,7 +16,7 @@ import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
 import { PHOTO_BUST_PROMPT } from '../ai/photoModelPrompt';
 import { RECONSTRUCT_PROMPT } from '../ai/reconstructPrompt';
-import { PARTS_PROMPT } from '../ai/partsPrompt';
+import { PARTS_PROMPT, SPLIT_PROMPT } from '../ai/partsPrompt';
 import { isLegacyDefaultThinking, loadSettings, saveSettings, SETTINGS_REV, setPlanStylePrefs, setAnthropicModel, setOpenaiModel, setGeminiModel, setCustomContext, setCustomModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd, hasKnownPricing } from '../ai/cost';
@@ -3991,6 +3991,7 @@ const SLASH_HANDLERS: Record<SlashCommandName, () => void> = {
   portrait: () => { prefillAiInput(PHOTO_BUST_PROMPT); },
   reconstruct: () => { prefillAiInput(RECONSTRUCT_PROMPT); },
   parts: () => { prefillAiInput(PARTS_PROMPT); },
+  split: () => { prefillAiInput(SPLIT_PROMPT); },
 };
 
 /** Interpret the current input as a slash command. Returns true when it was a

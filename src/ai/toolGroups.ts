@@ -96,12 +96,12 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
   },
   {
     id: 'parts',
-    summary: 'part detection on imported meshes: detect, edit, preview, accept named parts',
+    summary: 'part detection on imported meshes: detect, edit, accept parts, split into print pieces',
     tools: [
       'listPartDetectors', 'detectParts', 'autoDetectParts', 'reopenParts', 'previewPartPresets',
       'applyPartPreset', 'setPartSelection', 'setPartsView', 'partAt', 'previewSeeds',
       'openPartsPanel', 'getPartDraft', 'editParts', 'renderParts', 'comparePartDetectors',
-      'setPartsOverlay', 'acceptParts', 'discardParts',
+      'setPartsOverlay', 'acceptParts', 'discardParts', 'splitIntoPieces',
     ],
   },
   {

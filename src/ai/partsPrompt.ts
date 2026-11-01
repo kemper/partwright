@@ -15,3 +15,21 @@ export const PARTS_PROMPT = [
   '4. Refine from my feedback with editParts (addSeed, merge, reassign, split, rename, setColor) and re-render. Repeat until I approve.',
   '5. acceptParts, then paint: one colour per part with paintByLabel / paintByLabels. Details with no groove of their own (a stripe, a logo, ball panels) go on with a normal paint selector plus withinPart so they stay inside their part.',
 ].join('\n');
+
+// The "cut an imported figure into printable pieces" workflow: the /split
+// slash command prefills it. Same detect → accept start as /parts, then
+// splitIntoPieces instead of paint. The lesson behind it: an agent that
+// hand-places planes and boxes across fused contacts (an arm lying on a belly,
+// a sculpted eye) leaves jagged skin and wrong seams; cutting along accepted
+// part boundaries with per-seam modes does not.
+export const SPLIT_PROMPT = [
+  'Cut the mesh I imported into separate pieces I can print and glue (or press-fit) back together.',
+  '',
+  'Read /ai/segmentation.md first, including "Split into printable pieces". Do NOT cut with hand-placed planes or boxes across parts that are fused together. Then:',
+  '',
+  '1. Look: renderViews from the front, side and back, and list the pieces you would cut it into. Ask me if a piece is unclear, or ask me to mark the cuts with the Annotate tool and read them with listAnnotations.',
+  '2. Find the parts: detectParts with a named seed on every piece (probePixel on your renders → crease-watershed; thickness with the "Limbs and torso" preset where a limb has no groove). renderParts, show me, refine with editParts until I approve, then acceptParts.',
+  '3. Choose a seam per piece: flat for necks, wrists and legs (auto picks it when the seam is near-planar), medial for long fused contacts such as an arm along the body, plug for inserts such as eyes (straight socket walls; add a small clearance for a press fit).',
+  '4. Preview: splitIntoPieces (preview is the default). Look at EVERY seam from the angle that shows its cut faces (renderView, zoomed in) and read the warnings: one solid per piece, no stray skin left on a neighbour. Fix by changing that seam\'s mode, resolution or the part boundary, and preview again. Show me the pulled-apart render.',
+  '5. When I approve: splitIntoPieces with the same options and preview:false, then offer the 3MF export with one object per piece (export3MFObjects with split: parts).',
+].join('\n');

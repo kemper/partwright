@@ -28,6 +28,7 @@ export const SLASH_COMMANDS = [
   { name: 'portrait', summary: 'Prefill a prompt to model a stylized 3D bust from a photo you attach', aliases: ['bust'] },
   { name: 'reconstruct', summary: 'Prefill a prompt to reverse-engineer an imported mesh into editable code', aliases: ['convert'] },
   { name: 'parts', summary: 'Prefill a prompt to split an imported mesh into named parts and paint each one', aliases: ['segment'] },
+  { name: 'split', summary: 'Prefill a prompt to cut an imported mesh into separate printable pieces along its parts', aliases: ['pieces'] },
   { name: 'help', summary: 'List the available slash commands', aliases: ['commands'] },
 ] as const satisfies readonly SlashCommandSpec[];
 

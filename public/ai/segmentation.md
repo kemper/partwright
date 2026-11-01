@@ -8,7 +8,7 @@ finds those boundaries from the geometry itself, and then turns each part into
 a real **label**. After that, `paintByLabel`, part colours, the object rail and
 `listObjectParts` all work on the import.
 
-**The rule of thumb for imported meshes: detect parts first, then paint by part.**
+**The rule of thumb for imported meshes: detect parts first, then paint by part — or cut by part.** To print a fused figure in pieces, detect and accept its parts, then cut along them with [`splitIntoPieces`](#split-into-printable-pieces). Never cut a fused contact with hand-placed planes or boxes.
 
 ## How it works
 
@@ -225,6 +225,68 @@ Each tile (and each result's `caption`) names the detector **and the params that
 between configs of the same detector, the keys whose values differ; for a detector that
 appears once, what it changed from its defaults (feature options included), e.g.
 `2. crease-watershed · creaseWeight=4 growth=summed`.
+
+## Split into printable pieces
+
+To print a figure in pieces (head, arms, legs, eyes as inserts), cut it along
+its **accepted parts**. `splitIntoPieces` wraps the code's final return in
+`api.splitParts(…)`. Each part, or each group of parts, becomes its own solid.
+Labels are kept, each cut face takes its piece's label, and two neighbouring
+pieces share one cut surface, so they fit back together exactly.
+
+**Don't hand-place planes or boxes across fused parts.** A plane can't follow an
+arm that lies along a belly. It either shaves the body or leaves strips of arm
+skin on it, and a guessed cylinder can't follow the groove around a sculpted
+eye. Detect the parts with a seed on each one, accept them, then split.
+
+```js
+// 1. Parts first (see Workflow above): one named seed per piece, then accept.
+await partwright.detectParts({ algorithm: 'crease-watershed', seeds: [
+  { label: 'head', point: [...] }, { label: 'torso', point: [...] },
+  { label: 'armL', point: [...] }, { label: 'eyeL', point: [...] }, /* … */ ] });
+await partwright.renderParts({ views: ['front', 'right', 'back'] });   // show the user, fix with editParts
+await partwright.acceptParts();
+
+// 2. Preview the split: pieces pulled apart, a render, a report. Nothing is saved.
+const r = await partwright.splitIntoPieces({
+  seams: { eyeL: { mode: 'plug', depth: 4 }, eyeR: 'plug' },   // others: 'auto'
+  clearance: 0.15,                                             // press-fit gap (model units)
+});
+// r.pieces: [{ name, mode, volume, triangles, planeRms?, axis?, fragmentsHandedBack? }]
+// r.warnings: a piece that came out as several solids, an empty cut, …
+
+// 3. Look at every seam, zoomed in, from the side that shows its cut faces.
+await partwright.renderView({ azimuth: 90, elevation: 10, size: 1024 });
+
+// 4. Save it (same options, pieces in place), then export one 3MF object per piece.
+await partwright.splitIntoPieces({ seams: { eyeL: { mode: 'plug', depth: 4 }, eyeR: 'plug' }, clearance: 0.15, preview: false });
+await partwright.export3MFObjects(undefined, 'figure', { split: { [obj]: 'parts' } });
+// Undo a split: splitIntoPieces({ remove: true }).
+```
+
+**Seams**, one per piece (`seams: { name: mode }`; pieces you don't list get `auto`):
+
+| Mode | Cut | Use for |
+|---|---|---|
+| `auto` | `flat` when the seam with the rest is one loop that lies close to a plane (RMS under `flatTolerance` (0.08) × its radius), else `medial` | Leave it on unless a preview looks wrong |
+| `flat` | A plane through the seam (best fit; `normal` overrides it), used only near this part | Neck, wrists, ankles, legs on a body: flat faces glue well and print without supports |
+| `medial` | The surface halfway between this part's faces and the rest's, smoothed by `smoothing` (4) blur passes | Long fused contacts: an arm along a belly, a tail along a leg |
+| `plug` | The part's outline pushed straight in along `axis` (default: the part's mean normal) to `depth` below its deepest point (default 0.35 × outline size). The neighbour gets a matching straight-walled socket, `clearance` wider | Inserts: eyes, buttons, badges, a nose |
+
+**Options:** `parts` (piece names; `'torso+tail'` or `['torso', 'tail']` keeps
+parts together as one piece; default every part), `keep` (the piece that keeps
+whatever is left, default the largest; it has no seam of its own), `clearance` (0),
+`resolution` (96; raise it for small or detailed parts), `smoothing`, `explode`
+(preview default 0.6, saved default 0), `minFragment` (0.02: loose bits smaller
+than this fraction of their piece go back across the seam), `label`.
+
+- **Order:** plugs are cut first, then the smallest pieces first. The kept piece takes whatever is left.
+- **Read the warnings.** "came out as N separate solids" means that seam is wrong. Try another mode, a higher `resolution`, or fix the part boundary with `editParts` and accept again. Every piece should be one solid.
+- **Check the result geometrically.** In the saved split, `componentCount` should equal the number of pieces, and `listObjectParts().pieces` should name one part per piece.
+- **Already-separate parts** (fins printed apart, say) need no cut. They come through as their own piece.
+- **In code** it's `api.splitParts(m, opts)` with the same options (`flatTolerance` too). It works on any labelled manifold-js shape, so you can call it on `api.label` parts too. The run's log line `[splitParts] {…}` is the report.
+- **One object per piece:** a saved split is one object of separate solids. Export it with `split: 'parts'`. To get a separate object per piece in the session, use `extractObjectParts({ parts: [...], separate: true })`.
+- **Cost:** each cut samples a lattice over its part's box (up to `resolution`³ points) and does two booleans on the remaining mesh. Very dense scans (millions of triangles) are slow, so `simplifyModel` the import first if a preview takes minutes.
 
 ## Editing the parts after accepting them
 
