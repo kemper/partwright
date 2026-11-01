@@ -45,3 +45,8 @@ reported, not re-parsed slowly on the UI thread.
 
 **Bytes ownership**: interactive imports transfer the file buffer zero-copy;
 API/multi-file callers get a copy, since some re-read the bytes afterwards.
+
+**Review follow-ups**: plate thumbnails are copied out of the zip (a stored
+entry was a subarray of the whole file, so cloning it back from the Worker
+dragged the entire input across); Cancel during the final mesh check is
+honoured; progress stays monotonic across multi-model packages.

@@ -689,7 +689,11 @@ function namedPartRuns(runs: { key: string; name: string; first: number; count: 
 export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions = {}): Promise<ThreeMFParseResult> {
   const zip = openZip(bytes, { maxEntryBytes: options.maxEntryBytes });
   const maxTriangles = options.maxTriangles ?? 20_000_000;
-  const progress = options.onProgress;
+  // Monotonic: a package with several model parts restarts each file's stages.
+  let progressHigh = 0;
+  const progress = options.onProgress
+    ? (fraction: number, message: string) => { progressHigh = Math.max(progressHigh, fraction); options.onProgress!(progressHigh, message); }
+    : undefined;
   const rootPath = await findRootModelPath(zip);
 
   // Parse the root model, then every model file it (transitively) references
@@ -935,7 +939,7 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
     const plate: ThreeMFPlate = { id: pl.id, name: pl.name || `Plate ${pl.id}` };
     const thumb = zip.find(pl.thumbnailFile ?? `Metadata/plate_${pl.id}.png`);
     if (thumb && thumb.uncompressedSize <= MAX_PLATE_THUMBNAIL_BYTES) {
-      try { plate.thumbnail = await zip.read(thumb); } catch { /* a preview is optional */ }
+      try { plate.thumbnail = (await zip.read(thumb)).slice(); /* own copy: a stored entry is a view into the whole file */ } catch { /* a preview is optional */ }
     }
     plates.push(plate);
   }

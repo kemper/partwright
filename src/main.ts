@@ -5633,6 +5633,8 @@ async function main() {
       if (result.objects.length < 2) {
         updateProgress(progressId, 0.99, 'Checking mesh…');
         p3 = await probeWhole3MF(result, file.name);
+        // The mesh check can't be interrupted mid-way; honour a Cancel clicked during it.
+        if (abort.signal.aborted) throw new STLProbeAbortError();
       }
     } catch (e) {
       if (e instanceof STLProbeAbortError) {
