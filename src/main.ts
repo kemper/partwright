@@ -115,6 +115,7 @@ import { analyzeObjectSplit, availableSplitModes, extractItemMesh, isExportSplit
 import { exportVOX, buildVOX } from './export/vox';
 import { assertFiniteMesh } from './export/meshClean';
 import { exportSessionJSON, exportRawCode, buildSessionJSON, buildRawCode } from './export/session';
+import { parseJsonBlob } from './import/jsonBytes';
 import { blobToBase64, downloadBlob, getExportFilename } from './export/download';
 import {
   listExports as listInboxExports,
@@ -4682,10 +4683,11 @@ async function main() {
   }
 
   // Run a JSON session import end-to-end: validate, show the preview modal, import.
-  async function importJSONFromText(filename: string, text: string): Promise<boolean> {
+  async function importJSONFromBlob(filename: string, blob: Blob): Promise<boolean> {
     let parsed: unknown;
     try {
-      parsed = JSON.parse(text);
+      // Byte-level fallback for files too big to read as one string.
+      parsed = await parseJsonBlob(blob);
     } catch {
       showToast(`Could not parse "${filename}" as JSON.`, { variant: 'warn', source: 'import' });
       return false;
@@ -4746,8 +4748,7 @@ async function main() {
     try {
       let committed = false;
       if (source === 'JSON') {
-        const text = await file.text();
-        committed = await importJSONFromText(file.name, text);
+        committed = await importJSONFromBlob(file.name, file);
       } else if (source === 'JS' || source === 'SCAD') {
         const code = scadCode ?? await file.text();
         const lang: Language = source === 'SCAD' ? 'scad' : 'manifold-js';
@@ -7421,8 +7422,7 @@ async function main() {
   async function handleReimportInboxEntry(entry: ImportInboxEntry): Promise<void> {
     try {
       if (entry.source === 'JSON') {
-        const text = await entry.blob.text();
-        await importJSONFromText(entry.filename, text);
+        await importJSONFromBlob(entry.filename, entry.blob);
         return;
       }
       // STL re-imports go through the import-target modal (new part / current
@@ -20183,7 +20183,9 @@ async function main() {
       const remote = { kind: 'remote' as const, source, filename: file.name };
       if (source === 'JSON') {
         if (po.target !== 'new-session') return { error: "importFromUrl: a session file always imports as a new session — omit target or use 'new-session'." };
-        const r = await partwrightAPI.importSessionData(await file.text());
+        let payload: unknown;
+        try { payload = await parseJsonBlob(file); } catch { return { error: `importFromUrl: could not parse "${file.name}" as JSON.` }; }
+        const r = await partwrightAPI.importSessionData(payload);
         return 'error' in r ? { error: `importFromUrl: ${r.error}` } : { ...remote, ...r };
       }
       let placed: ApiImportResult | { error: string };
