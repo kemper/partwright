@@ -5,7 +5,7 @@
 
 import { registerAiComposerAttach } from './aiComposerBridge';
 import { getAnnotationViews } from '../annotations/annotationViews';
-import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens, runTurn as runTurnOnMainThread, buildActiveSystemPrompt, toolsForRequest, type RunTurnInput, type RunTurnCallbacks } from '../ai/chatLoop';
+import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens, runTurn as runTurnOnMainThread, buildActiveSystemPrompt, toolsForRequest, turnToolList, type RunTurnInput, type RunTurnCallbacks } from '../ai/chatLoop';
 import { getActiveImports } from '../import/importedMesh';
 import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerClient';
 import { getConfig } from '../config/appConfig';
@@ -36,7 +36,7 @@ import { appendCalibration, loadCalibration } from '../ai/planCalibration';
 import { PLAN_STYLE_INFO, appendPlanCardList, checkpointBody, checkpointTitle, renderPlanEstimate, renderPlanStylePicker } from './aiPlanUi';
 import { ASK_USER_TOOL, CARD_TOOL_ACK, PROPOSE_PLAN_TOOL, answersText, type AskUserQuestion, derivePendingPlan, latestPlanReply, parseAskUser, parseProposedPlan, pendingAskUser, planMarkdown } from '../ai/planReply';
 import { buildFixPrompt, countModelChangingCalls, latestUserRequest, overSpendCap, parseReviewVerdict, requestText, resolveReviewer, shouldActOnReview, shouldAutoReview, userConversation } from '../ai/autoReview';
-import { buildToolList, isModelChangingTool, confirmToolLabel } from '../ai/tools';
+import { isModelChangingTool, confirmToolLabel } from '../ai/tools';
 import { DEFAULT_CUSTOM_CONTEXT, REDUCED_TOOLS_NOTE, customContextWindow, resolveCustomPromptTier } from '../ai/customContext';
 import { carriedAttachments, CARRIED_ATTACHMENTS_NOTE } from '../ai/compactionAttachments';
 import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
@@ -164,7 +164,7 @@ let toolCharsMemo: { key: string; chars: number } | null = null;
  *  folds compact tool signatures into its own prompt budget (local.ts). */
 function requestToolChars(toggles: ChatToggles, history: readonly ChatMessage[]): number {
   if (toggles.provider === 'local') return 0;
-  const { tools } = toolsForRequest(toggles, buildToolList(toggles), history, sessionToolGroups());
+  const { tools } = toolsForRequest(toggles, turnToolList(toggles), history, sessionToolGroups());
   // Description lengths change with the Custom tier's compaction settings,
   // not just the tool names.
   const cfg = getConfig().ai;
@@ -2497,6 +2497,16 @@ function renderMessage(msg: ChatMessage): HTMLElement {
       if (!tr.isError && tr.content === CARD_TOOL_ACK) continue;
       wrap.appendChild(renderToolResultBubble(tr));
     }
+    // A delegated worker's spend rides on its tool-result turn; show it there,
+    // like an assistant step's cost, so the per-message costs add up to the
+    // session total.
+    if (msg.costUsd !== undefined || msg.costUnknown) {
+      const meta = document.createElement('div');
+      meta.className = 'text-[10px] text-zinc-600';
+      meta.textContent = `worker ${msg.costUsd !== undefined ? formatUsd(msg.costUsd) : 'cost unknown'}`;
+      meta.title = 'What the delegated worker spent on this step (already included in the session total).';
+      wrap.appendChild(meta);
+    }
   }
 
   // Errored placeholder: render a distinct red bubble with Retry / Dismiss
@@ -3329,7 +3339,7 @@ function fillSystemPromptBody(pre: HTMLElement): void {
   void buildActiveSystemPrompt(toggles)
     .then((base) => {
       if (seq !== systemPromptFillSeq) return;
-      const { suffixLine } = toolsForRequest(toggles, buildToolList(toggles), state.history, sessionToolGroups());
+      const { suffixLine } = toolsForRequest(toggles, turnToolList(toggles), state.history, sessionToolGroups());
       pre.textContent = `${base}\n\n${toggleSuffix(toggles)}${suffixLine ? `\n\n${suffixLine}` : ''}`;
     })
     .catch(() => {

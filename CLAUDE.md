@@ -362,6 +362,10 @@ All providers share the same chat loop (`src/ai/chatLoop.ts`), the same tool sch
 
 See `docs/ai-internals.md` for per-provider thinking/auto-continue wire-format details (thinking box, thought signatures, thinking level mappings, auto-continue implementation, OpenAI routing).
 
+#### Worker delegation
+
+On hosted providers the agent can call `delegateTask` to hand a measurable sub-task to a cheaper model of the same provider. That's Sonnet 5.5 under Opus, GPT-5 mini, or Gemini Flash. The worker runs a nested, in-memory `runTurn` with its own fresh context, step cap and $ cap, and only its report (plus last render) comes back. `src/ai/delegate.ts` holds the pure helpers and `runWorkerTask` in `chatLoop.ts` runs the worker; the step and spend limits live under the `ai.delegateToWorker` / `ai.workerMax*` settings. See `docs/ai-internals.md` → Worker delegation.
+
 #### Cross-provider review
 
 A "👁" button in the panel header opens `src/ui/aiReviewModal.tsx`. The user picks a **different** provider/model than the one driving the chat, optionally types a focus prompt, and the reviewer is sent the current code + geometry stats + 4-iso snapshot + session notes — plus (each a checkbox, on by default) the user's attached reference images and the user's **own** chat messages, never the agent's replies — only a compaction summary, labelled as agent-written, stands in for deleted early turns (`userConversation` in `src/ai/autoReview.ts`, budget `ai.reviewConversationMaxChars`) — via a single non-tool turn. The automatic end-of-task review sends the same extras (its "All your messages" setting). The response lands as a `'review'` `ChatBlock` rendered with a distinct purple-bordered bubble in the transcript AND a `[REVIEW from <provider> / <model>] …` session note (so the primary agent picks it up on its next turn via `getSessionContext()`).
