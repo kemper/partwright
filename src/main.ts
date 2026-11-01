@@ -157,6 +157,8 @@ import { showMergePartsModal, type MergeMode } from './ui/mergePartsModal';
 import { isOrientedEdgeManifold, probeIndexed, probeSTL, type IndexedProbeResult, type STLProbeResult } from './import/stlProbe';
 import type { ManifoldFacts } from './geometry/manifoldFacts';
 import { probeIndexedInWorker, probeSTLInWorker, STLProbeAbortError, type STLProbeControl } from './import/stlProbeClient';
+import { parse3MFInWorker } from './import/threemfParseClient';
+import { ImportWorkerError } from './import/importWorkerJob';
 import { parse3MF, type ThreeMFParseResult } from './import/parsers/threemf';
 import { looksLikeZip } from './import/zipReader';
 import { parseVox } from './import/parsers/vox';
@@ -5427,14 +5429,36 @@ async function main() {
     triColor: Int32Array;
   }
 
+  /** Meshes whose quick oriented-edge manifold check already ran (in the 3MF
+   *  parse Worker), so probeIndexedMesh needn't repeat it on the main thread. */
+  const edgeManifoldChecked = new WeakMap<MeshData, boolean>();
+
   /** Unzip + parse a 3MF under the import limits from the app config. Throws a
-   *  human-readable Error on an unreadable package. */
-  function read3MF(bytes: Uint8Array): Promise<ThreeMFParseResult> {
+   *  human-readable Error on an unreadable package, STLProbeAbortError when
+   *  `ctl.signal` aborts.
+   *
+   *  The parse runs in a Worker: a multi-million-triangle 3MF is hundreds of MB
+   *  of XML and took ~20 s of main-thread work, freezing the page. Only a
+   *  Worker that never started falls back to the main thread. `ctl.transfer`
+   *  hands the bytes over zero-copy (the caller must not reuse them). */
+  async function read3MF(bytes: Uint8Array, ctl?: STLProbeControl & { transfer?: boolean }): Promise<ThreeMFParseResult> {
     const cfg = getConfig().import;
-    return parse3MF(bytes, {
+    const options = {
       maxTriangles: cfg.threeMfMaxTriangles,
       maxEntryBytes: cfg.threeMfMaxEntryMB * 1048576,
-    });
+    };
+    try {
+      const { result, orientedEdgeManifold } = await parse3MFInWorker(bytes, options, ctl);
+      edgeManifoldChecked.set(result.mesh, orientedEdgeManifold);
+      return result;
+    } catch (e) {
+      if (e instanceof STLProbeAbortError) throw e;
+      // The file itself failed to parse — report it, don't redo it slowly here.
+      if (e instanceof ImportWorkerError && e.afterHandOff) throw new Error(e.message);
+      if (bytes.byteLength === 0) throw e; // transferred away; nothing to fall back on
+      errorLog.capture({ level: 'warn', source: 'import', message: `3MF parse worker failed; parsing on the main thread instead: ${(e as Error).message}` });
+      return parse3MF(bytes, options);
+    }
   }
 
   /** The STL manifold probe for an already-indexed mesh (a 3MF, or one object
@@ -5446,7 +5470,7 @@ async function main() {
   async function probeIndexedMesh(raw: MeshData, filename: string, format: ImportedMesh['format']): Promise<{ probe: ParsedSTLProbe; source: MeshData }> {
     const configuredTolerance = getConfig().import.stlWeldTolerance;
     let r: IndexedProbeResult;
-    if (isOrientedEdgeManifold(raw)) {
+    if (edgeManifoldChecked.get(raw) ?? isOrientedEdgeManifold(raw)) {
       r = { mesh: raw, isManifold: true, welded: false };
     } else if (raw.numTri < getConfig().renderer.lazyManifoldMinTriangles) {
       // Small (e.g. one object of a split 3MF): ofMesh is milliseconds here,
@@ -5591,14 +5615,38 @@ async function main() {
    *  chooser. Returns whether anything was imported. */
   async function import3MFFile(file: File): Promise<boolean> {
     let result: ThreeMFParseResult;
+    let p3: Parsed3MF | undefined;
+    // A big file takes seconds to parse and check; show a cancellable modal
+    // (it appears only after the progress modal's show delay).
+    const abort = new AbortController();
+    const progressId = startProgress({
+      title: `Importing ${file.name}`,
+      message: 'Reading file…',
+      onCancel: () => abort.abort(),
+    });
     try {
-      result = await read3MF(new Uint8Array(await file.arrayBuffer()));
+      result = await read3MF(new Uint8Array(await file.arrayBuffer()), {
+        signal: abort.signal,
+        transfer: true,
+        onProgress: (fraction, message) => updateProgress(progressId, fraction, message),
+      });
+      if (result.objects.length < 2) {
+        updateProgress(progressId, 0.99, 'Checking mesh…');
+        p3 = await probeWhole3MF(result, file.name);
+        // The mesh check can't be interrupted mid-way; honour a Cancel clicked during it.
+        if (abort.signal.aborted) throw new STLProbeAbortError();
+      }
     } catch (e) {
+      if (e instanceof STLProbeAbortError) {
+        showToast(`Cancelled importing "${file.name}".`, { variant: 'neutral', source: 'import' });
+        return false;
+      }
       showToast(`Could not read "${file.name}" as a 3MF file: ${(e as Error).message}`, { variant: 'warn', source: 'import' });
       return false;
+    } finally {
+      endProgress(progressId);
     }
-    if (result.objects.length >= 2) return importMultiObject3MF(result, file.name);
-    const p3 = await probeWhole3MF(result, file.name);
+    if (!p3) return importMultiObject3MF(result, file.name);
     if (!p3.probe.isManifold && !(await confirmRenderOnlyImport(file.name, p3.probe))) return false;
     return place3MFImport({ parsed: { mesh: p3.probe.mesh, isManifold: p3.probe.isManifold }, p3 }, file.name);
   }
@@ -5808,7 +5856,10 @@ async function main() {
         try {
           const bytes = await f.read();
           if (/\.3mf$/i.test(f.name) || looksLikeZip(bytes)) {
-            const r = await read3MF(bytes);
+            const r = await read3MF(bytes, {
+              signal: abort.signal,
+              onProgress: (fraction, message) => updateProgress(progressId, (i + fraction) / n, `${label} — ${message}`),
+            });
             // Colours are capped on the merged palette (buildMultiFileSource).
             out.inputs.push({ name: f.name, format: '3mf', mesh: r.mesh, objects: r.objects, ...(r.colorSource !== 'none' ? { triColor: r.triColor, palette: r.palette } : {}) });
             out.renderOnly.push(null);
