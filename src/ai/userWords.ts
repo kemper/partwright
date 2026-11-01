@@ -9,13 +9,47 @@ import type { ChatBlock } from './types';
  *  as app-generated context — never as words the user typed. */
 export const UI_APPLIED_NOTE_PREFIX = '[UI · app note]';
 
-/** Prepended to the user's request on the first planning turn. */
+/** How the user asked the planner to plan (chosen on the first plan-mode
+ *  send): interpret and plan, inspect first and judge feasibility, or lay
+ *  out competing approaches to pick from. */
+export type PlanStyle = 'quick' | 'assess' | 'compare';
+export const PLAN_STYLES: readonly PlanStyle[] = ['quick', 'assess', 'compare'];
+
+/** Prepended to the user's request on the first planning turn ("Quick plan"). */
 export const PLAN_FIRST_PREFIX =
   'Before doing anything, write a concise plan for the following request. '
   + 'Describe your approach, key steps, and any design decisions. '
   + 'You may use the read-only inspection tools (getCode, getSessionContext, listVersions, geometry queries, readDoc, etc.) to ground the plan in the actual session state — but only when it would meaningfully improve the plan; skip inspection on greenfield requests. '
   + 'Do NOT mutate the session, execute code, or start building yet — I will approve or reject your plan first.\n\n'
   + '---\n\n';
+
+/** "Assess first": look before planning, and lead with a feasibility verdict. */
+export const PLAN_ASSESS_PREFIX =
+  'Before planning, ASSESS this request. Look at what I attached and at the current model (if there is one) with the read-only tools — renders, geometry stats, printability, the code — '
+  + 'and read readDoc("feasibility") for what this app does easily and what it struggles with. Keep the look short (a handful of tool calls). '
+  + 'Then plan, leading the summary with a plain feasibility verdict: how hard this is here, which tools fit and which are missing or weak, the quality I should expect, and the realistic number of rounds. '
+  + 'Ground every claim in something you inspected or read, and say so when you are guessing. '
+  + 'Do NOT mutate the session, execute code, or start building yet — I will approve or reject your plan first.\n\n'
+  + '---\n\n';
+
+/** "Compare approaches": 2–3 routes with trade-offs, for the user to pick. */
+export const PLAN_COMPARE_PREFIX =
+  'Before doing anything, lay out 2–3 genuinely different ways to do the following request in this app (e.g. a different engine, technique or level of detail), '
+  + 'each with its trade-offs: difficulty, rounds, expected quality and risk. Use the read-only tools only where they change the comparison. '
+  + 'Ask me which one to take with askUser (one question; one option per approach, your recommendation first) — or, if one approach clearly wins, say why and plan that one. '
+  + 'Do NOT mutate the session, execute code, or start building yet — I will approve or reject your plan first.\n\n'
+  + '---\n\n';
+
+const PLAN_STYLE_PREFIX: Record<PlanStyle, string> = {
+  quick: PLAN_FIRST_PREFIX,
+  assess: PLAN_ASSESS_PREFIX,
+  compare: PLAN_COMPARE_PREFIX,
+};
+
+/** The prefix that opens a first planning turn in `style`. */
+export function planRequestPrefix(style: PlanStyle): string {
+  return PLAN_STYLE_PREFIX[style];
+}
 
 /** Prepended to a message sent while a plan awaits approval. */
 export const PLAN_REFINE_PREFIX = '[Plan refinement — revise or extend the plan only. Inspect with the read-only tools if useful, but do not mutate the session or start building]: ';
@@ -42,10 +76,14 @@ export function planApprovalText(plan: string): string {
 export type PlanTurnKind = 'request' | 'refine' | 'approved';
 
 /** Which plan-mode turn a user text block is, and the user's own words in it
- *  ('' for an approval, which carries none). null for an ordinary message. */
-export function planTurn(text: string): { kind: PlanTurnKind; words: string } | null {
+ *  ('' for an approval, which carries none). null for an ordinary message.
+ *  A request also says which planning style asked for it. */
+export function planTurn(text: string): { kind: PlanTurnKind; words: string; style?: PlanStyle } | null {
   if (text === PLAN_APPROVED_TEXT || text.startsWith(PLAN_APPROVED_PREFIX)) return { kind: 'approved', words: '' };
-  if (text.startsWith(PLAN_FIRST_PREFIX)) return { kind: 'request', words: text.slice(PLAN_FIRST_PREFIX.length).trim() };
+  for (const style of PLAN_STYLES) {
+    const prefix = PLAN_STYLE_PREFIX[style];
+    if (text.startsWith(prefix)) return { kind: 'request', words: text.slice(prefix.length).trim(), style };
+  }
   if (text.startsWith(PLAN_REFINE_PREFIX)) return { kind: 'refine', words: text.slice(PLAN_REFINE_PREFIX.length).trim() };
   return null;
 }

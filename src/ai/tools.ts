@@ -15,6 +15,7 @@
 // so the same checks apply to console/MCP callers, not just the model.
 
 import { ASK_USER_TOOL, CARD_TOOL_ACK, PROPOSE_PLAN_TOOL } from './planReply';
+import { planEstimateInputError } from './planEstimate';
 import { detectorIds, paramsJsonSchema } from '../segmentation/registry';
 import type { ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
@@ -74,6 +75,7 @@ export const SUBDOC_NAMES_LIST = [
   'fasteners', 'joints', 'gears', 'threads', 'reference-images', 'file-io', 'annotations',
   'printing', 'relief', 'textures', 'mechanisms', 'iteration-workflow', 'gotchas',
   'visual-verification', 'spending', 'manifold-api', 'reconstruction', 'deform', 'segmentation', 'ui-control',
+  'feasibility',
   // Deprecated: 'print-fit' split into 'fasteners' + 'joints'. Kept so an older
   // cached prompt requesting it gets the redirect stub instead of an error.
   'print-fit',
@@ -2539,13 +2541,27 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: PROPOSE_PLAN_TOOL,
-    description: 'Present your plan as a card the user can build, revise or discard. Plan mode only. This ENDS your turn. Keep it concrete: a short summary of what you will make, the ordered steps you will take, and the assumptions you made so the user can correct them. If you need answers before you can plan well, call askUser instead.',
+    description: 'Present your plan as a card the user can build, revise or discard. Plan mode only. This ENDS your turn. Keep it concrete: a short summary of what you will make, the ordered steps you will take, and the assumptions you made so the user can correct them. Always include an honest `estimate` — the build is stopped for the user\'s go-ahead at roundsMax, so an optimistic estimate only means an earlier checkpoint. If you need answers before you can plan well, call askUser instead.',
     input_schema: {
       type: 'object',
       properties: {
         summary: { type: 'string', description: 'One short paragraph: what you will build and the overall approach.' },
         steps: { type: 'array', minItems: 1, items: { type: 'string' }, description: 'The concrete steps, in order.' },
         assumptions: { type: 'array', items: { type: 'string' }, description: 'Defaults you chose that the user may want to change.' },
+        estimate: {
+          type: 'object',
+          description: 'How likely this is to land. A round = one of your tool round-trips while building.',
+          properties: {
+            difficulty: { type: 'string', enum: ['easy', 'medium', 'hard', 'research'], description: 'For this app and its tools: research = no known reliable route.' },
+            confidence: { type: 'integer', minimum: 0, maximum: 100, description: 'Chance (%) of reaching `quality` within roundsMax.' },
+            roundsMin: { type: 'integer', minimum: 1, maximum: 200 },
+            roundsMax: { type: 'integer', minimum: 1, maximum: 200, description: 'Realistic upper bound, including verification and fixes.' },
+            quality: { type: 'string', description: 'What the result will realistically look like (e.g. "clean blockout", "close to the photo").' },
+            gaps: { type: 'array', items: { type: 'string' }, description: 'Tools missing or weak for this task.' },
+            risks: { type: 'array', items: { type: 'string' }, description: 'What is most likely to go wrong.' },
+          },
+          required: ['difficulty', 'roundsMin', 'roundsMax'],
+        },
       },
       required: ['summary', 'steps'],
     },
@@ -2554,12 +2570,24 @@ Returns { ok, stats, metrics, version } or { error }.`,
   // Kept in one contiguous block; gated in the sets below.
   {
     name: 'listAnnotations',
-    description: 'Read the marks the USER drew on the model with the Annotate tool (✏️): freehand strokes and pinned text labels, with their 3D positions. Call this when the user says "here", "this part", "where I marked", or after they annotate — it locates what they pointed at without a render. Returns { count, strokes: [{id, color, width, pointCount, bbox, centroid, points (downsampled), camera}], texts: [{id, text, color, anchor, camera}] }. Annotations are a feedback layer, not geometry: infer the feature under each point (probeRay / findFaces / listLabels) and confirm your reading with the user before editing.',
+    description: 'Read the marks the USER drew on the model with the Annotate tool (✏️): freehand strokes and pinned text labels, with their 3D positions. Call this when the user says "here", "this part", "where I marked", or after they annotate — it locates what they pointed at without a render. Returns { count, strokes: [{id, color, width, pointCount, bbox, centroid, points (downsampled), camera}], texts: [{id, text, color, anchor, camera}], views: [{id, title, summary, createdAt, attached}] }. `views` are frames the user saved with their exact camera (Snapshot style) — call viewAnnotationView to see one. Annotations are a feedback layer, not geometry: infer the feature under each point (probeRay / findFaces / listLabels) and confirm your reading with the user before editing.',
     input_schema: {
       type: 'object',
       properties: {
         maxPointsPerStroke: { type: 'integer', minimum: 0, maximum: 500, description: 'Downsample each stroke polyline to at most this many points (endpoints kept). 0 omits points entirely (bbox/centroid are still returned). Default 16.' },
       },
+    },
+  },
+  {
+    name: 'viewAnnotationView',
+    description: 'See an annotation view the USER saved with the Annotate tool (ids from listAnnotations().views, or an "[Annotation view …]" line in their message): the frame they marked up from their exact camera, plus what each mark points at — hits[] {parts (labelled parts under the mark, most-hit first), centroid, bbox in world units, hits/samples} and marks2D (normalized image positions; closed: true = a loop around something). Pass fresh: true to render the CURRENT model from that same camera with their marks on top, to check your change from the angle they flagged.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Annotation view id (av_…).' },
+        fresh: { type: 'boolean', description: 'Render the current model from the saved camera instead of returning the frame the user saw. Default false.' },
+      },
+      required: ['id'],
     },
   },
   {
@@ -2841,6 +2869,7 @@ const ALWAYS_AVAILABLE = new Set([
   'evalAgainstImport',
   // #1085: reads + metadata setters wrapping existing window.partwright methods.
   'listAnnotations',
+  'viewAnnotationView',
   'diffVersions',
   'getMeasurement',
   'getViewState',
@@ -2974,7 +3003,7 @@ const PLAN_MODE_TOOLS = new Set([
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
   'evalAgainstImport',
   // #1085 pure reads.
-  'listAnnotations', 'diffVersions', 'getMeasurement', 'getViewState',
+  'listAnnotations', 'viewAnnotationView', 'diffVersions', 'getMeasurement', 'getViewState',
   'getPalette', 'getUnits', 'listSessions',
   'getCurvatureQuality', 'getAppConfig', 'getDiagnosticLog',
   'getUiState',
@@ -3006,7 +3035,7 @@ export const RETRY_SAFE_TOOLS = new Set([
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
   'evalAgainstImport',
   // #1085 pure reads.
-  'listAnnotations', 'diffVersions', 'getMeasurement', 'getViewState',
+  'listAnnotations', 'viewAnnotationView', 'diffVersions', 'getMeasurement', 'getViewState',
   'getPalette', 'getUnits', 'listSessions',
   'getUiState', 'listCatalog',
   // Visual-only view state; re-applying it is idempotent.
@@ -3096,7 +3125,7 @@ export function describeToolConfirmation(name: string, input: Record<string, unk
  *  vision spend in one place — when off, the agent has to reason from
  *  code + stats alone. runIsolated is here because its primary value is
  *  the thumbnail; without vision it degrades to just the stats. */
-const VIEWS_GATED = new Set(['renderView', 'renderViews', 'runIsolated', 'renderSection']);
+const VIEWS_GATED = new Set(['renderView', 'renderViews', 'runIsolated', 'renderSection', 'viewAnnotationView']);
 // `finish` only exists in auto-continue mode — it's the sentinel the model
 // calls to end a turn (otherwise the loop resumes it). Off-mode never offers
 // it, so off-mode behavior is unchanged.
@@ -3390,7 +3419,7 @@ function proposePlanInputError(input: Record<string, unknown>): string | null {
   if (input.assumptions !== undefined && (!Array.isArray(input.assumptions) || input.assumptions.some(s => typeof s !== 'string'))) {
     return 'proposePlan: `assumptions` must be an array of strings.';
   }
-  return null;
+  return planEstimateInputError(input.estimate);
 }
 
 export async function executeTool(name: string, rawInput: Record<string, unknown>): Promise<ToolExecResult> {
@@ -4314,11 +4343,29 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
         : 16;
       const strokes = (api.listAnnotations() as AnnotationStroke[] | undefined) ?? [];
       const texts = (api.listTextAnnotations() as unknown[] | undefined) ?? [];
+      const views = (api.listAnnotationViews?.() as { id: string; title: string; summary: string; createdAt: number; attachedAt?: number }[] | undefined) ?? [];
       return {
         count: api.getAnnotationCount(),
         strokes: strokes.map(s => summarizeStroke(s, maxPts)),
         texts,
+        views: views.map(v => ({ id: v.id, title: v.title, summary: v.summary, createdAt: v.createdAt, attached: v.attachedAt !== undefined })),
       };
+    }
+    case 'viewAnnotationView': {
+      if (typeof input.id !== 'string') return { error: 'viewAnnotationView: `id` must be a string.' };
+      const v = api.getAnnotationView(input.id, { includeImage: true }) as Record<string, unknown> | null;
+      if (!v || 'error' in v) return v;
+      const { image: frame, ...meta } = v as { image?: string } & Record<string, unknown>;
+      let src = frame;
+      if (input.fresh === true) {
+        const r = api.renderAnnotationView(input.id) as { image?: string; error?: string };
+        if (r.error) return r;
+        src = r.image;
+      }
+      const img = typeof src === 'string' ? parseImageDataUrl(src) : null;
+      if (!img) return meta;
+      const label = `${String(meta.title)}${input.fresh === true ? ' (current model, same camera)' : ''}`;
+      return { content: JSON.stringify(meta), isError: false, image: { ...img, label } };
     }
     case 'diffVersions': {
       const wantGeometry = input.geometry === true || input.heatmap === true;

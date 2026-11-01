@@ -124,6 +124,8 @@ test.describe('AI worker delegation', () => {
     expect(back).toContain(`[Worker ${WORKER} finished · 2 steps · 1 tool call`);
     expect(back).toContain(REPORT);
     expect(back).not.toContain('getGeometryData');
+    // The worker's spend shows on its result and is in the session total.
+    await expect(panel.getByText(/^worker \$0\.\d+/)).toBeVisible();
     await page.screenshot({ path: 'test-results/delegate-worker-done.png' });
 
     // The worker's steps were never saved into the chat.

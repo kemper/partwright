@@ -337,3 +337,32 @@ intercepted console warnings and every toast, newest first. Read it before guess
 failed. Anything that looks like a credential — API keys, `Authorization` headers, `?key=` URL
 parameters, `user:password@` URL userinfo — is redacted, and so is every provider key saved in
 this browser, whatever its format. The default `limit` is `ui.diagnosticLogApiLimit`.
+
+## AI session trace
+
+```js
+const t = await partwright.getAiSessionTrace()                  // open session's chat (or the global chat)
+await partwright.getAiSessionTrace({ includeImages: true, includeSystemPrompt: true })
+await partwright.downloadAiSessionTrace()                       // same, as a JSON download -> {filename, bytes, summary}
+```
+
+One in-app AI chat as a self-describing JSON file (the `readme` field explains every part), read
+from the saved chat so it survives reloads. Also on the 🩺 AI Call Log button and the `/trace`
+chat command.
+
+- `summary` — totals (API calls, tool calls/errors, auto-resumes, retries, images), tokens split
+  into uncached input / cache read / cache write / output, `cacheHitRate`, `costUsd` vs
+  `uncachedCostUsd` (`cacheSavingsUsd`), stop reasons, `byModel`, `byTool` (calls, errors,
+  avg ms, input/result chars, images), the 10 `heaviestCalls` and `heaviestToolResults`, and
+  `cacheMisses` (a call that read nothing from cache after that model's first call).
+- `turns` — one per human prompt: API calls, tool calls, cost, tokens, API vs tool time, and
+  `steps`, the ordered tool sequence (`runAndSave✗` marks a failed call).
+- `timeline` — every message: text, thinking, tool calls with inputs, tool results with full
+  content, `durationMs` and `attempts`. Assistant entries carry the per-call `request` shape
+  (offered tool names, tool-schema chars, system prompt + suffix chars, history chars, chars
+  pruned, images sent/elided) and transient `retries`.
+- `callLog` / `errors` — this tab's AI Call Log, and AI entries from the Diagnostic
+  Log. Secrets are redacted everywhere.
+
+Turns compacted away are deleted, but their totals stay on the `compaction_summary` entry and in
+`summary`. Messages from before per-call telemetry existed show provider/model `unknown`.

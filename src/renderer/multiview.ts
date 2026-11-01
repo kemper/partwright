@@ -88,12 +88,12 @@ function scheduleOffscreenDispose(): void {
   }, getConfig().renderer.offscreenIdleDisposeMs);
 }
 
-function getOffscreenRenderer(size: number): THREE.WebGLRenderer {
+function getOffscreenRenderer(size: number, height: number = size): THREE.WebGLRenderer {
   if (!offRenderer) {
     offRenderer = new THREE.WebGLRenderer({ antialias: true });
     offRenderer.setPixelRatio(1);
   }
-  offRenderer.setSize(size, size);
+  offRenderer.setSize(size, height);
   scheduleOffscreenDispose();
   return offRenderer;
 }
@@ -544,6 +544,55 @@ export function renderRegionLabels(meshData: MeshData, triRegion: Int32Array, op
     }
   }
   return { width: size, height: size, labels };
+}
+
+/** An exact perspective camera pose — e.g. the one a saved annotation view
+ *  captured from the interactive viewport. */
+export interface CameraPose {
+  position: [number, number, number];
+  target: [number, number, number];
+  up: [number, number, number];
+  /** Vertical field of view in degrees. */
+  fov: number;
+}
+
+/** Render `meshData` from an exact camera pose (not the auto-framed
+ *  azimuth/elevation of renderSingleViewCanvas) into a `width`×`height`
+ *  canvas on the standard white agent background. `overlay` is drawn on top
+ *  (the caller owns and disposes it); the live annotation overlay is not. */
+export function renderPoseCanvas(meshData: MeshData, pose: CameraPose, options: {
+  width: number;
+  height: number;
+  overlay?: THREE.Group | null;
+  reference?: boolean;
+}): HTMLCanvasElement {
+  const { width, height } = options;
+  const geometry = meshDataToGeometry(meshData);
+  const scene = createElevationScene(geometry, 0xffffff);
+  if (options.reference) addReferenceGhost(scene);
+  geometry.computeBoundingSphere();
+  const sphere = geometry.boundingSphere ?? new THREE.Sphere(new THREE.Vector3(), 1);
+  const pos = new THREE.Vector3(...pose.position);
+  const dist = pos.distanceTo(sphere.center);
+  const near = Math.max(1e-3, Math.min(dist - sphere.radius * 1.5, dist * 0.01));
+  const far = Math.max(dist + sphere.radius * 4, near * 10);
+  const camera = new THREE.PerspectiveCamera(pose.fov, width / height, Math.max(near, far * 1e-6), far);
+  camera.position.copy(pos);
+  camera.up.set(...pose.up);
+  camera.lookAt(new THREE.Vector3(...pose.target));
+  camera.updateProjectionMatrix();
+  camera.updateMatrixWorld();
+  if (options.overlay) scene.add(options.overlay);
+  const renderer = getOffscreenRenderer(width, height);
+  renderer.render(scene, camera);
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext('2d')!.drawImage(renderer.domElement, 0, 0);
+  if (options.overlay) scene.remove(options.overlay);
+  disposeScene(scene);
+  geometry.dispose();
+  return canvas;
 }
 
 /** Render a single named angle to a PNG data URL. */

@@ -44,3 +44,15 @@ A review pass found eight gaps in this PR's own code. All are fixed in this push
 - **Main cache.** A main turn that offers `delegateTask` uses the 1-hour cache, so a long worker run doesn't make the next main request re-write the whole conversation. This trades 2× instead of 1.25× on new cache writes for avoiding a full re-write after long runs.
 - **Nothing in scope.** No `delegateTask` when the scope toggles let nothing change the model.
 - **Nits.** Only render-tool images count as the "last render". The tool schema is static, so it caches. The worker never thinks more than a user's Off/Low choice.
+
+## Human
+
+Asked to resolve the merge conflicts with main, and whether delegation correctly shows cost and spend.
+
+## Assistant
+
+## Key decisions
+
+**One iteration-limit option.** Main had added `RunTurnInput.iterationLimit` (plan-build checkpoints) with the same job as this PR's `maxIterationsOverride`. Keeping main's option, used for both the plan build and the worker's step budget, avoids two ways to say the same thing.
+
+**Worker cost shown where it's spent.** The session total, the $ cap, the turn's "done · $X" line and the AI Call Log already included the worker's spend. The one gap was the per-message cost line: it only rendered on assistant messages, while the worker's cost lives on its tool-result turn. That line now renders there too ("worker $0.0068"), so the per-message costs add up to the session total. This closes the follow-up filed on #1206.

@@ -18,12 +18,13 @@ import { streamTurn as streamTurnCustom } from './custom';
 import { getKey, recordUsage, putMessages as persistMessages } from './db';
 import { resolveCustomApiKey } from './customEndpoints';
 import { recordEvent, usageEventFields } from './diagnostics';
+import { redactSecrets } from '../diagnostics/logQuery';
 import { buildToolList, executeTool, type ToolDefinition, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, RETRY_SAFE_TOOLS, declinedToolMessage, preConfirmToolResult, unofferedToolMessage, LEGACY_TOOL_ALIASES, TURN_ENDING_TOOLS, type ToolExecResult } from './tools';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { loadSettings } from './settings';
 import { hasKnownPricing, turnCostUsd } from './cost';
 import { cacheTtlForThinking } from './anthropicCache';
-import { activeModel, ITERATION_CAP, MAX_TOKENS_WHILE_THINKING, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type Provider, type TurnOutcomeReason } from './types';
+import { activeModel, ITERATION_CAP, MAX_TOKENS_WHILE_THINKING, SPEND_CAP_USD, type ApiCallTrace, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type Provider, type TurnOutcomeReason } from './types';
 import { getConfig } from '../config/appConfig';
 import { isTransientError, isTransientToolFailure } from './transientError';
 import { elideStaleToolImages, providerCachesHistory, pruneStaleToolPayloads } from './historyElision';
@@ -162,12 +163,15 @@ export interface RunTurnInput {
   /** false = keep this run's messages in memory only (a delegated worker's
    *  loop: its steps must not land in the main chat). Default true. */
   persist?: boolean;
-  /** Step cap for this run instead of the toggles' iteration tier. */
-  maxIterationsOverride?: number;
   /** USD budget for this run instead of the toggles' session $ cap. */
   spendCapUsd?: number;
   /** Tools this run is never offered (a worker can't delegate or ask). */
   excludeTools?: ReadonlySet<string>;
+  /** Round limit for this turn that replaces the ⟲ iteration cap — set while
+   *  building an approved plan, so the build stops at the plan's estimate
+   *  (a checkpoint) instead of the toolbar cap, and for a delegated worker's
+   *  step budget. */
+  iterationLimit?: number;
 }
 
 /** Whether this turn sends the core tool set plus loaded groups
@@ -357,7 +361,9 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
   let totalCostUsd = 0;
   let totalToolCalls = 0;
   let turnApiTimeMs = 0;
-  const maxIter = input.maxIterationsOverride ?? ITERATION_CAP[toggles.maxIterations];
+  const maxIter = typeof input.iterationLimit === 'number' && input.iterationLimit >= 1
+    ? Math.floor(input.iterationLimit)
+    : ITERATION_CAP[toggles.maxIterations];
   const maxSpend = input.spendCapUsd ?? SPEND_CAP_USD[toggles.maxSpend];
   // Auto-continue mode: the model only stops cleanly by calling `finish`; a
   // plain end_turn is auto-resumed (bounded by maxIter + maxSpend, plus the
@@ -377,6 +383,10 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     callbacks.onTurnComplete?.({ totalCostUsd: 0, toolCalls: 0, reason: 'error', iterations: 0 });
     return workingHistory;
   }
+
+  // Last tool list recorded on an ApiCallTrace this turn — the next call only
+  // stores its list when it differs (see ApiCallTrace.request.tools).
+  const lastToolList = { key: '' };
 
   let iter = 0;
   for (; Number.isFinite(maxIter) ? iter < maxIter : true; iter++) {
@@ -437,6 +447,9 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     // Likewise drop text payloads a later step made dead weight: superseded
     // code bodies, repeated readDoc results, old failed-call inputs.
     const sentHistory = aiCfg.pruneStaleToolPayloads ? pruneStaleToolPayloads(imageTrimmed, aiCfg) : imageTrimmed;
+    // Transient failures retried before this call succeeded — persisted on
+    // the assistant message (ApiCallTrace.retries) for the session trace.
+    const retries: { error: string; durationMs: number }[] = [];
     for (;;) { // transient-retry loop — see maxTransientRetries below
     apiCallStart = Date.now();
     try {
@@ -528,6 +541,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       if (!signal?.aborted && transientAttempt < maxTransientRetries && isTransientError(err)) {
         transientAttempt++;
         const waitMs = transientBackoffMs(transientAttempt);
+        retries.push({ error: redactSecrets(message), durationMs: Date.now() - apiCallStart });
         recordEvent({
           provider: toggles.provider,
           model: model ?? '(no model)',
@@ -615,6 +629,15 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       durationMs,
       turnElapsedMs: turnApiTimeMs,
       ...(aborted ? { aborted: true } : {}),
+      call: {
+        provider: toggles.provider,
+        model: model ?? '(no model)',
+        stopReason: result.stopReason,
+        thinking: toggles.thinking,
+        iteration: iter,
+        request: requestShape(workingHistory, sentHistory, tools, systemPrompt, systemSuffix, lastToolList),
+        ...(retries.length > 0 ? { retries } : {}),
+      },
     };
     await putMessages([assistantMsg]);
     workingHistory = [...workingHistory, assistantMsg];
@@ -949,6 +972,7 @@ async function executeAllWithRetry(
       continue;
     }
     let attempt = 0;
+    const toolStart = performance.now();
     let result = await timedExecuteTool(tc.name, tc.input, executeToolFn);
     // Only auto-retry idempotent tools. Re-running a mutation (save a version,
     // paint a region, append a note, confirm an import) that partially
@@ -966,6 +990,8 @@ async function executeAllWithRetry(
       content: result.content,
       isError: result.isError,
       ...(result.image ? { image: result.image } : {}),
+      durationMs: Math.round(performance.now() - toolStart),
+      ...(attempt > 0 ? { attempts: attempt + 1 } : {}),
     };
     results.push(persisted);
     callbacks.onToolResult?.(tc.id, tc.name, persisted);
@@ -1112,7 +1138,7 @@ async function runWorkerTask(
       uiTools: input.uiTools,
       preloadToolGroups: [...loadedToolGroups(parent.workingHistory, input.preloadToolGroups)],
       persist: false,
-      maxIterationsOverride: req.maxSteps,
+      iterationLimit: req.maxSteps,
       spendCapUsd: budget,
       excludeTools: WORKER_TOOL_EXCLUSIONS,
       // Count down the last steps in the tool-result turn (append-only, so the
@@ -1165,6 +1191,53 @@ function nextSeq(history: ChatMessage[]): number {
  *  plus output. */
 export function estimateCachedPrefixTokens(systemPromptChars: number): number {
   return Math.round(systemPromptChars / getConfig().ai.charsPerToken);
+}
+
+function countImages(history: ChatMessage[]): number {
+  let n = 0;
+  for (const m of history) {
+    for (const b of m.blocks) if (b.type === 'image') n++;
+    for (const tr of m.toolResults ?? []) if (tr.image) n++;
+  }
+  return n;
+}
+
+function historyChars(history: ChatMessage[]): number {
+  let n = 0;
+  for (const m of history) n += messageChars(m);
+  return n;
+}
+
+/** The request-shape half of ApiCallTrace: what this API call carried, and
+ *  how much image elision / payload pruning took out of the full history. */
+function requestShape(
+  fullHistory: ChatMessage[],
+  sentHistory: ChatMessage[],
+  tools: { name: string }[],
+  systemPrompt: string,
+  systemSuffix: string,
+  lastToolList: { key: string },
+): ApiCallTrace['request'] {
+  const names = tools.map(t => t.name);
+  const key = names.join(',');
+  const toolsChanged = key !== lastToolList.key;
+  lastToolList.key = key;
+  const sentChars = historyChars(sentHistory);
+  const sentImages = countImages(sentHistory);
+  let toolSchemaChars = 0;
+  try { toolSchemaChars = JSON.stringify(tools).length; } catch { /* unserializable schema — leave 0 */ }
+  return {
+    messages: sentHistory.length,
+    ...(toolsChanged ? { tools: names } : {}),
+    toolCount: names.length,
+    toolSchemaChars,
+    systemPromptChars: systemPrompt.length,
+    systemSuffixChars: systemSuffix.length,
+    historyChars: sentChars,
+    prunedChars: Math.max(0, historyChars(fullHistory) - sentChars),
+    imagesSent: sentImages,
+    imagesElided: Math.max(0, countImages(fullHistory) - sentImages),
+  };
 }
 
 /** Sum the total chars in a chat message's blocks for rough token estimation. */

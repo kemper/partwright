@@ -108,6 +108,10 @@ export interface ThreeMFParseOptions {
   maxTriangles?: number;
   /** Zip-bomb guard: max decompressed bytes of any part. Default unlimited. */
   maxEntryBytes?: number;
+  /** Progress callback (0..1 + a short status line). A multi-million-triangle
+   *  file takes many seconds to parse, so the import Worker forwards this to
+   *  the progress modal. */
+  onProgress?: (fraction: number, message: string) => void;
 }
 
 // ── XML scanning ────────────────────────────────────────────────────────────
@@ -151,10 +155,14 @@ interface XmlHandler {
 /** Minimal forward-only XML tag scanner: element names are reported by local
  *  name; attribute strings are handed over raw so hot elements (vertex,
  *  triangle) parse only what they need. Skips comments, PIs, CDATA, DOCTYPE. */
-function scanXml(xml: string, h: XmlHandler): void {
+function scanXml(xml: string, h: XmlHandler, onAdvance?: (fraction: number) => void): void {
   const len = xml.length;
   let i = 0;
+  // Report every ~4M chars — a few dozen calls on a big mesh, nothing on a small one.
+  const step = 4_000_000;
+  let nextReport = step;
   for (;;) {
+    if (onAdvance && i >= nextReport) { onAdvance(i / len); nextReport = i + step; }
     const lt = xml.indexOf('<', i);
     if (lt < 0 || lt + 1 >= len) return;
     const c = xml.charCodeAt(lt + 1);
@@ -279,7 +287,7 @@ export function normalizeHexColor(s: string | undefined | null): string | null {
   return null;
 }
 
-function parseModelXml(xml: string): ModelFile {
+function parseModelXml(xml: string, onAdvance?: (fraction: number) => void): ModelFile {
   const file: ModelFile = { unitScale: 1, objects: new Map(), groups: new Map(), build: [], metadata: new Map() };
 
   let obj: { id: number; name?: string; type: string; pid: number; pindex: number } | null = null;
@@ -441,7 +449,7 @@ function parseModelXml(xml: string): ModelFile {
           return;
       }
     },
-  });
+  }, onAdvance);
   return file;
 }
 
@@ -681,6 +689,11 @@ function namedPartRuns(runs: { key: string; name: string; first: number; count: 
 export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions = {}): Promise<ThreeMFParseResult> {
   const zip = openZip(bytes, { maxEntryBytes: options.maxEntryBytes });
   const maxTriangles = options.maxTriangles ?? 20_000_000;
+  // Monotonic: a package with several model parts restarts each file's stages.
+  let progressHigh = 0;
+  const progress = options.onProgress
+    ? (fraction: number, message: string) => { progressHigh = Math.max(progressHigh, fraction); options.onProgress!(progressHigh, message); }
+    : undefined;
   const rootPath = await findRootModelPath(zip);
 
   // Parse the root model, then every model file it (transitively) references
@@ -692,7 +705,10 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
     if (files.has(path)) continue;
     const entry = zip.find(path);
     if (!entry) throw new Error(`3MF references a missing model part: ${path}`);
-    const model = parseModelXml(await zip.readText(entry));
+    progress?.(0.02, files.size === 0 ? 'Unzipping model…' : `Unzipping ${path.replace(/^\//, '')}…`);
+    const xml = await zip.readText(entry);
+    progress?.(0.05, 'Reading vertices and triangles…');
+    const model = parseModelXml(xml, progress ? f => progress(0.05 + 0.7 * f, 'Reading vertices and triangles…') : undefined);
     files.set(path, model);
     for (const o of model.objects.values()) {
       if (o.kind === 'components') for (const c of o.components) if (c.path) queue.push(normPath(c.path));
@@ -849,6 +865,7 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
   }
   const instanceCount = new Map<number, number>();
 
+  progress?.(0.78, 'Building mesh…');
   for (const item of root.build) {
     const instanceId = instanceCount.get(item.objectId) ?? 0;
     instanceCount.set(item.objectId, instanceId + 1);
@@ -877,6 +894,7 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
   const numTri = triVerts.length / 3;
   if (numTri === 0) throw new Error('3MF contains no printable triangles.');
 
+  progress?.(0.92, 'Finishing…');
   // Drop vertices no emitted triangle references (skipped Prusa modifier /
   // support volumes share their object's vertex pool) so they neither shift
   // the recentring box nor reach Manifold as stray points.
@@ -921,7 +939,7 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
     const plate: ThreeMFPlate = { id: pl.id, name: pl.name || `Plate ${pl.id}` };
     const thumb = zip.find(pl.thumbnailFile ?? `Metadata/plate_${pl.id}.png`);
     if (thumb && thumb.uncompressedSize <= MAX_PLATE_THUMBNAIL_BYTES) {
-      try { plate.thumbnail = await zip.read(thumb); } catch { /* a preview is optional */ }
+      try { plate.thumbnail = (await zip.read(thumb)).slice(); /* own copy: a stored entry is a view into the whole file */ } catch { /* a preview is optional */ }
     }
     plates.push(plate);
   }

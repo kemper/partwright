@@ -157,6 +157,8 @@ import { showMergePartsModal, type MergeMode } from './ui/mergePartsModal';
 import { isOrientedEdgeManifold, probeIndexed, probeSTL, type IndexedProbeResult, type STLProbeResult } from './import/stlProbe';
 import type { ManifoldFacts } from './geometry/manifoldFacts';
 import { probeIndexedInWorker, probeSTLInWorker, STLProbeAbortError, type STLProbeControl } from './import/stlProbeClient';
+import { parse3MFInWorker } from './import/threemfParseClient';
+import { ImportWorkerError } from './import/importWorkerJob';
 import { parse3MF, type ThreeMFParseResult } from './import/parsers/threemf';
 import { looksLikeZip } from './import/zipReader';
 import { parseVox } from './import/parsers/vox';
@@ -262,10 +264,15 @@ import {
 import {
   setAnnotationsVisible as setAnnotationsVisibleOverlay,
   isAnnotationsVisible as isAnnotationsVisibleOverlay,
+  clearViewMarks,
+  getShownViewMarksId,
 } from './annotations/annotationOverlay';
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth, addStrokeFromPoints } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
+import { setAnnotationViewSession, getAnnotationViews, getAnnotationView, updateAnnotationView, deleteAnnotationView, getAnnotateStyle, setAnnotateStyle } from './annotations/annotationViews';
+import { configureViewCapture, captureAnnotationView, restoreAnnotationViewCamera, renderAnnotationViewImage, attachAnnotationViewToChat } from './annotations/viewCapture';
+import { describeViewHits, type AnnotationView } from './annotations/annotationViewTypes';
 import { takeStaleRestoredRegions, setRegionMeshProvider } from './color/regions';
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, setPartScopeResolver, intersectWithScope, runAsUndoGroup, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, setModelRegionTriangles, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, replaceRegionColors, composeTriColors, isPainted, setCurrentMeshResolver, descriptorPartLabel, setRegionDescriptor, updateRegionColor, updateRegionName, canRedoRegion, canUndoClear, undoClear, clearRegionsBySource, type ColorRegion, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { resolvePaintOps, resolvePaintDescriptor } from './color/paintOpsResolve';
@@ -406,6 +413,18 @@ let referenceGeometryGen = 0;
  *  reasons"), so API callers get that reason instead of the generic (and
  *  AI-retryable) "superseded". Cleared at the start of every run. */
 let lastRunRejection: string | null = null;
+/** Validate the getAiSessionTrace / downloadAiSessionTrace options. */
+function parseAiTraceOpts(opts: unknown, fn: string): AiTraceOptions | { error: string } {
+  return guard(() => {
+    const o = assertObject(opts ?? {}, `${fn}(opts)`)!;
+    assertNoUnknownKeys(o, ['sessionId', 'includeImages', 'includeSystemPrompt'], `${fn}(opts)`);
+    assertString(o.sessionId, `${fn}(opts).sessionId`, { optional: true, allowEmpty: false });
+    assertBoolean(o.includeImages, `${fn}(opts).includeImages`, { optional: true });
+    assertBoolean(o.includeSystemPrompt, `${fn}(opts).includeSystemPrompt`, { optional: true });
+    return o as AiTraceOptions;
+  });
+}
+
 function runFailedMessage(): string {
   return lastRunRejection ?? 'Run was superseded by a concurrent execution — retry';
 }
@@ -443,6 +462,7 @@ import { photoMatch as scorePhotoMatch, buildTriangleRegions, photoMatchTuningFr
 import { nextStarter, isStarterCode, BLANK_OBJECT_CODE } from './editor/starters';
 import { insertRemovalLine, removePartCall, removePieceCall, removePieceComment, findRemovalLines, removeRemovalLine, pieceAnchorPoint, type RemovalLine } from './editor/removalCode';
 import { parseLabelColor } from './color/labelColor';
+import { collectAiSessionTrace, downloadAiSessionTrace, type AiTraceOptions } from './export/aiTrace';
 import { extractPositions, maxEdgeLength, minEdgeLength, estimateRefineTriangles } from './surface/meshSubdivide';
 
 /** The viewport clip-plane Z slider + typed box (bound in initClipControls). */
@@ -605,6 +625,22 @@ function refreshParamsPanelUI(silentReveal: boolean): void {
 }
 
 let currentMeshData: MeshData | null = null;
+
+/** An annotation view without its (large) image — the API / AI shape. */
+function summarizeAnnotationView(v: AnnotationView) {
+  return {
+    id: v.id,
+    title: v.title,
+    createdAt: v.createdAt,
+    camera: v.camera,
+    size: { width: v.width, height: v.height },
+    marks2D: v.marks2D,
+    hits: v.hits,
+    summary: describeViewHits(v),
+    context: v.context,
+    ...(v.attachedAt ? { attachedAt: v.attachedAt } : {}),
+  };
+}
 /** The voxel grid behind the last successful voxel render, as transferable
  *  data from the engine Worker, tagged with the code + Customizer values that
  *  produced it. VOX / greedy-mesh export and Voxel Studio rebuild the grid from
@@ -1998,7 +2034,7 @@ function colorRegionStats(): { name: string; kind: RegionDescriptor['kind']; lab
  *  clears any that were on screen for the previously-active version. */
 function applyVersionAnnotations(version: Version | null | undefined): void {
   const snapshot = (version?.annotations ?? []) as SerializedAnnotation[];
-  loadAnnotations(snapshot);
+  loadAnnotations(snapshot, { keepDrafts: true });
 }
 
 /** Rehydrate color regions from a version's geometryData.
@@ -3775,6 +3811,34 @@ async function main() {
   setEngineTrustDomain(sessionTrustDomain(getState().session?.id ?? null));
   onStateChange((state) => { setEngineTrustDomain(sessionTrustDomain(state.session?.id ?? null)); });
 
+  // Annotation-view history follows the open session; captures ray-cast the
+  // live model (and its labelled parts) from the captured camera.
+  void setAnnotationViewSession(getState().session?.id ?? null);
+  onStateChange((state) => { void setAnnotationViewSession(state.session?.id ?? null); });
+  configureViewCapture({
+    castRay: (origin, direction) => {
+      const mesh = currentMeshData;
+      if (!mesh) return null;
+      const hit = probeRay(mesh, origin, direction).hits[0];
+      if (!hit) return null;
+      let part: string | null = null;
+      if (currentLabelMap) {
+        for (const name of currentLabelMap.keys()) {
+          if (partTrianglesOnMesh(name, mesh)?.has(hit.triangleId)) { part = name; break; }
+        }
+      }
+      return { point: hit.point, part };
+    },
+    context: () => {
+      const st = getState();
+      return {
+        ...(st.currentPart ? { objectId: st.currentPart.id, objectName: st.currentPart.name } : {}),
+        ...(st.currentVersion ? { versionIndex: st.currentVersion.index } : {}),
+      };
+    },
+    mesh: () => (currentMeshData ? applyTriColorsIfVisible(currentMeshData) : null),
+  });
+
   // Rehydrate the Recent Imports / Recent Exports lists from IndexedDB so they
   // survive a refresh. Fire-and-forget: each notifies its subscribers (the
   // toolbar dropdowns) when the load completes, so boot isn't blocked on IDB
@@ -5367,14 +5431,36 @@ async function main() {
     triColor: Int32Array;
   }
 
+  /** Meshes whose quick oriented-edge manifold check already ran (in the 3MF
+   *  parse Worker), so probeIndexedMesh needn't repeat it on the main thread. */
+  const edgeManifoldChecked = new WeakMap<MeshData, boolean>();
+
   /** Unzip + parse a 3MF under the import limits from the app config. Throws a
-   *  human-readable Error on an unreadable package. */
-  function read3MF(bytes: Uint8Array): Promise<ThreeMFParseResult> {
+   *  human-readable Error on an unreadable package, STLProbeAbortError when
+   *  `ctl.signal` aborts.
+   *
+   *  The parse runs in a Worker: a multi-million-triangle 3MF is hundreds of MB
+   *  of XML and took ~20 s of main-thread work, freezing the page. Only a
+   *  Worker that never started falls back to the main thread. `ctl.transfer`
+   *  hands the bytes over zero-copy (the caller must not reuse them). */
+  async function read3MF(bytes: Uint8Array, ctl?: STLProbeControl & { transfer?: boolean }): Promise<ThreeMFParseResult> {
     const cfg = getConfig().import;
-    return parse3MF(bytes, {
+    const options = {
       maxTriangles: cfg.threeMfMaxTriangles,
       maxEntryBytes: cfg.threeMfMaxEntryMB * 1048576,
-    });
+    };
+    try {
+      const { result, orientedEdgeManifold } = await parse3MFInWorker(bytes, options, ctl);
+      edgeManifoldChecked.set(result.mesh, orientedEdgeManifold);
+      return result;
+    } catch (e) {
+      if (e instanceof STLProbeAbortError) throw e;
+      // The file itself failed to parse — report it, don't redo it slowly here.
+      if (e instanceof ImportWorkerError && e.afterHandOff) throw new Error(e.message);
+      if (bytes.byteLength === 0) throw e; // transferred away; nothing to fall back on
+      errorLog.capture({ level: 'warn', source: 'import', message: `3MF parse worker failed; parsing on the main thread instead: ${(e as Error).message}` });
+      return parse3MF(bytes, options);
+    }
   }
 
   /** The STL manifold probe for an already-indexed mesh (a 3MF, or one object
@@ -5386,7 +5472,7 @@ async function main() {
   async function probeIndexedMesh(raw: MeshData, filename: string, format: ImportedMesh['format']): Promise<{ probe: ParsedSTLProbe; source: MeshData }> {
     const configuredTolerance = getConfig().import.stlWeldTolerance;
     let r: IndexedProbeResult;
-    if (isOrientedEdgeManifold(raw)) {
+    if (edgeManifoldChecked.get(raw) ?? isOrientedEdgeManifold(raw)) {
       r = { mesh: raw, isManifold: true, welded: false };
     } else if (raw.numTri < getConfig().renderer.lazyManifoldMinTriangles) {
       // Small (e.g. one object of a split 3MF): ofMesh is milliseconds here,
@@ -5531,14 +5617,38 @@ async function main() {
    *  chooser. Returns whether anything was imported. */
   async function import3MFFile(file: File): Promise<boolean> {
     let result: ThreeMFParseResult;
+    let p3: Parsed3MF | undefined;
+    // A big file takes seconds to parse and check; show a cancellable modal
+    // (it appears only after the progress modal's show delay).
+    const abort = new AbortController();
+    const progressId = startProgress({
+      title: `Importing ${file.name}`,
+      message: 'Reading file…',
+      onCancel: () => abort.abort(),
+    });
     try {
-      result = await read3MF(new Uint8Array(await file.arrayBuffer()));
+      result = await read3MF(new Uint8Array(await file.arrayBuffer()), {
+        signal: abort.signal,
+        transfer: true,
+        onProgress: (fraction, message) => updateProgress(progressId, fraction, message),
+      });
+      if (result.objects.length < 2) {
+        updateProgress(progressId, 0.99, 'Checking mesh…');
+        p3 = await probeWhole3MF(result, file.name);
+        // The mesh check can't be interrupted mid-way; honour a Cancel clicked during it.
+        if (abort.signal.aborted) throw new STLProbeAbortError();
+      }
     } catch (e) {
+      if (e instanceof STLProbeAbortError) {
+        showToast(`Cancelled importing "${file.name}".`, { variant: 'neutral', source: 'import' });
+        return false;
+      }
       showToast(`Could not read "${file.name}" as a 3MF file: ${(e as Error).message}`, { variant: 'warn', source: 'import' });
       return false;
+    } finally {
+      endProgress(progressId);
     }
-    if (result.objects.length >= 2) return importMultiObject3MF(result, file.name);
-    const p3 = await probeWhole3MF(result, file.name);
+    if (!p3) return importMultiObject3MF(result, file.name);
     if (!p3.probe.isManifold && !(await confirmRenderOnlyImport(file.name, p3.probe))) return false;
     return place3MFImport({ parsed: { mesh: p3.probe.mesh, isManifold: p3.probe.isManifold }, p3 }, file.name);
   }
@@ -5748,7 +5858,10 @@ async function main() {
         try {
           const bytes = await f.read();
           if (/\.3mf$/i.test(f.name) || looksLikeZip(bytes)) {
-            const r = await read3MF(bytes);
+            const r = await read3MF(bytes, {
+              signal: abort.signal,
+              onProgress: (fraction, message) => updateProgress(progressId, (i + fraction) / n, `${label} — ${message}`),
+            });
             // Colours are capped on the merged palette (buildMultiFileSource).
             out.inputs.push({ name: f.name, format: '3mf', mesh: r.mesh, objects: r.objects, ...(r.colorSource !== 'none' ? { triColor: r.triColor, palette: r.palette } : {}) });
             out.renderOnly.push(null);
@@ -19936,6 +20049,33 @@ async function main() {
       });
     },
 
+    /** The AI chat as a session trace: every prompt, thinking block, tool
+     *  call + result, and per-API-call telemetry (tokens, cache hits, cost,
+     *  latency, request shape, retries), with per-turn / per-tool / per-model
+     *  rollups — for auditing an agent's spend and approach. Read from the
+     *  persisted chat (survives reloads). `sessionId` defaults to the open
+     *  session (or the pre-session global chat); `includeImages` embeds base64
+     *  images; `includeSystemPrompt` embeds the prompt text. Secrets redacted.
+     *  -> { format, version, summary, turns, timeline, callLog, errors, … }
+     *  or { error } (empty chat / bad args) */
+    async getAiSessionTrace(opts: { sessionId?: string; includeImages?: boolean; includeSystemPrompt?: boolean } = {}) {
+      const check = parseAiTraceOpts(opts, 'getAiSessionTrace');
+      if ('error' in check) return check;
+      const trace = await collectAiSessionTrace(check);
+      return trace ?? { error: 'getAiSessionTrace: this chat is empty — nothing to trace.' };
+    },
+
+    /** Same trace as getAiSessionTrace, downloaded as a JSON file (the 🩺 AI
+     *  Call Log's "Download session trace" button / the /trace command).
+     *  -> { filename, bytes, summary } or { error } */
+    async downloadAiSessionTrace(opts: { sessionId?: string; includeImages?: boolean; includeSystemPrompt?: boolean } = {}) {
+      const check = parseAiTraceOpts(opts, 'downloadAiSessionTrace');
+      if ('error' in check) return check;
+      const r = await downloadAiSessionTrace(check);
+      if (!r) return { error: 'downloadAiSessionTrace: this chat is empty — nothing to trace.' };
+      return { filename: r.filename, bytes: r.bytes, summary: r.trace.summary };
+    },
+
     /** Import a MagicaVoxel `.vox` file from base64 bytes (bare or `data:`
      *  URL) as voxel code — the Import → .vox flow. `opts.target`:
      *  'new-session' (default), 'new-object', or 'current-object' (baked and
@@ -23101,11 +23241,133 @@ async function main() {
 
     /** Snap the camera to the angle the given annotation was originally
      *  drawn from. Useful when reviewing where an annotation belongs. */
-    restoreAnnotationView(id: string) {
-      const bad = argError(() => assertString(id, 'restoreAnnotationView(id)'));
+    restoreAnnotationView(id: string, opts?: { marks?: boolean }) {
+      const bad = argError(() => {
+        assertString(id, 'restoreAnnotationView(id)');
+        if (opts === undefined) return;
+        const o = assertObject(opts, 'restoreAnnotationView(opts)')!;
+        assertNoUnknownKeys(o, ['marks'], 'restoreAnnotationView(opts)');
+        assertBoolean(o.marks, 'restoreAnnotationView(opts).marks', { optional: true });
+      });
       if (bad) return bad;
+      const view = getAnnotationView(id);
+      if (view) {
+        restoreAnnotationViewCamera(view, { marks: opts?.marks });
+        return { restored: true, marksShown: getShownViewMarksId() === view.id };
+      }
       const ok = restoreAnnotationViewById(id);
-      return ok ? { restored: true } : { error: `No annotation with id ${id}` };
+      return ok ? { restored: true } : { error: `No annotation or annotation view with id ${id}` };
+    },
+
+    /** Stop showing a saved view's marks in the viewport (the history's
+     *  "Hide marks"). -> { hidden } (false when none were shown) */
+    hideAnnotationViewMarks() {
+      const had = getShownViewMarksId() !== null;
+      clearViewMarks();
+      return { hidden: had };
+    },
+
+    /** Annotate style: 'snapshot' (mark up a frozen frame, then save it as an
+     *  annotation view) or 'floating' (marks pinned in space, saved per
+     *  version). -> 'snapshot' | 'floating' */
+    getAnnotateStyle() {
+      return getAnnotateStyle();
+    },
+
+    /** Switch the Annotate style ('snapshot' | 'floating'). -> { style } */
+    setAnnotateStyle(style: 'snapshot' | 'floating') {
+      const bad = argError(() => assertEnum(style, ['snapshot', 'floating'] as const, 'setAnnotateStyle(style)'));
+      if (bad) return bad;
+      setAnnotateStyle(style);
+      return { style: getAnnotateStyle() };
+    },
+
+    /** Save the live viewport frame + its exact camera + the marks in scope
+     *  (Snapshot drafts, or the floating marks) as an annotation view in the
+     *  session's history. Each mark is ray-cast from that camera so the view
+     *  records what it points at (incl. labelled parts).
+     *  -> view summary (see listAnnotationViews) or { error } */
+    async saveAnnotationView(opts?: { title?: string }) {
+      const bad = argError(() => {
+        if (opts === undefined) return;
+        const o = assertObject(opts, 'saveAnnotationView(opts)')!;
+        assertNoUnknownKeys(o, ['title'], 'saveAnnotationView(opts)');
+        assertString(o.title, 'saveAnnotationView(opts).title', { optional: true, allowEmpty: true });
+      });
+      if (bad) return bad;
+      const r = await captureAnnotationView({ title: opts?.title });
+      return 'error' in r ? r : summarizeAnnotationView(r);
+    },
+
+    /** The session's saved annotation views, oldest first, without images.
+     *  -> [{id, title, createdAt, camera, size, marks2D, hits, summary, context, attachedAt?}] */
+    listAnnotationViews() {
+      return getAnnotationViews().map(summarizeAnnotationView);
+    },
+
+    /** One annotation view in full; `includeImage: true` adds the captured
+     *  frame (JPEG data URL) as `image`. -> view or { error } */
+    getAnnotationView(id: string, opts?: { includeImage?: boolean }) {
+      const bad = argError(() => {
+        assertString(id, 'getAnnotationView(id)');
+        if (opts === undefined) return;
+        const o = assertObject(opts, 'getAnnotationView(opts)')!;
+        assertNoUnknownKeys(o, ['includeImage'], 'getAnnotationView(opts)');
+        assertBoolean(o.includeImage, 'getAnnotationView(opts).includeImage', { optional: true });
+      });
+      if (bad) return bad;
+      const v = getAnnotationView(id);
+      if (!v) return { error: `No annotation view with id ${id}` };
+      return { ...summarizeAnnotationView(v), ...(opts?.includeImage ? { image: v.image } : {}) };
+    },
+
+    /** Render the CURRENT model from a saved view's exact camera (white
+     *  background), with the view's marks on top unless `marks: false` — to
+     *  check a fix from the angle the user marked it up. -> { image } (PNG
+     *  data URL) or { error } */
+    renderAnnotationView(id: string, opts?: { marks?: boolean; width?: number }) {
+      const bad = argError(() => {
+        assertString(id, 'renderAnnotationView(id)');
+        if (opts === undefined) return;
+        const o = assertObject(opts, 'renderAnnotationView(opts)')!;
+        assertNoUnknownKeys(o, ['marks', 'width'], 'renderAnnotationView(opts)');
+        assertBoolean(o.marks, 'renderAnnotationView(opts).marks', { optional: true });
+        assertNumber(o.width, 'renderAnnotationView(opts).width', { optional: true, min: 64, max: 2048 });
+      });
+      if (bad) return bad;
+      const v = getAnnotationView(id);
+      if (!v) return { error: `No annotation view with id ${id}` };
+      const image = renderAnnotationViewImage(v, opts);
+      return image ? { image } : { error: 'No model to render — run some code first.' };
+    },
+
+    /** Rename an annotation view. -> { id, title } or { error } */
+    async renameAnnotationView(id: string, title: string) {
+      const bad = argError(() => {
+        assertString(id, 'renameAnnotationView(id)');
+        assertString(title, 'renameAnnotationView(title)', { allowEmpty: false });
+        if (title.trim() === '') throw new ValidationError('renameAnnotationView(title) must not be blank. See /ai.md#argument-validation');
+      });
+      if (bad) return bad;
+      const v = await updateAnnotationView(id, { title: title.trim() });
+      return v ? { id: v.id, title: v.title } : { error: `No annotation view with id ${id}` };
+    },
+
+    /** Delete an annotation view from the history. -> { deleted } or { error } */
+    async deleteAnnotationView(id: string) {
+      const bad = argError(() => assertString(id, 'deleteAnnotationView(id)'));
+      if (bad) return bad;
+      return (await deleteAnnotationView(id)) ? { deleted: true } : { error: `No annotation view with id ${id}` };
+    },
+
+    /** Stage a view's frame + a one-line summary in the AI chat input (the
+     *  history row's "Attach to AI"); nothing is sent. -> { attached } or { error } */
+    async attachAnnotationViewToChat(id: string) {
+      const bad = argError(() => assertString(id, 'attachAnnotationViewToChat(id)'));
+      if (bad) return bad;
+      const v = getAnnotationView(id);
+      if (!v) return { error: `No annotation view with id ${id}` };
+      return attachAnnotationViewToChat(v);
     },
 
     /** Show or hide annotations without removing them.
@@ -23558,6 +23820,8 @@ async function main() {
         'setEngineSandboxMode': { signature: "setEngineSandboxMode('origin'|'off') -- Run model code in a separate-origin iframe sandbox ('origin', the default where configured) or not ('off', the kill switch); this browser, reload to apply -> {mode, previous, note}", docs: '/ai.md#console-api--windowpartwright' },
         'runWithoutEngineSandbox': { signature: 'runWithoutEngineSandbox() -- After the engine sandbox became unavailable (model code blocked), run model code WITHOUT it for this tab only -> {ok, note} or {error}', docs: '/ai.md#console-api--windowpartwright' },
         'getWorkerHealth':     { signature: 'getWorkerHealth() -- Worker health panel data: per-worker liveness/restarts + recent geometry runs (durationMs vs workerMs) -> {workers, runs}', docs: '/ai.md#console-api--windowpartwright' },
+        'getAiSessionTrace':   { signature: 'await getAiSessionTrace({sessionId?, includeImages?, includeSystemPrompt?}) -- The AI chat as a JSON session trace: prompts, thinking, tool calls + results, per-call tokens/cache/cost/latency, per-turn/tool/model rollups -> trace or {error}', docs: '/ai/iteration-workflow.md#ai-session-trace' },
+        'downloadAiSessionTrace': { signature: 'await downloadAiSessionTrace({sessionId?, includeImages?, includeSystemPrompt?}) -- Download the AI session trace as JSON -> {filename, bytes, summary} or {error}', docs: '/ai/iteration-workflow.md#ai-session-trace' },
         'getDiagnosticLog':    { signature: 'await getDiagnosticLog({level?, source?, limit?}) -- Read the Diagnostic Log (newest first; secrets incl. your saved API keys redacted) -> {entries, matched, total}', docs: '/ai.md#console-api--windowpartwright' },
         'importVoxData':       { signature: 'await importVoxData(base64, filename, {sessionName?, target?}) -- Import MagicaVoxel .vox bytes as voxel code (target as importMeshData) -> {sessionId, target, object, voxelCount}', docs: '/ai/file-io.md' },
         'importStepData':      { signature: 'await importStepData(base64, filename, {mode?: "brep"|"mesh", sessionName?, target?}) -- Import STEP bytes as an exact BREP object (default) or a tessellated mesh -> {sessionId, target, object, mode}', docs: '/ai/file-io.md' },
@@ -23769,7 +24033,17 @@ async function main() {
         'getAnnotationWidth': { signature: 'getAnnotationWidth() -- Current line width (pixels)', docs: '/ai/annotations.md' },
         'setAnnotationFontSize': { signature: 'setAnnotationFontSize(px) -- Set font size for new text labels (4..256 px)', docs: '/ai/annotations.md' },
         'getAnnotationFontSize': { signature: 'getAnnotationFontSize() -- Current text label font size (pixels)', docs: '/ai/annotations.md' },
-        'restoreAnnotationView': { signature: 'restoreAnnotationView(id) -- Snap the camera to the angle the annotation was made from', docs: '/ai/annotations.md' },
+        'restoreAnnotationView': { signature: 'restoreAnnotationView(id, {marks?}) -- Snap the camera to the angle an annotation (or a saved annotation view) was made from; a view also redraws its marks unless marks:false', docs: '/ai/annotations.md' },
+        'hideAnnotationViewMarks': { signature: 'hideAnnotationViewMarks() -- Stop showing a saved view\'s redrawn marks -> {hidden}', docs: '/ai/annotations.md' },
+        'getAnnotateStyle':    { signature: 'getAnnotateStyle() -- Annotate style: "snapshot" (mark up a frozen frame, save as a view) or "floating"', docs: '/ai/annotations.md' },
+        'setAnnotateStyle':    { signature: 'setAnnotateStyle("snapshot"|"floating") -- Switch the Annotate style -> {style}', docs: '/ai/annotations.md' },
+        'saveAnnotationView':  { signature: 'await saveAnnotationView({title?}) -- Save the live frame + exact camera + marks (+ what they hit) to the annotation history -> view summary', docs: '/ai/annotations.md' },
+        'listAnnotationViews': { signature: 'listAnnotationViews() -- Saved annotation views, oldest first (no images) -> [{id, title, camera, marks2D, hits, summary, ...}]', docs: '/ai/annotations.md' },
+        'getAnnotationView':   { signature: 'getAnnotationView(id, {includeImage?}) -- One annotation view; includeImage adds the captured frame (data URL)', docs: '/ai/annotations.md' },
+        'renderAnnotationView':{ signature: 'renderAnnotationView(id, {marks?, width?}) -- Render the CURRENT model from a saved view\'s exact camera -> {image}', docs: '/ai/annotations.md' },
+        'renameAnnotationView':{ signature: 'await renameAnnotationView(id, title) -- Rename a saved annotation view -> {id, title}', docs: '/ai/annotations.md' },
+        'deleteAnnotationView':{ signature: 'await deleteAnnotationView(id) -- Delete a saved annotation view -> {deleted}', docs: '/ai/annotations.md' },
+        'attachAnnotationViewToChat': { signature: 'await attachAnnotationViewToChat(id) -- Stage a view\'s frame + summary in the AI chat input (not sent) -> {attached}', docs: '/ai/annotations.md' },
         // UI control -- open a tool for the user (AI hand-off)
         'listUiCommands':  { signature: 'listUiCommands() -- Every drivable UI action: tools (openable with a prefill; prefill = their documented keys) + run-only palette commands -> [{id, title, hint, kind, enabled, open, prefill}]', docs: '/ai/ui-control.md' },
         'openTool':        { signature: "await openTool(id, prefill?, {note?}) -- Open a tool panel FOR THE USER with fields pre-set (e.g. openTool('tool-surface', {tab:'knit', mode:'whole', stitchWidth:3}, {note:'tweak and Apply'})). Never applies; unknown keys / out-of-range values rejected -> {ok, applied, ignored} | {error}", docs: '/ai/ui-control.md' },
@@ -25454,6 +25728,10 @@ async function main() {
       // Let select-mode handle Escape first when an annotation is selected
       // (it deselects). A subsequent Escape will close the menu.
       if (isSelectActive() && getSelectedAnnotationId()) return;
+      // In Annotate's Pen/Text, Escape steps back to Select (annotateUI's own
+      // handler); only Escape from Select closes the panel.
+      const annotateMode = getAnnotateSubMode();
+      if (annotateMode === 'pen' || annotateMode === 'text') return;
 
       let closed = false;
       if (isAnnotateOpen()) { closeAnnotateMenu(); closed = true; }
