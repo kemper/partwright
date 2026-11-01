@@ -148,7 +148,7 @@ test.describe('annotation views', () => {
     expect(await page.evaluate(() => ((window as unknown as { partwright: PW }).partwright.listAnnotations() as unknown[]).length)).toBe(1);
 
     const id = await page.evaluate(() => ((window as unknown as { partwright: PW }).partwright.listAnnotationViews() as { id: string }[])[0].id);
-    expect(await page.evaluate((vid) => (window as unknown as { partwright: PW }).partwright.restoreAnnotationView(vid), id)).toEqual({ restored: true });
+    expect(await page.evaluate((vid) => (window as unknown as { partwright: PW }).partwright.restoreAnnotationView(vid), id)).toMatchObject({ restored: true, marksShown: true });
     expect(await page.evaluate((vid) => (window as unknown as { partwright: PW }).partwright.deleteAnnotationView(vid), id)).toEqual({ deleted: true });
     expect(await page.evaluate(() => ((window as unknown as { partwright: PW }).partwright.listAnnotationViews() as unknown[]).length)).toBe(0);
     expect(await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.setAnnotateStyle('sideways'))).toHaveProperty('error');
@@ -241,5 +241,63 @@ test.describe('annotation views', () => {
     await expect(page.locator('#annotate-picker-panel')).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(page.locator('#annotate-picker-panel')).toBeHidden();
+  });
+
+  test('View redraws the saved marks at the saved camera; the thumbnail opens a lightbox', async ({ page }) => {
+    test.setTimeout(60_000);
+    await page.goto('/editor');
+    await waitForEngine(page);
+    await page.evaluate(async () => {
+      const p = (window as unknown as { partwright: PW }).partwright;
+      await p.createSession('view-marks');
+      await p.runAndSave('const { Manifold } = api;\nreturn Manifold.cube([20, 20, 20], true);', 'cube');
+      p.setAnnotateStyle('snapshot');
+      p.setAnnotateMode('pen');
+    });
+    await drawLoop(page);
+    await page.locator('#annotate-save-view').click();
+    const row = page.locator('#annotate-view-history [data-view-id]').first();
+    await expect(row).toBeVisible();
+    const shownId = () => page.evaluate(async () => (await import('/src/annotations/annotationOverlay.ts')).getShownViewMarksId());
+    const pose = () => page.evaluate(async () => (await import('/src/renderer/viewport.ts')).getCameraPose());
+    const saved = await pose();
+
+    // Back to Select and orbit away; the saved marks are not on screen.
+    await page.keyboard.press('Escape');
+    const box = (await page.locator('canvas#viewport').boundingBox())!;
+    await page.mouse.move(box.x + 60, box.y + box.height - 60);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 260, box.y + box.height - 90, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(500);
+    expect((await pose()).position).not.toEqual(saved.position);
+    expect(await shownId()).toBeNull();
+
+    // View: camera snaps back and the marks are redrawn.
+    await row.locator('button', { hasText: 'View' }).click();
+    const back = await pose();
+    for (let k = 0; k < 3; k++) expect(Math.abs(back.position[k] - saved.position[k])).toBeLessThan(1e-3);
+    const id = await row.getAttribute('data-view-id');
+    expect(await shownId()).toBe(id);
+    await expect(row.locator('button', { hasText: 'Hide marks' })).toBeVisible();
+    await page.screenshot({ path: 'test-results/annotation-view-marks.png' });
+
+    // Thumbnail → lightbox; Esc closes just the lightbox.
+    await row.locator('img').click();
+    const lightbox = page.locator('[data-lightbox] img');
+    await expect(lightbox).toBeVisible();
+    expect(await lightbox.getAttribute('src')).toMatch(/^data:image\/jpeg/);
+    await page.screenshot({ path: 'test-results/annotation-view-lightbox.png' });
+    await page.keyboard.press('Escape');
+    await expect(lightbox).toBeHidden();
+    await expect(page.locator('#annotate-picker-panel')).toBeVisible();
+
+    // Hide marks clears them; closing Annotate clears too.
+    await row.locator('button', { hasText: 'Hide marks' }).click();
+    expect(await shownId()).toBeNull();
+    await row.locator('button', { hasText: 'View' }).click();
+    expect(await shownId()).toBe(id);
+    await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.setAnnotateMode(null));
+    await expect.poll(shownId).toBeNull();
   });
 });

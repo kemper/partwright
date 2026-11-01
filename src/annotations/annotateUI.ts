@@ -39,7 +39,8 @@ import {
   clearStrokes,
   clearAll,
 } from './annotations';
-import { setAnnotationsVisible, isAnnotationsVisible } from './annotationOverlay';
+import { setAnnotationsVisible, isAnnotationsVisible, clearViewMarks, getShownViewMarksId, onViewMarksChange } from './annotationOverlay';
+import { showLightbox } from '../ui/lightbox';
 import { endSession as endSessionPlane, hidePlaneOutline, restoreCameraView } from './sessionPlane';
 import { setDraftScope, getDrafts } from './annotations';
 import {
@@ -168,7 +169,14 @@ export function initAnnotateUI(controlsContainer: HTMLElement): void {
   onSelectActiveChange(updatePanelState);
   onSelectionChange(updateSelectionInfo);
   onAnnotateStyleChange(onStyleChanged);
-  onAnnotationViewsChange(renderHistory);
+  onAnnotationViewsChange(() => {
+    // A shown view that was deleted (or belongs to a session no longer open)
+    // must not leave its marks behind.
+    const shownId = getShownViewMarksId();
+    if (shownId && !getAnnotationViews().some(v => v.id === shownId)) clearViewMarks();
+    renderHistory();
+  });
+  onViewMarksChange(renderHistory);
   onStrokesChange(updateSaveButton);
   updateStyleUI();
   renderHistory();
@@ -315,15 +323,16 @@ function renderHistory(): void {
 
 function historyRow(v: AnnotationView): HTMLElement {
   const row = document.createElement('div');
-  row.className = 'flex gap-2 items-start py-1.5 border-b border-zinc-700/60 last:border-b-0';
+  const shown = getShownViewMarksId() === v.id;
+  row.className = `flex gap-2 items-start py-1.5 border-b border-zinc-700/60 last:border-b-0${shown ? ' bg-blue-500/10 -mx-1 px-1 rounded' : ''}`;
   row.dataset.viewId = v.id;
 
   const thumb = document.createElement('img');
   thumb.src = v.image;
   thumb.alt = v.title;
   thumb.className = 'w-16 h-11 shrink-0 rounded object-cover border border-zinc-600 cursor-pointer hover:border-zinc-300';
-  thumb.title = 'Snap the camera to this view';
-  thumb.addEventListener('click', () => restoreAnnotationViewCamera(v));
+  thumb.title = 'Open this view full size';
+  thumb.addEventListener('click', () => showLightbox(v.image, `${v.title} — ${describeViewHits(v)}`));
   row.appendChild(thumb);
 
   const body = document.createElement('div');
@@ -353,9 +362,14 @@ function historyRow(v: AnnotationView): HTMLElement {
 
   const view = document.createElement('button');
   view.className = historyBtnClass;
-  view.textContent = 'View';
-  view.title = 'Snap the camera to this view';
-  view.addEventListener('click', () => restoreAnnotationViewCamera(v));
+  view.textContent = shown ? 'Hide marks' : 'View';
+  view.title = shown
+    ? 'Stop showing this view\'s marks in the viewport'
+    : 'Snap the camera to this view and redraw its marks';
+  view.addEventListener('click', () => {
+    if (getShownViewMarksId() === v.id) clearViewMarks();
+    else restoreAnnotationViewCamera(v);
+  });
   btns.appendChild(view);
 
   const del = document.createElement('button');
@@ -431,6 +445,9 @@ function updatePanelState(): void {
   } else {
     pickerPanel?.classList.add('hidden');
     if (wasOpen) {
+      // Same transient-close guard as the draft scope above: a sub-mode
+      // switch must not drop the marks of the view being looked at.
+      queueMicrotask(() => { if (!isAnyActive()) clearViewMarks(); });
       setToolNote(annotateContentEl, null);
       closeViewportPanel(annotateRegistryEntry);
       document.removeEventListener('keydown', onAnnotateEscape);

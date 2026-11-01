@@ -119,6 +119,52 @@ export function buildGroupFromAnnotations(list: readonly Annotation[], resolutio
   return g;
 }
 
+// A saved annotation view's marks, redrawn in the live viewport by "View" so
+// the user sees the markup again from the angle it was made. Separate from
+// the store (it is not an annotation layer: nothing selects, edits or saves
+// it) and named so captures can hide it.
+const VIEW_MARKS_NAME = 'annotation-view-marks';
+let viewMarks: THREE.Group | null = null;
+let viewMarksId: string | null = null;
+const viewMarksListeners: Array<(id: string | null) => void> = [];
+
+/** Draw `list` (a saved view's marks) in the live viewport, replacing any
+ *  view marks already shown. */
+export function showViewMarks(id: string, list: readonly Annotation[]): void {
+  clearViewMarks({ silent: true });
+  if (!overlayGroup) return;
+  const g = buildGroupFromAnnotations(list, liveResolution);
+  if (g) {
+    g.name = VIEW_MARKS_NAME;
+    overlayGroup.add(g);
+    viewMarks = g;
+  }
+  viewMarksId = id;
+  requestRender();
+  for (const fn of viewMarksListeners) fn(viewMarksId);
+}
+
+export function clearViewMarks(opts: { silent?: boolean } = {}): void {
+  if (viewMarks) {
+    viewMarks.parent?.remove(viewMarks);
+    disposeAnnotationChildren(viewMarks);
+    viewMarks = null;
+  }
+  const had = viewMarksId !== null;
+  viewMarksId = null;
+  requestRender();
+  if (had && !opts.silent) for (const fn of viewMarksListeners) fn(null);
+}
+
+/** Id of the view whose marks are shown, or null. */
+export function getShownViewMarksId(): string | null {
+  return viewMarksId;
+}
+
+export function onViewMarksChange(fn: (id: string | null) => void): void {
+  viewMarksListeners.push(fn);
+}
+
 export function disposeStrokesGroup(g: THREE.Group): void {
   disposeAnnotationChildren(g);
 }

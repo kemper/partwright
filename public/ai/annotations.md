@@ -52,7 +52,8 @@ partwright.listAnnotationViews()        // -> [{id, title, createdAt, camera, si
 partwright.getAnnotationView(id, { includeImage: true })   // + image: the frame the user saw (JPEG data URL)
 partwright.renderAnnotationView(id)     // CURRENT model from that exact camera, marks on top -> {image}
 partwright.renderAnnotationView(id, { marks: false, width: 800 })
-partwright.restoreAnnotationView(id)    // snap the live camera to the view
+partwright.restoreAnnotationView(id)    // snap the live camera to the view AND redraw its marks there
+partwright.hideAnnotationViewMarks()    // stop showing them (or {marks: false} above: camera only)
 await partwright.renameAnnotationView(id, 'new title')
 await partwright.deleteAnnotationView(id)
 await partwright.attachAnnotationViewToChat(id)  // stage it in the AI chat input (not sent)
