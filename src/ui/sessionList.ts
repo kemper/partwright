@@ -18,6 +18,7 @@ import { confirmDialog, promptDialog } from './dialogs';
 import { updateAppHistory } from './appHistory';
 import { appPath } from '../deployment';
 import { jsonToBlob } from '../export/jsonBlob';
+import { parseJsonBlob } from '../import/jsonBytes';
 
 let modalEl: HTMLElement | null = null;
 /** Loads the session `openSession` just opened into the editor — its version
@@ -81,7 +82,7 @@ export async function showSessionList(): Promise<void> {
       const file = input.files?.[0];
       if (!file) return;
       try {
-        const data: unknown = JSON.parse(await file.text());
+        const data: unknown = await parseJsonBlob(file);
         if (!importPayloadFn) return;
         await importPayloadFn(data, () => {
           // Push the editor entry before the session-mutating open so the Back
