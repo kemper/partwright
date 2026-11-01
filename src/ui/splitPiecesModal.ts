@@ -72,7 +72,7 @@ export function openSplitPiecesModal(api: SplitApi): void {
 
   const clearRow = el('label', 'flex items-center gap-2 text-xs');
   clearRow.appendChild(el('span', 'flex-1', 'Clearance (gap between mating faces; 0 = glue fit)'));
-  const clearance = el('input', 'w-20 bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs');
+  const clearance = el('input', 'w-20 bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs min-h-[44px] md:min-h-0');
   clearance.type = 'number';
   clearance.min = '0';
   clearance.step = '0.05';
@@ -105,12 +105,23 @@ export function openSplitPiecesModal(api: SplitApi): void {
       if (r.removed) { status.textContent = 'Split removed.'; return; }
       const pieces = (r.pieces as Array<{ name: string; mode: string }> | undefined) ?? [];
       const warnings = (r.warnings as string[] | undefined) ?? [];
+      const saving = extra.preview === false;
+      const saveProblem = saving && !r.saved
+        ? String(r.saveWarning ?? r.saveSkipped ?? 'the version was not saved')
+        : null;
       status.textContent = [
         `${pieces.length} pieces: ${pieces.map(p => `${p.name} (${p.mode})`).join(', ')}`,
         ...warnings.map(w => `⚠ ${w}`),
-        r.saved ? 'Saved. Export → 3MF with Split: Parts gives one object per piece.' : 'Preview: the pieces are pulled apart and nothing was saved.',
+        saving
+          ? (saveProblem ? `⚠ Cut, but not saved: ${saveProblem}` : 'Saved. Export → 3MF with Split: Parts gives one object per piece.')
+          : 'Preview: the pieces are pulled apart and nothing was saved.',
       ].join('\n');
-      if (r.saved) showToast('Split into pieces and saved', { variant: 'success', source: 'parts' });
+      if (saveProblem) showToast(`Split ran but was not saved: ${saveProblem}`, { variant: 'warn', source: 'parts' });
+      else if (saving) showToast('Split into pieces and saved', { variant: 'success', source: 'parts' });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      status.textContent = `Split failed: ${msg}`;
+      showToast(`Split failed: ${msg}`, { variant: 'warn', source: 'parts' });
     } finally {
       buttons.forEach(b => { b.disabled = false; });
     }

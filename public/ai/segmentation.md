@@ -284,6 +284,8 @@ than this fraction of their piece go back across the seam), `label`.
 - **Read the warnings.** "came out as N separate solids" means that seam is wrong. Try another mode, a higher `resolution`, or fix the part boundary with `editParts` and accept again. Every piece should be one solid.
 - **Check the result geometrically.** In the saved split, `componentCount` should equal the number of pieces, and `listObjectParts().pieces` should name one part per piece.
 - **Already-separate parts** (fins printed apart, say) need no cut. They come through as their own piece.
+- **Parts you leave out of `parts`** aren't cut off. They stay with whichever piece they're attached to and keep their own labels (a `parts: ['head', 'body']` split keeps the eyes on the head).
+- **`clearance` is a real gap on every seam type.** Medial cuts are measured along the cut, and the clearance comes off the neighbour's side, so the piece keeps its exact surface.
 - **In code** it's `api.splitParts(m, opts)` with the same options (`flatTolerance` too). It works on any labelled manifold-js shape, so you can call it on `api.label` parts too. The run's log line `[splitParts] {…}` is the report.
 - **One object per piece:** a saved split is one object of separate solids. Export it with `split: 'parts'`. To get a separate object per piece in the session, use `extractObjectParts({ parts: [...], separate: true })`.
 - **Cost:** each cut samples a lattice over its part's box (up to `resolution`³ points) and does two booleans on the remaining mesh. Very dense scans (millions of triangles) are slow, so `simplifyModel` the import first if a preview takes minutes.

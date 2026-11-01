@@ -65,3 +65,28 @@ to stay inside the context-budget and Gemini schema tests.
 **Not built:** a separate groove finder (seeded crease-watershed with
 maxRadius already returns the closed groove region) and a plane-cut preview
 (it would encourage the workflow that failed).
+
+## Assistant (review follow-up)
+
+A read-only review of the diff found two code-loss bugs in the return
+wrapper and six kernel/UI issues; all fixed with regression tests:
+
+- **Wrapper:** a return now runs past newlines while the expression visibly
+  continues (leading-dot chains, ternaries, trailing operators), trailing
+  comments stay outside the span, and `api.splitParts(m).add(x)` is not
+  treated as an existing wrap (editing it would have dropped `.add(x)`).
+- **Medial clearance** was a shifted difference-of-distances (gap ≈ c/2 at
+  facing surfaces, ballooning across a neck). It now normalises the field by
+  its gradient within a band around the cut, and fills any sealed pocket the
+  subtraction opens.
+- **Labels:** only cut faces and faces of the split's own parts are
+  relabelled; parts left out of `parts` (and plain geometry) keep their ids.
+  Cut-face ids are recorded from the raw level set (a re-merged solid has no
+  single originalID — the first attempt relabelled nothing on clearance runs).
+- **Faces that don't steer cuts:** pieces already peeled and parts not being
+  split are excluded from later medial fields, so an unlisted eye rides along
+  with its head instead of being stranded and dropped.
+- **Honest reporting:** dropped fragments are warnings with their volume, kept
+  separate from fragments handed back across a seam; a run that times out
+  restores the code; the modal reports a split that ran but didn't save.
+- Preview spread moved to `ui.splitPreviewExplode` (Advanced Settings).

@@ -86,6 +86,28 @@ test.describe('split into printable pieces', () => {
     expect(out.componentsAfterRemove).toBe(1);
   });
 
+  test('unlisted parts ride along with their piece and keep their labels; clearance keeps pieces whole', async () => {
+    test.setTimeout(180_000);
+    const out = await page.evaluate(async (figure) => {
+      const api = (window as unknown as { partwright: PW }).partwright;
+      await api.createSession('split-unlisted');
+      await api.runAndSave(figure, 'figure');
+      const two = await api.splitIntoPieces({ parts: ['head', 'body'], render: false });
+      const twoGeo = await api.getGeometryData();
+      const twoParts = Object.fromEntries((api.listObjectParts().parts ?? []).map(p => [p.name, p.triangleCount]));
+      const gap = await api.splitIntoPieces({ seams: { eye: 'plug' }, clearance: 0.3, render: false });
+      const gapGeo = await api.getGeometryData();
+      return { twoWarnings: two.warnings ?? null, twoComponents: twoGeo?.componentCount, twoParts, gapWarnings: gap.warnings ?? null, gapComponents: gapGeo?.componentCount, gapManifold: gapGeo?.isManifold };
+    }, FIGURE);
+    expect(out.twoWarnings).toBeNull();
+    expect(out.twoComponents).toBe(2);
+    // The eye goes with the head and the arm with the body, labels intact.
+    for (const n of ['body', 'head', 'arm', 'eye']) expect(out.twoParts[n]).toBeGreaterThan(0);
+    expect(out.gapWarnings).toBeNull();
+    expect(out.gapComponents).toBe(4);
+    expect(out.gapManifold).toBe(true);
+  });
+
   test('the Split modal previews pieces from the Tools menu', async () => {
     test.setTimeout(180_000);
     await page.evaluate(async (figure) => {

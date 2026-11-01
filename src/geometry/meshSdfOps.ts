@@ -735,11 +735,12 @@ export function createMeshSdfOps(module: any) {
    *  are nearer than all the others, cleaned of islands and blurred, with the
    *  lattice's outer layer forced outside (= `voxel`). Null when the
    *  selection is the whole mesh. */
-  function medialField(m: any, mesh: any, mask: Uint8Array, sel: { min: Vec3; max: Vec3 }, resolution: number, blurPasses = 1): { field: Float32Array; spec: GridSpec; voxel: number } | null {
+  function medialField(m: any, mesh: any, mask: Uint8Array, sel: { min: Vec3; max: Vec3 }, resolution: number, blurPasses = 1, exclude?: Uint8Array): { field: Float32Array; spec: GridSpec; voxel: number } | null {
     const numTri = mesh.triVerts.length / 3;
     const pick = (want: number) => {
       const tv: number[] = [];
-      for (let t = 0; t < numTri; t++) if (mask[t] === want) tv.push(mesh.triVerts[t * 3], mesh.triVerts[t * 3 + 1], mesh.triVerts[t * 3 + 2]);
+      // `exclude`d faces (pieces already cut away) are in neither set.
+      for (let t = 0; t < numTri; t++) if (mask[t] === want && !(want === 0 && exclude && exclude[t])) tv.push(mesh.triVerts[t * 3], mesh.triVerts[t * 3 + 1], mesh.triVerts[t * 3 + 2]);
       return {
         vertProperties: mesh.vertProperties, triVerts: Uint32Array.from(tv), numProp: mesh.numProp,
         numTri: tv.length / 3, numVert: mesh.vertProperties.length / mesh.numProp,
@@ -1021,14 +1022,16 @@ export function createMeshSdfOps(module: any) {
     return { mode, axis, depth: o.depth as number | undefined, normal };
   }
 
-  /** Give every face of `piece` whose originalID isn't one of `keep` the id
-   *  `id` — the piece's cut faces (and any stray faces of a neighbour it
-   *  took) then belong to its part. */
-  function relabelPiece(piece: any, keep: Set<number>, id: number): any {
+  /** Give the faces of `piece` whose originalID is in `take` (the cut faces,
+   *  and faces of the other pieces' parts it took near a seam) the id `id`,
+   *  unless they are already one of `keep` — they then belong to its part.
+   *  Faces of parts not being split, and plain unlabelled geometry, keep
+   *  their ids. */
+  function relabelPiece(piece: any, keep: Set<number>, id: number, take: Set<number>): any {
     const pm = piece.getMesh();
     const ids = triangleIds(pm);
     let changed = false;
-    for (let t = 0; t < ids.length; t++) if (!keep.has(ids[t])) { ids[t] = id; changed = true; }
+    for (let t = 0; t < ids.length; t++) if (!keep.has(ids[t]) && take.has(ids[t])) { ids[t] = id; changed = true; }
     if (!changed) return piece;
     const runs = runsFromIds(ids);
     const mesh: Record<string, unknown> = {
@@ -1039,13 +1042,25 @@ export function createMeshSdfOps(module: any) {
     return Manifold.ofMesh(mesh);
   }
 
-  /** The lattice field `f` shifted by `d` (outer layer kept outside). */
-  function shiftField(f: Float32Array, spec: GridSpec, d: number): Float32Array {
+  /** The lattice field `f` grown outward by `d` world units. A medial field
+   *  (a difference of two distances) is not a distance — its slope is ~2
+   *  where the surfaces face each other and ~0 across a neck — so it is
+   *  first normalised by its gradient (|f| / |∇f| ≈ distance to the cut),
+   *  and only within a band around the cut, so the flat island values deep
+   *  inside the solid can't flip. The outer layer stays outside. */
+  function growField(f: Float32Array, spec: GridSpec, voxel: number, d: number): Float32Array {
+    const { nx, ny, nz } = spec;
     const out = new Float32Array(f.length);
+    const band = d + 3 * voxel;
     for (let i = 0; i < f.length; i++) {
-      const ix = i % spec.nx, iy = Math.floor(i / spec.nx) % spec.ny, iz = Math.floor(i / (spec.nx * spec.ny));
-      const edge = ix === 0 || iy === 0 || iz === 0 || ix === spec.nx - 1 || iy === spec.ny - 1 || iz === spec.nz - 1;
-      out[i] = edge ? f[i] : f[i] - d;
+      const ix = i % nx, iy = Math.floor(i / nx) % ny, iz = Math.floor(i / (nx * ny));
+      if (ix === 0 || iy === 0 || iz === 0 || ix === nx - 1 || iy === ny - 1 || iz === nz - 1) { out[i] = f[i]; continue; }
+      const gx = (f[i + 1] - f[i - 1]) / (2 * voxel);
+      const gy = (f[i + nx] - f[i - nx]) / (2 * voxel);
+      const gz = (f[i + nx * ny] - f[i - nx * ny]) / (2 * voxel);
+      const g = Math.max(Math.hypot(gx, gy, gz), 0.05);
+      const dist = Math.max(-band, Math.min(band, f[i] / g));
+      out[i] = dist - d;
     }
     return out;
   }
@@ -1128,9 +1143,14 @@ export function createMeshSdfOps(module: any) {
 
     const report: { pieces: Record<string, unknown>[]; warnings: string[] } = { pieces: [], warnings: [] };
     const pieces: { item: Group; solid: any }[] = [];
+    // Ids a piece may take over: every split part's, plus each cut's faces.
+    const take = new Set<number>(items.flatMap(g => [...g.ids]));
     let rest = m;
-    // Faces of pieces already cut away: their seams no longer count.
+    // Faces that don't steer the cuts: pieces already cut away, and faces of
+    // parts not being split (plus unlabelled faces) — those go with whichever
+    // piece they're attached to instead of being cut off as foreign.
     const gone = new Uint8Array(triIds.length);
+    for (let t = 0; t < triIds.length; t++) if (!take.has(triIds[t])) gone[t] = 1;
     for (const g of order) {
       const box = facesCentroid(mesh, g.mask)!;
       let mode = g.seam.mode;
@@ -1163,14 +1183,16 @@ export function createMeshSdfOps(module: any) {
         const bottom = proj.minA - depth;
         const top = proj.maxA + 0.02 * size;
         const at = (s: number): Vec3 => [axis[0] * s, axis[1] * s, axis[2] * s];
-        region = cs.extrude(top - bottom).transform(frameMatrix(axis, at(bottom)).mat);
+        region = cs.extrude(top - bottom).transform(frameMatrix(axis, at(bottom)).mat).asOriginal();
         grown = clearance > 0
-          ? cs.offset(clearance, 'Round').extrude(top - bottom + clearance).transform(frameMatrix(axis, at(bottom - clearance)).mat)
+          ? cs.offset(clearance, 'Round').extrude(top - bottom + clearance).transform(frameMatrix(axis, at(bottom - clearance)).mat).asOriginal()
           : region;
+        take.add(region.originalID());
+        take.add(grown.originalID());
         info.axis = axis.map(x => +x.toFixed(3));
         info.depth = +depth.toFixed(3);
       } else {
-        const mf = medialField(m, mesh, g.mask, box, resolution, smoothing);
+        const mf = medialField(m, mesh, g.mask, box, resolution, smoothing, gone);
         need(!!mf, `splitParts: "${g.name}" covers the whole shape`);
         const { spec } = mf!;
         voxel = mf!.voxel;
@@ -1199,11 +1221,23 @@ export function createMeshSdfOps(module: any) {
           info.planeRms = +fit!.rms.toFixed(3);
           info.normal = n.map(x => +x.toFixed(3));
         }
-        region = dropSlivers(levelSetFromField(Manifold, field, spec), voxel);
-        grown = clearance > 0 ? dropSlivers(levelSetFromField(Manifold, shiftField(field, spec, clearance), spec), voxel) : region;
+        // Record the cut faces' ids before dropSlivers re-merges the mesh
+        // (a re-merged solid reports no single originalID of its own).
+        const raw = levelSetFromField(Manifold, field, spec).asOriginal();
+        take.add(raw.originalID());
+        region = dropSlivers(raw, voxel);
+        if (clearance > 0) {
+          const rawGrown = levelSetFromField(Manifold, growField(field, spec, voxel, clearance), spec).asOriginal();
+          take.add(rawGrown.originalID());
+          grown = dropSlivers(rawGrown, voxel);
+        } else grown = region;
       }
       let piece = dropSlivers(rest.intersect(region), voxel, 4, [m]);
+      const before = rest;
       rest = dropSlivers(rest.subtract(grown), voxel, 4, [m]);
+      // A clearance can open a sealed pocket inside the rest where the grown
+      // cut dips into it; fill any cavity the subtraction made.
+      if (clearance > 0) rest = fillNewCavities(rest, [before]);
       if (piece.isEmpty()) {
         report.warnings.push(`${g.name}: the cut took no material — it stays with ${keepItem.name}`);
         continue;
@@ -1214,18 +1248,25 @@ export function createMeshSdfOps(module: any) {
       if (comps.length > 1) {
         const mainVol = comps[0].volume();
         const keepComps = [comps[0]];
-        let handedBack = 0;
+        let handedBack = 0, dropped = 0, droppedVol = 0;
         for (const c of comps.slice(1)) {
           const vol = c.volume();
           if (vol < 0) { keepComps.push(c); continue; } // an inner cavity
-          if (vol < minFragment * mainVol) { if (clearance === 0) rest = rest.add(c); handedBack++; } else keepComps.push(c);
+          if (vol >= minFragment * mainVol) { keepComps.push(c); continue; }
+          // Touching the seam (no clearance): fuse it back into the rest.
+          // With a clearance it no longer touches anything, so it goes.
+          if (clearance === 0) { rest = rest.add(c); handedBack++; } else { dropped++; droppedVol += vol; }
         }
         piece = keepComps.length === 1 ? keepComps[0] : Manifold.compose(keepComps);
         if (handedBack) info.fragmentsHandedBack = handedBack;
+        if (dropped) {
+          info.fragmentsDropped = dropped;
+          report.warnings.push(`${g.name}: dropped ${dropped} loose bit${dropped === 1 ? '' : 's'} (${droppedVol.toPrecision(3)} volume) the clearance cut free`);
+        }
         const loose = keepComps.filter((c: any) => c.volume() > 0).length;
         if (loose > 1) report.warnings.push(`${g.name}: came out as ${loose} separate solids — check its seam (try another mode, or a higher resolution)`);
       }
-      pieces.push({ item: g, solid: relabelPiece(piece, g.ids, g.primary) });
+      pieces.push({ item: g, solid: relabelPiece(piece, g.ids, g.primary, take) });
       report.pieces.push(info);
     }
     // What's left is the kept piece; small crumbs a cut stranded are dropped.
@@ -1236,9 +1277,13 @@ export function createMeshSdfOps(module: any) {
       const dropped = comps.length - kept.length;
       const loose = kept.filter((c: any) => c.volume() > 0).length;
       const info: Record<string, unknown> = { name: keepItem.name, mode: 'kept' };
-      if (dropped) info.fragmentsDropped = dropped;
+      if (dropped) {
+        const vol = comps.filter((c: any) => !kept.includes(c)).reduce((a: number, c: any) => a + c.volume(), 0);
+        info.fragmentsDropped = dropped;
+        report.warnings.push(`${keepItem.name}: dropped ${dropped} loose bit${dropped === 1 ? '' : 's'} (${vol.toPrecision(3)} volume, under minFragment of the piece) that no cut kept attached`);
+      }
       if (loose > 1) report.warnings.push(`${keepItem.name}: came out as ${loose} separate solids`);
-      pieces.push({ item: keepItem, solid: relabelPiece(kept.length === 1 ? kept[0] : Manifold.compose(kept), keepItem.ids, keepItem.primary) });
+      pieces.push({ item: keepItem, solid: relabelPiece(kept.length === 1 ? kept[0] : Manifold.compose(kept), keepItem.ids, keepItem.primary, take) });
       report.pieces.push(info);
     }
     for (const p of pieces) {

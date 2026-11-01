@@ -14663,7 +14663,7 @@ async function main() {
       } else {
         const kernel: Record<string, unknown> = {};
         for (const k of kernelKeys) if (o[k] !== undefined) kernel[k] = o[k];
-        if (preview && kernel.explode === undefined) kernel.explode = 0.6;
+        if (preview && kernel.explode === undefined) kernel.explode = getConfig().ui.splitPreviewExplode;
         const up = upsertSplitCall(previousCode, kernel);
         if (!up) return { error: 'Could not find a top-level `return` in the code to wrap with api.splitParts.' };
         next = up.code;
@@ -14671,7 +14671,14 @@ async function main() {
       }
       setValue(next);
       const applied = await runCodeSync(next);
-      if (!applied) return { error: runFailedMessage() };
+      if (!applied) {
+        // Timed out / cancelled / superseded: don't leave the wrapped code in
+        // the editor for the next save to persist.
+        const why = runFailedMessage();
+        setValue(previousCode);
+        await runCodeSync(previousCode);
+        return { error: `splitIntoPieces did not finish: ${why}. The code was restored.` };
+      }
       const geo = getGeometryDataObj() as { status?: string; error?: string; componentCount?: number; isManifold?: boolean } | null;
       if (geo?.status === 'error') {
         setValue(previousCode);
@@ -14684,6 +14691,7 @@ async function main() {
       const report = parseSplitReport(lastRunLogs);
       const view = currentObjectPartsView();
       const warnings = [...(report?.warnings ?? [])];
+      if (!report) warnings.push('No [splitParts] report line in this run\'s console output (the model log may have hit its line/character cap) — check pieces with listObjectParts().');
       const pieces = (view?.pieces ?? []).map(p => ({ index: p.index, triangles: p.triangleCount, part: p.part ?? null }));
       const expected = report?.pieces.length ?? 0;
       if (expected > 0 && pieces.length !== expected) {

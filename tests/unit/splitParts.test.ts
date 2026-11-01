@@ -151,6 +151,29 @@ describe('splitCode', () => {
     expect(removeSplitCall(a.code)).toBe(code);
   });
 
+  it('takes multi-line returns whole: leading-dot chains, ternaries, trailing comments', () => {
+    const chain = 'return body\n  .add(arm)\n  .add(head);';
+    expect(upsertSplitCall(chain, {})!.code).toBe('return api.splitParts(body\n  .add(arm)\n  .add(head));');
+    const tern = 'return big\n  ? a\n  : b;';
+    expect(upsertSplitCall(tern, {})!.code).toBe('return api.splitParts(big\n  ? a\n  : b);');
+    const trailing = 'return model // final\n';
+    expect(upsertSplitCall(trailing, { explode: 0.6 })!.code).toBe('return api.splitParts(model, { explode: 0.6 }) // final\n');
+    const opEnd = 'return a.add(b) ||\n  c;';
+    expect(upsertSplitCall(opEnd, {})!.code).toBe('return api.splitParts(a.add(b) ||\n  c);');
+    // A new statement on the next line is not part of the return.
+    expect(upsertSplitCall('return m\nfoo();', {})!.code).toBe('return api.splitParts(m)\nfoo();');
+    for (const c of [chain, tern, trailing, opEnd]) expect(removeSplitCall(upsertSplitCall(c, { keep: 'x' })!.code)).toBe(c);
+  });
+
+  it('treats a split followed by more calls as unwrapped (never drops the tail)', () => {
+    const tail = "return api.splitParts(m, { keep: 'body' }).translate([0, 0, 1]);";
+    expect(removeSplitCall(tail)).toBeNull();
+    const up = upsertSplitCall(tail, { explode: 0.6 })!;
+    expect(up.replaced).toBe(false);
+    expect(up.code).toBe("return api.splitParts(api.splitParts(m, { keep: 'body' }).translate([0, 0, 1]), { explode: 0.6 });");
+    expect(removeSplitCall('return api.splitParts(m).add(x);')).toBeNull();
+  });
+
   it('quotes non-identifier keys and returns null without a return', () => {
     expect(formatSplitValue({ seams: { 'patch 3': 'flat', 'torso+tail': { mode: 'plug', axis: [0, -1, 0] } } }))
       .toBe("{ seams: { 'patch 3': 'flat', 'torso+tail': { mode: 'plug', axis: [0, -1, 0] } } }");
