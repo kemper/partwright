@@ -337,7 +337,7 @@ describe('#1059 full-feature spec constructs in the figure library', () => {
     try { await preloadTextFonts(); } finally { vi.unstubAllGlobals(); }
   });
 
-  it('Tsubasa-like spec: shorts, socks, toy cleats, trim, prints, bead eyes, shag + sink + mitten hold', () => {
+  it('Funko soccer-figure spec: shorts, socks, toy cleats, trim, prints, bead eyes, shag + sink + mitten hold', () => {
     const s = normalizeSpec({
       body: { height: 100, proportions: 'funko', headsTall: 3, build: 'slim', sex: 'male', headScale: { x: 2.3, y: 1.8, z: 2.1 }, headSink: 0.42 },
       pose: { legL: { raiseSide: 8, twist: 26 }, legR: { raiseSide: 8, twist: 26 }, hold: { kind: 'ball', radius: 10.5, cupR: 'under', handScale: 1.3 } },
