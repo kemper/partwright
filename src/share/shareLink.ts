@@ -123,11 +123,14 @@ export function isSafeImageDataUrl(s: unknown): s is string {
  *  `fingerprint` stays), and any bulky mesh array smuggled inside
  *  `geometryData` (e.g. raw vertex/triangle arrays) — while KEEPING the stats
  *  (volume/surfaceArea/boundingBox/componentCount/isManifold) and
- *  `colorRegions` that the preview needs. Does not mutate the input. */
+ *  `colorRegions` that the preview needs. Annotation views (each a captured
+ *  JPEG) are dropped. Does not mutate the input. */
 export function trimForShare(exported: ExportedSession): ExportedSession {
   const versions = Array.isArray(exported.versions) ? exported.versions : [];
+  // Annotation views carry a captured JPEG each — never worth share-URL budget.
+  const { annotationViews: _dropViews, ...rest0 } = exported;
   return {
-    ...exported,
+    ...rest0,
     session: trimAttachmentsForShare(exported.session),
     versions: versions.map(v => {
       const { importedMeshes: _dropMeshes, surfaceTexture: _dropTexture, latestMesh: _dropLatest, geometryData, ...rest } = v;

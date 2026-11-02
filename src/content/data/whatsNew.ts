@@ -26,6 +26,30 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'October 29, 2026',
+    headline: 'Partwright 1.12.2 — Anthropic chat reliability fix',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.12.2',
+            body: 'A backward-compatible patch release — existing sessions and exported files all keep working.',
+          },
+        ],
+      },
+      {
+        label: 'Fixes',
+        items: [
+          {
+            title: 'Anthropic chats no longer break after a thinking-only reply',
+            body: 'When the model answered with only its reasoning and no visible text, the next message in that chat could be rejected by Anthropic. Those turns are no longer replayed, so the conversation keeps going.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'October 28, 2026',
     headline: 'Partwright 1.12.1 — parts survive bakes, plus API fixes',
     groups: [

@@ -6,6 +6,7 @@
 // preset suggestions like Front/Right/Back/Left/Top/Perspective (mainly useful
 // for reference photos). The label shows in the Gallery for image attachments.
 
+import { showLightbox } from './lightbox';
 import { getState, type SessionAttachment } from '../storage/sessionManager';
 import { generateId, PRESET_LABELS } from '../storage/db';
 import { normalizeAttachment, attachmentKindLabel } from '../storage/attachment';
@@ -140,7 +141,7 @@ function createImageTile(item: SessionAttachment, allImages: SessionAttachment[]
     img.className = 'w-full h-full object-contain';
     applyImageSrc(img, item.src);
     thumbContainer.appendChild(img);
-    thumbContainer.addEventListener('click', () => showLightbox(item.src, item.label || ''));
+    thumbContainer.addEventListener('click', () => showLightbox(item.src, item.label || '', { applySrc: applyImageSrc }));
     tile.appendChild(thumbContainer);
   } else {
     // Non-image: a file card with a type icon + media type.
@@ -408,45 +409,6 @@ export function showAttachImageModal(
   urlInput.focus();
 }
 
-function showLightbox(src: string, label: string): void {
-  const overlay = document.createElement('div');
-  overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm';
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) overlay.remove();
-  });
-
-  const container = document.createElement('div');
-  container.className = 'relative max-w-[90vw] max-h-[90vh] flex flex-col items-center';
-
-  const img = document.createElement('img');
-  img.className = 'max-w-full max-h-[85vh] object-contain rounded-lg shadow-2xl';
-  applyImageSrc(img, src);
-  container.appendChild(img);
-
-  if (label) {
-    const caption = document.createElement('div');
-    caption.className = 'text-sm text-zinc-300 font-mono mt-2';
-    caption.textContent = label;
-    container.appendChild(caption);
-  }
-
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'absolute -top-3 -right-3 w-8 h-8 rounded-full bg-zinc-700 text-zinc-300 hover:bg-zinc-600 flex items-center justify-center text-lg';
-  closeBtn.textContent = '\u00D7';
-  closeBtn.addEventListener('click', () => overlay.remove());
-  container.appendChild(closeBtn);
-
-  overlay.appendChild(container);
-  document.body.appendChild(overlay);
-
-  const onKey = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      overlay.remove();
-      document.removeEventListener('keydown', onKey);
-    }
-  };
-  document.addEventListener('keydown', onKey);
-}
 
 /** True for an inline `data:` image (the form the attach flow always stores —
  *  both file uploads and pasted URLs are fetched and inlined to `data:`). */

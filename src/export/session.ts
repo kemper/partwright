@@ -2,6 +2,7 @@
 
 import { exportSession, getState, type ExportedSession, type ExportOptions } from '../storage/sessionManager';
 import { downloadBlob } from './download';
+import { jsonToBlob } from './jsonBlob';
 import type { BuiltExport } from './gltf';
 
 /** Sanitize a session name into a filename-safe slug. Falls back to "session". */
@@ -27,7 +28,9 @@ export async function buildSessionJSON(
   const data = await exportSession(sessionId, options);
   if (!data) return null;
   const mimeType = 'application/json';
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: mimeType });
+  // Chunked: a single JSON.stringify of a large session exceeds the engine's
+  // max string length (RangeError: Invalid string length).
+  const blob = jsonToBlob(data, 2, mimeType);
   return {
     blob,
     filename: `${slugify(data.session.name)}.partwright.json`,

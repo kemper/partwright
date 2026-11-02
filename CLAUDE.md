@@ -362,13 +362,17 @@ All providers share the same chat loop (`src/ai/chatLoop.ts`), the same tool sch
 
 See `docs/ai-internals.md` for per-provider thinking/auto-continue wire-format details (thinking box, thought signatures, thinking level mappings, auto-continue implementation, OpenAI routing).
 
+#### Worker delegation
+
+On hosted providers the agent can call `delegateTask` to hand a measurable sub-task to a cheaper model of the same provider. That's Sonnet 5.5 under Opus, GPT-5 mini, or Gemini Flash. The worker runs a nested, in-memory `runTurn` with its own fresh context, step cap and $ cap, and only its report (plus last render) comes back. `src/ai/delegate.ts` holds the pure helpers and `runWorkerTask` in `chatLoop.ts` runs the worker; the step and spend limits live under the `ai.delegateToWorker` / `ai.workerMax*` settings. See `docs/ai-internals.md` → Worker delegation.
+
 #### Cross-provider review
 
 A "👁" button in the panel header opens `src/ui/aiReviewModal.tsx`. The user picks a **different** provider/model than the one driving the chat, optionally types a focus prompt, and the reviewer is sent the current code + geometry stats + 4-iso snapshot + session notes — plus (each a checkbox, on by default) the user's attached reference images and the user's **own** chat messages, never the agent's replies — only a compaction summary, labelled as agent-written, stands in for deleted early turns (`userConversation` in `src/ai/autoReview.ts`, budget `ai.reviewConversationMaxChars`) — via a single non-tool turn. The automatic end-of-task review sends the same extras (its "All your messages" setting). The response lands as a `'review'` `ChatBlock` rendered with a distinct purple-bordered bubble in the transcript AND a `[REVIEW from <provider> / <model>] …` session note (so the primary agent picks it up on its next turn via `getSessionContext()`).
 
 #### AI Call Log (per-provider diagnostics)
 
-A "🩺" button in the panel header opens `src/ui/aiDiagnosticsModal.ts`. Shows the last 50 provider API calls from an in-memory ring buffer (`src/ai/diagnostics.ts`): provider/model/kind, duration, status, full error messages (errors auto-expand), token usage, stop reason, request summary. Filter (all/errors/successes), Clear, Copy JSON. This is distinct from the app-wide **Diagnostic Log** (`src/diagnostics/errorLog.ts`, toolbar ⚠ button) which captures uncaught errors, intercepted `console.warn`/`console.error`, and every toast (see [User Messaging & the Diagnostic Log](#user-messaging--the-diagnostic-log)); the AI Call Log adds per-call detail (successes, tokens, the "empty_final" non-error case) the general log intentionally doesn't. To avoid double-listing, the AI Call Log mirrors to `console.info`/`console.debug` (not `warn`/`error`), and hard provider errors reach the app-wide log via `chatLoop`'s `onError → errorLog.capture({source:'ai'})`.
+A "🩺" button in the panel header opens `src/ui/aiDiagnosticsModal.ts`. Shows the last 50 provider API calls from a ring buffer (`src/ai/diagnostics.ts`, mirrored to the tab's `sessionStorage` so it survives a reload but not closing the tab): provider/model/kind, duration, status, full error messages (errors auto-expand), token usage incl. cache reads/writes, per-call cost, stop reason, request summary. Filter (all/errors/successes), Clear, Copy JSON. This is distinct from the app-wide **Diagnostic Log** (`src/diagnostics/errorLog.ts`, toolbar ⚠ button) which captures uncaught errors, intercepted `console.warn`/`console.error`, and every toast (see [User Messaging & the Diagnostic Log](#user-messaging--the-diagnostic-log)); the AI Call Log adds per-call detail (successes, tokens, the "empty_final" non-error case) the general log intentionally doesn't. For a whole chat's history (all reloads, any tab), the modal's **Download session trace** (also `/trace`, `partwright.getAiSessionTrace()`) exports the persisted chat plus per-call telemetry (`ChatMessage.call`, tool `durationMs`, compaction totals) via `src/ai/sessionTrace.ts` (pure builder) + `src/export/aiTrace.ts`. To avoid double-listing, the AI Call Log mirrors to `console.info`/`console.debug` (not `warn`/`error`), and hard provider errors reach the app-wide log via `chatLoop`'s `onError → errorLog.capture({source:'ai'})`.
 
 #### Slash commands
 
@@ -381,6 +385,7 @@ The AI chat input supports `/command` shortcuts (`src/ai/slashCommands.ts`). A l
 | `/repair` (alias `/fix`) | Repair corrupted tool history (orphaned tool calls) so a chat wedged on a provider 400 can send again |
 | `/review` | Open the cross-provider review modal |
 | `/export` | Download the conversation as Markdown |
+| `/trace` | Download the chat as a JSON session trace (tool calls, thinking, per-call tokens/cache/cost) for analysis |
 | `/models` (alias `/settings`) | Open AI settings modal |
 | `/portrait` (alias `/bust`) | Prefill a prompt to model a stylized 3D bust from a photo you attach |
 | `/reconstruct` (alias `/convert`) | Prefill a prompt to reverse-engineer an imported mesh into editable code |

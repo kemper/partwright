@@ -15,6 +15,7 @@
 // so the same checks apply to console/MCP callers, not just the model.
 
 import { ASK_USER_TOOL, CARD_TOOL_ACK, PROPOSE_PLAN_TOOL } from './planReply';
+import { planEstimateInputError } from './planEstimate';
 import { detectorIds, paramsJsonSchema } from '../segmentation/registry';
 import type { ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
@@ -74,7 +75,7 @@ export const SUBDOC_NAMES_LIST = [
   'fasteners', 'joints', 'gears', 'threads', 'reference-images', 'file-io', 'annotations',
   'printing', 'relief', 'textures', 'mechanisms', 'iteration-workflow', 'gotchas',
   'visual-verification', 'spending', 'manifold-api', 'reconstruction', 'deform', 'segmentation', 'ui-control',
-  'enclosure', 'knurl', 'headform',
+  'enclosure', 'knurl', 'headform', 'feasibility',
   // Deprecated: 'print-fit' split into 'fasteners' + 'joints'. Kept so an older
   // cached prompt requesting it gets the redirect stub instead of an error.
   'print-fit',
@@ -125,6 +126,16 @@ const normalConeSchema = (description: string) => ({
   required: ['axis', 'angleDeg'],
 });
 const AXIS_SCHEMA = { type: 'string', enum: ['x', 'y', 'z'] };
+/** renderView/renderViews zoom keys; probePixel views repeat them to match. */
+const VIEW_FOCUS_PROPS = {
+  focus: {
+    type: 'object',
+    description: 'Zoom onto a small feature instead of framing the whole model: {part:"name"} (a labelled part — listObjectParts), {piece:i}, or a world box {min:[x,y,z], max:[x,y,z]}.',
+    properties: { part: { type: 'string' }, piece: { type: 'integer' }, min: VEC3_SCHEMA, max: VEC3_SCHEMA },
+  },
+  padding: { type: 'number', description: 'Margin around focus as a fraction of its largest side (default 0.15, an Advanced Setting).' },
+  clip: { type: 'boolean', description: 'With focus: hide everything outside the focus box, so nearer geometry (a lip, a mask) cannot block the view. Use to look into sockets and slots.' },
+};
 
 const ALL_TOOLS: ToolDefinition[] = [
   {
@@ -425,12 +436,13 @@ const ALL_TOOLS: ToolDefinition[] = [
         pixel: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2, description: '[x, y] pixel position. (0, 0) is top-left.' },
         view: {
           type: 'object',
-          description: 'Camera spec. MUST match the renderView call that produced the image — same elevation, azimuth, ortho, size.',
+          description: 'Camera spec. MUST match the renderView call that produced the image — same elevation, azimuth, ortho, size, and focus/padding/clip if used.',
           properties: {
             elevation: { type: 'number' },
             azimuth: { type: 'number' },
             ortho: { type: 'boolean' },
             size: { type: 'integer', description: 'Image size in px. Omit only if the renderView call omitted it too (both then use your render budget size).' },
+            ...VIEW_FOCUS_PROPS,
           },
         },
       },
@@ -446,12 +458,13 @@ const ALL_TOOLS: ToolDefinition[] = [
         pixels: { type: 'array', items: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 }, description: '[[x, y], ...] pixel positions. (0, 0) is top-left.' },
         view: {
           type: 'object',
-          description: 'Camera spec. MUST match the renderView call that produced the image — same elevation, azimuth, ortho, size.',
+          description: 'Camera spec. MUST match the renderView call that produced the image — same elevation, azimuth, ortho, size, and focus/padding/clip if used.',
           properties: {
             elevation: { type: 'number' },
             azimuth: { type: 'number' },
             ortho: { type: 'boolean' },
             size: { type: 'integer', description: 'Image size in px. Omit only if the renderView call omitted it too (both then use your render budget size).' },
+            ...VIEW_FOCUS_PROPS,
           },
         },
       },
@@ -526,6 +539,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         size: { type: 'integer', description: 'Pixel size of the rendered square. Default: your render budget (256 / 384 / 512 px by spending mode); the result label states the size used — pass that same size to probePixel. Larger costs more tokens.' },
         edges: { type: 'string', enum: [...EDGE_MODES], description: 'Edge overlay style. "crease" (default for uncolored models) draws only feature edges — corners and the silhouette — so the shape reads cleanly without facet noise on curves. "none" is a plain shaded surface (best when reading painted colors; the default for painted models). "wireframe" draws every triangle edge — use only to inspect tessellation or debug a failed boolean.' },
         reference: { type: 'boolean', description: 'Draw the setReferenceGeometry ghost (translucent, depth-tested: it shows where it pokes through the model). Default true when a reference is set; false hides it.' },
+        ...VIEW_FOCUS_PROPS,
       },
     },
   },
@@ -540,6 +554,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         size: { type: 'integer', description: 'Pixel size per cell. Default: your render budget (256 / 384 / 512 px by spending mode). Raise to 512-768 for a high-resolution final check; larger costs more tokens.' },
         edges: { type: 'string', enum: [...EDGE_MODES], description: 'Edge overlay applied to every tile. "crease" (default for uncolored models) draws only feature edges — corners and silhouette — so shape reads cleanly without facet noise on curves. "none" is a plain shaded surface (best for reading painted colors; default for painted models). "wireframe" draws every triangle edge — use only to inspect tessellation or debug a failed boolean.' },
         reference: { type: 'boolean', description: 'Draw the setReferenceGeometry ghost (translucent, depth-tested: it shows where it pokes through the model). Default true when a reference is set; false hides it.' },
+        ...VIEW_FOCUS_PROPS,
       },
     },
   },
@@ -1154,7 +1169,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'modifyAndTest',
-    description: 'Apply string substitution(s) to the current editor code, run the result, and return stats — WITHOUT saving a version or changing the editor. Use to test a tweak before committing. Provide either a single `find`/`replace` pair or a `patches` array for multiple simultaneous substitutions; each `find` must match exactly once or the call errors (no silent no-op). Returns {modifiedCode, codeDiff: {changed, added, removed, diff}, stats, passed?, failures?} — check codeDiff.changed to confirm the tweak actually altered the code.',
+    description: 'Apply string substitution(s) to the current editor code, run the result, and return stats — WITHOUT saving a version or changing the editor. Use to test a tweak before committing. Provide either a single `find`/`replace` pair or a `patches` array for multiple simultaneous substitutions; each `find` must match exactly once or the call errors (no silent no-op). Returns {modifiedCode, codeDiff: {changed, added, removed, diff}, stats, passed?, failures?, logs?} — check codeDiff.changed to confirm the tweak actually altered the code; logs is the patched code\'s console output.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1236,7 +1251,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'changeObject',
-    description: "Switch the active object — i.e. change what the USER sees in the editor/viewport. Address it by name, id (from listObjects), or 0-based index. Loads that object's latest version. You usually do NOT need this just to work on a different object: every object-scoped tool (getCode, runCode, runAndSave, paint*, getGeometryData, …) takes an optional `object` target that addresses an object directly. Use changeObject only when you want to move the user's focus, or to reset the editor to an object's latest saved version.",
+    description: "Switch the active object — i.e. change what the USER sees in the editor/viewport. Address it by name, id (from listObjects), or 0-based index. Like the user clicking it: unsaved edits on the open object are saved first, and the target opens at its latest version plus any unsaved draft. You usually do NOT need this just to work on a different object: every object-scoped tool (getCode, runCode, runAndSave, paint*, getGeometryData, …) takes an optional `object` target that addresses an object directly. Use changeObject only to move the user's focus; to go back to a saved version use loadVersion.",
     input_schema: {
       type: 'object',
       properties: {
@@ -1898,7 +1913,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'thicknessMap',
-    description: 'Wall-thickness map of the current model: EVERY triangle\'s distance straight through the solid to the opposite wall (exact on flat walls, a close estimate on curved ones — checkPrintability only samples a few hundred). Returns the thinnest wall and where, the median, how much surface is below `threshold` (default 2 × the printer nozzle width), and the thin SPOTS — connected thin areas, thinnest first, each with { center, thinnest, thickness, area, triangleCount } — so you can thicken exactly those places. render: true adds a heatmap image (red ≤ ½·threshold, yellow at the threshold, grey ≥ 2·threshold).',
+    description: 'Wall thickness under EVERY triangle of the current model (checkPrintability only samples). Returns the thinnest wall and where, the median, the share below `threshold`, and the thin SPOTS (connected areas, thinnest first: center, thinnest, thickness, area) to thicken. render: true adds a heatmap (red ≤ ½·threshold, yellow at it, grey ≥ 2×).',
     input_schema: {
       type: 'object',
       properties: {
@@ -2391,7 +2406,7 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: 'renderSection',
-    description: 'Render a CROSS-SECTION image of the current model cut along any axis — see inside: wall thickness, cavities, internal supports, a press-fit gap. axis x | y | z (default z); offset = where along that axis to cut (default: the middle of the model). The image reads like the matching view: a y cut is seen from the front (+X right, +Z up), an x cut from the right (+Y right, +Z up), a z cut from above (+X right, +Y up); it is captioned, has labelled axis arrows and a scale bar, and outlines the setReferenceGeometry ghost (dashed green) when one is set. Returns the image plus { axis, offset, area, contours, view: {right, up, from}, boundingBox (in those image axes), referenceContours? } (contours > 1 = hollow or several pieces). sliceAtZVisual is the z-only shortcut.',
+    description: 'CROSS-SECTION image of the current model along any axis — see walls, cavities, a press-fit gap. offset defaults to the middle. Oriented like the matching view (y from the front, x from the right, z from above), with a caption, axis arrows, a scale bar, and the reference ghost dashed. Returns the image + { area, contours, view: {right, up, from}, boundingBox (image axes), referenceContours? }; contours > 1 = hollow or several pieces.',
     input_schema: {
       type: 'object',
       properties: {
@@ -2540,13 +2555,27 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: PROPOSE_PLAN_TOOL,
-    description: 'Present your plan as a card the user can build, revise or discard. Plan mode only. This ENDS your turn. Keep it concrete: a short summary of what you will make, the ordered steps you will take, and the assumptions you made so the user can correct them. If you need answers before you can plan well, call askUser instead.',
+    description: 'Present your plan as a card the user can build, revise or discard. Plan mode only. This ENDS your turn. Keep it concrete: a short summary of what you will make, the ordered steps you will take, and the assumptions you made so the user can correct them. Always include an honest `estimate` — the build is stopped for the user\'s go-ahead at roundsMax, so an optimistic estimate only means an earlier checkpoint. If you need answers before you can plan well, call askUser instead.',
     input_schema: {
       type: 'object',
       properties: {
         summary: { type: 'string', description: 'One short paragraph: what you will build and the overall approach.' },
         steps: { type: 'array', minItems: 1, items: { type: 'string' }, description: 'The concrete steps, in order.' },
         assumptions: { type: 'array', items: { type: 'string' }, description: 'Defaults you chose that the user may want to change.' },
+        estimate: {
+          type: 'object',
+          description: 'How likely this is to land. A round = one of your tool round-trips while building.',
+          properties: {
+            difficulty: { type: 'string', enum: ['easy', 'medium', 'hard', 'research'], description: 'For this app and its tools: research = no known reliable route.' },
+            confidence: { type: 'integer', minimum: 0, maximum: 100, description: 'Chance (%) of reaching `quality` within roundsMax.' },
+            roundsMin: { type: 'integer', minimum: 1, maximum: 200 },
+            roundsMax: { type: 'integer', minimum: 1, maximum: 200, description: 'Realistic upper bound, including verification and fixes.' },
+            quality: { type: 'string', description: 'What the result will realistically look like (e.g. "clean blockout", "close to the photo").' },
+            gaps: { type: 'array', items: { type: 'string' }, description: 'Tools missing or weak for this task.' },
+            risks: { type: 'array', items: { type: 'string' }, description: 'What is most likely to go wrong.' },
+          },
+          required: ['difficulty', 'roundsMin', 'roundsMax'],
+        },
       },
       required: ['summary', 'steps'],
     },
@@ -2555,12 +2584,24 @@ Returns { ok, stats, metrics, version } or { error }.`,
   // Kept in one contiguous block; gated in the sets below.
   {
     name: 'listAnnotations',
-    description: 'Read the marks the USER drew on the model with the Annotate tool (✏️): freehand strokes and pinned text labels, with their 3D positions. Call this when the user says "here", "this part", "where I marked", or after they annotate — it locates what they pointed at without a render. Returns { count, strokes: [{id, color, width, pointCount, bbox, centroid, points (downsampled), camera}], texts: [{id, text, color, anchor, camera}] }. Annotations are a feedback layer, not geometry: infer the feature under each point (probeRay / findFaces / listLabels) and confirm your reading with the user before editing.',
+    description: 'Read the marks the USER drew on the model with the Annotate tool (✏️): freehand strokes and pinned text labels, with their 3D positions. Call this when the user says "here", "this part", "where I marked", or after they annotate — it locates what they pointed at without a render. Returns { count, strokes: [{id, color, width, pointCount, bbox, centroid, points (downsampled), camera}], texts: [{id, text, color, anchor, camera}], views: [{id, title, summary, createdAt, attached}] }. `views` are frames the user saved with their exact camera (Snapshot style) — call viewAnnotationView to see one. Annotations are a feedback layer, not geometry: infer the feature under each point (probeRay / findFaces / listLabels) and confirm your reading with the user before editing.',
     input_schema: {
       type: 'object',
       properties: {
         maxPointsPerStroke: { type: 'integer', minimum: 0, maximum: 500, description: 'Downsample each stroke polyline to at most this many points (endpoints kept). 0 omits points entirely (bbox/centroid are still returned). Default 16.' },
       },
+    },
+  },
+  {
+    name: 'viewAnnotationView',
+    description: 'See an annotation view the USER saved with the Annotate tool (ids from listAnnotations().views, or an "[Annotation view …]" line in their message): the frame they marked up from their exact camera, plus what each mark points at — hits[] {parts (labelled parts under the mark, most-hit first), centroid, bbox in world units, hits/samples} and marks2D (normalized image positions; closed: true = a loop around something). Pass fresh: true to render the CURRENT model from that same camera with their marks on top, to check your change from the angle they flagged.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Annotation view id (av_…).' },
+        fresh: { type: 'boolean', description: 'Render the current model from the saved camera instead of returning the frame the user saw. Default false.' },
+      },
+      required: ['id'],
     },
   },
   {
@@ -2733,11 +2774,32 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   'extractObjectPiece', 'extractObjectParts', 'reassignPaint', 'partAction', 'undoPartEdit',
 ]);
 
+/** Read-only object-targetable tools. When one targets an object other than
+ *  the open one, focus returns to the user's object (and version) afterwards,
+ *  so an agent inspecting a sibling doesn't leave the user looking at it
+ *  (#1197). Left out on purpose: tools that change an object (the user should
+ *  see the change), and reads whose answer feeds a follow-up call on the same
+ *  object — triangle ids (findFaces, getPartTriangles), region ids
+ *  (listRegions, paintExplain), piece indices (getObjectPartInfo), surface
+ *  points (probe*, partBoundary) — so an untargeted paint right after still
+ *  lands on the object those ids belong to. */
+export const FOCUS_RETURNING_TOOLS = new Set<string>([
+  'getActiveLanguage', 'getCode', 'getParams', 'getGeometryData', 'getMeshSummary', 'getFeatureCentroids',
+  'listVersions', 'getModelDrift', 'diffVersions', 'modifyAndTest', 'query', 'listComponents',
+  'listLabels', 'getModelColors', 'assertPaint', 'sliceAtZVisual', 'renderSection',
+  'checkPrintability', 'thicknessMap', 'renderView', 'renderViews',
+]);
+
+/** Bumped on every executeTool call, so a focus return that finishes late (its
+ *  read outlived the agent's tool timeout) can tell a newer call has started
+ *  and must not be switched away from under it. */
+let toolCallGeneration = 0;
+
 // The shared `object` target schema, injected into every targetable tool so the
 // description stays in one place. Typeless on purpose — it accepts a name/id
 // string OR a 0-based index number (resolvePartTarget in main.ts handles both).
 const OBJECT_TARGET_PROP = {
-  description: 'Optional. The OBJECT to act on — addressed by its name, its id (from listObjects), or its 0-based index. Defaults to the current object. Pass this to target a specific object directly instead of relying on the current selection; it also makes a separate changeObject call unnecessary. Switching focus to the object is visible to the user.',
+  description: 'Optional. The OBJECT to act on — its name, id (from listObjects), or 0-based index. Defaults to the current object. Pass it instead of relying on the current selection or a separate changeObject call. Read-only tools (renders, queries) switch back to the user\'s object afterwards; tools that change the object leave it focused.',
 };
 for (const tool of ALL_TOOLS) {
   if (OBJECT_TARGETABLE_TOOLS.has(tool.name) && !('object' in tool.input_schema.properties)) {
@@ -2842,6 +2904,7 @@ const ALWAYS_AVAILABLE = new Set([
   'evalAgainstImport',
   // #1085: reads + metadata setters wrapping existing window.partwright methods.
   'listAnnotations',
+  'viewAnnotationView',
   'diffVersions',
   'getMeasurement',
   'getViewState',
@@ -2975,7 +3038,7 @@ const PLAN_MODE_TOOLS = new Set([
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
   'evalAgainstImport',
   // #1085 pure reads.
-  'listAnnotations', 'diffVersions', 'getMeasurement', 'getViewState',
+  'listAnnotations', 'viewAnnotationView', 'diffVersions', 'getMeasurement', 'getViewState',
   'getPalette', 'getUnits', 'listSessions',
   'getCurvatureQuality', 'getAppConfig', 'getDiagnosticLog',
   'getUiState',
@@ -3007,7 +3070,7 @@ export const RETRY_SAFE_TOOLS = new Set([
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
   'evalAgainstImport',
   // #1085 pure reads.
-  'listAnnotations', 'diffVersions', 'getMeasurement', 'getViewState',
+  'listAnnotations', 'viewAnnotationView', 'diffVersions', 'getMeasurement', 'getViewState',
   'getPalette', 'getUnits', 'listSessions',
   'getUiState', 'listCatalog',
   // Visual-only view state; re-applying it is idempotent.
@@ -3048,7 +3111,8 @@ export function isModelChangingTool(name: string, input?: Record<string, unknown
   if (name === 'renameVersion') return false;
   // editPalette is paint-gated but edits the spool list, not the model.
   if (name === 'editPalette') return false;
-  return name === 'runCode' || name === 'setCode' || name === 'setParams' || SAVE_GATED.has(name) || PAINT_GATED.has(name);
+  // A delegated worker edits and saves the model on the main agent's behalf.
+  return name === 'delegateTask' || name === 'runCode' || name === 'setCode' || name === 'setParams' || SAVE_GATED.has(name) || PAINT_GATED.has(name);
 }
 
 /** Where the AI's importFromUrl lands when the model names no target: a new
@@ -3096,7 +3160,7 @@ export function describeToolConfirmation(name: string, input: Record<string, unk
  *  vision spend in one place — when off, the agent has to reason from
  *  code + stats alone. runIsolated is here because its primary value is
  *  the thumbnail; without vision it degrades to just the stats. */
-const VIEWS_GATED = new Set(['renderView', 'renderViews', 'runIsolated', 'renderSection']);
+const VIEWS_GATED = new Set(['renderView', 'renderViews', 'runIsolated', 'renderSection', 'viewAnnotationView']);
 // `finish` only exists in auto-continue mode — it's the sentinel the model
 // calls to end a turn (otherwise the loop resumes it). Off-mode never offers
 // it, so off-mode behavior is unchanged.
@@ -3340,24 +3404,25 @@ function matchObjectRow(objects: ObjectRow[], target: string | number): ObjectRo
  *  last selected in the object list. `target` is an object name, id, or 0-based
  *  index (mirrors resolvePartTarget on the API side). No-op when the target is
  *  already current — which avoids reloading the object and clobbering any
- *  in-progress editor draft on it. Returns an error string on a bad target, or
- *  null on success. */
-async function focusTargetObject(api: PartwrightAPI, target: string | number): Promise<string | null> {
+ *  in-progress editor draft on it. Returns `{ error }` on a bad target, else
+ *  where focus was before (`previous`, null when nothing switched). */
+type FocusSpot = { id: string; version: number | null };
+async function focusTargetObject(api: PartwrightAPI, target: string | number): Promise<{ error: string } | { previous: FocusSpot | null }> {
   const objects = api.listObjects() as ObjectRow[] | undefined;
   if (!Array.isArray(objects) || objects.length === 0) {
-    return `Cannot target object ${JSON.stringify(target)}: no active session with objects. Open a session first.`;
+    return { error: `Cannot target object ${JSON.stringify(target)}: no active session with objects. Open a session first.` };
   }
   if (typeof target === 'number' && (!Number.isInteger(target) || target < 0)) {
-    return `Cannot target object: index must be a non-negative integer (got ${JSON.stringify(target)}).`;
+    return { error: `Cannot target object: index must be a non-negative integer (got ${JSON.stringify(target)}).` };
   }
   const match = matchObjectRow(objects, target);
-  if (!match) return `Cannot target object ${JSON.stringify(target)}: no matching object (by name, id, or index). Call listObjects() to see what's available.`;
-  if (match.isCurrent) return null; // already focused — don't reload and clobber an in-progress edit
-  const switched = await api.changeObject(match.id) as { error?: string } | undefined;
+  if (!match) return { error: `Cannot target object ${JSON.stringify(target)}: no matching object (by name, id, or index). Call listObjects() to see what's available.` };
+  if (match.isCurrent) return { previous: null }; // already focused — don't reload and clobber an in-progress edit
+  const switched = await api.changeObject(match.id) as { error?: string; previous?: FocusSpot | null } | undefined;
   if (switched && typeof switched === 'object' && 'error' in switched && switched.error) {
-    return `Cannot target object ${JSON.stringify(target)}: ${switched.error}`;
+    return { error: `Cannot target object ${JSON.stringify(target)}: ${switched.error}` };
   }
-  return null;
+  return { previous: switched?.previous ?? null };
 }
 
 /** Dispatches a tool call to window.partwright and stringifies the result.
@@ -3390,7 +3455,7 @@ function proposePlanInputError(input: Record<string, unknown>): string | null {
   if (input.assumptions !== undefined && (!Array.isArray(input.assumptions) || input.assumptions.some(s => typeof s !== 'string'))) {
     return 'proposePlan: `assumptions` must be an array of strings.';
   }
-  return null;
+  return planEstimateInputError(input.estimate);
 }
 
 export async function executeTool(name: string, rawInput: Record<string, unknown>): Promise<ToolExecResult> {
@@ -3433,6 +3498,10 @@ export async function executeTool(name: string, rawInput: Record<string, unknown
       delete input.scope;
     }
     const api = getApi();
+    const generation = ++toolCallGeneration;
+    // Set when a read-only tool switched focus to another object: where to
+    // switch back to, and the object it switched to.
+    let returnFocus: { to: FocusSpot; from: string } | null = null;
     // Object addressing: an object-scoped tool may name an `object` target (name,
     // id, or 0-based index; `part` is the pre-rename spelling, still accepted).
     // Switch focus to it before running so the op acts on the addressed object —
@@ -3446,40 +3515,72 @@ export async function executeTool(name: string, rawInput: Record<string, unknown
       delete input.object;
       if (!ownsPart) delete input.part;
       if (target != null) {
-        const focusErr = await focusTargetObject(api, target);
-        if (focusErr) return { content: focusErr, isError: true };
+        const focus = await focusTargetObject(api, target);
+        if ('error' in focus) return { content: focus.error, isError: true };
+        const after = currentObjectId(api);
+        if (FOCUS_RETURNING_TOOLS.has(name) && focus.previous && after && after !== focus.previous.id) {
+          returnFocus = { to: focus.previous, from: after };
+        }
       }
     }
-    // Tools that ship images back to the model bypass the generic JSON
-    // dispatch — they need the data-URL → multimodal-image wrapping.
-    if (name === 'renderView') return executeRenderView(api, input);
-    if (name === 'renderViews') return await executeRenderViews(api, input);
-    if (name === 'thicknessMap') return await executeThicknessMap(api, input);
-    if (name === 'runIsolated') return await executeRunIsolated(api, input);
-    if (name === 'sliceAtZVisual') return await executeSliceAtZVisual(api, input);
-    if (name === 'getReferenceImages') return await executeGetReferenceImages(api);
-    if (name === 'getAttachments') return executeGetAttachments(api);
-
-    const result = await dispatch(api, name, input);
-    if (result === undefined) return { content: '(ok)', isError: false };
-    if (typeof result === 'string') return { content: result, isError: false };
-    // If a dispatch returned an object that already looks like our
-    // ToolExecResult shape (image-bearing), pass it through. Otherwise
-    // serialize normally.
-    if (result && typeof result === 'object' && 'content' in (result as Record<string, unknown>) && 'isError' in (result as Record<string, unknown>)) {
-      return result as ToolExecResult;
+    let result: ToolExecResult;
+    try {
+      result = await runTool(api, name, input);
+    } catch (err) {
+      result = { content: err instanceof Error ? err.message : String(err), isError: true };
     }
-    // A value-returning API method reports failure as `{ error }` instead of
-    // throwing (ai.md#argument-validation): flag it as an error result so the
-    // model and the loop (finishBatchErrored) see a failure, as they did when
-    // the same bad input threw. Auto-retry still only re-runs TRANSIENT failures.
-    const failed = typeof result === 'object' && result !== null && !Array.isArray(result)
-      && typeof (result as { error?: unknown }).error === 'string';
-    return { content: JSON.stringify(result, null, 2), isError: failed };
+    // Switch back only when nothing moved focus meanwhile (the user clicking
+    // an object) and no newer tool call has started — never yank the user,
+    // or a later call, off the object they're on.
+    if (returnFocus && generation === toolCallGeneration && currentObjectId(api) === returnFocus.from) {
+      const back = await api.changeObject(returnFocus.to.id, returnFocus.to.version != null ? { version: returnFocus.to.version } : undefined) as { error?: string; name?: string } | undefined;
+      if (back && !back.error) {
+        const fromName = (api.listObjects() as ObjectRow[]).find(o => o.id === returnFocus!.from)?.name ?? returnFocus.from;
+        result.content += `\n\n(Focus went back to the user's object "${back.name}". Pass object: ${JSON.stringify(fromName)} again on follow-up calls about ${JSON.stringify(fromName)}.)`;
+      }
+    }
+    return result;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { content: msg, isError: true };
   }
+}
+
+/** The id of the object open in the editor, or null with no session. */
+function currentObjectId(api: PartwrightAPI): string | null {
+  const objects = api.listObjects() as ObjectRow[] | undefined;
+  return Array.isArray(objects) ? objects.find(o => o.isCurrent)?.id ?? null : null;
+}
+
+/** Run one tool on the focused object (executeTool has already resolved its
+ *  object target). */
+async function runTool(api: PartwrightAPI, name: string, input: Record<string, unknown>): Promise<ToolExecResult> {
+  // Tools that ship images back to the model bypass the generic JSON
+  // dispatch — they need the data-URL → multimodal-image wrapping.
+  if (name === 'renderView') return executeRenderView(api, input);
+  if (name === 'renderViews') return await executeRenderViews(api, input);
+  if (name === 'thicknessMap') return await executeThicknessMap(api, input);
+  if (name === 'runIsolated') return await executeRunIsolated(api, input);
+  if (name === 'sliceAtZVisual') return await executeSliceAtZVisual(api, input);
+  if (name === 'getReferenceImages') return await executeGetReferenceImages(api);
+  if (name === 'getAttachments') return executeGetAttachments(api);
+
+  const result = await dispatch(api, name, input);
+  if (result === undefined) return { content: '(ok)', isError: false };
+  if (typeof result === 'string') return { content: result, isError: false };
+  // If a dispatch returned an object that already looks like our
+  // ToolExecResult shape (image-bearing), pass it through. Otherwise
+  // serialize normally.
+  if (result && typeof result === 'object' && 'content' in (result as Record<string, unknown>) && 'isError' in (result as Record<string, unknown>)) {
+    return result as ToolExecResult;
+  }
+  // A value-returning API method reports failure as `{ error }` instead of
+  // throwing (ai.md#argument-validation): flag it as an error result so the
+  // model and the loop (finishBatchErrored) see a failure, as they did when
+  // the same bad input threw. Auto-retry still only re-runs TRANSIENT failures.
+  const failed = typeof result === 'object' && result !== null && !Array.isArray(result)
+    && typeof (result as { error?: unknown }).error === 'string';
+  return { content: JSON.stringify(result, null, 2), isError: failed };
 }
 
 /** Returns an error message when the supplied code clearly doesn't match
@@ -3661,7 +3762,7 @@ function executeRenderView(api: PartwrightAPI, input: Record<string, unknown>): 
   // Mirror the budget-driven default size applied in window.partwright.renderView
   // so the label reports the size actually rendered.
   const size = (input.size as number | undefined) ?? getRenderBudget().defaultPx;
-  const label = `view: elev=${elevation}°, az=${azimuth}°${ortho ? ', ortho' : ''}, ${size}px`;
+  const label = `view: elev=${elevation}°, az=${azimuth}°${ortho ? ', ortho' : ''}, ${size}px${input.focus ? `, focus ${JSON.stringify(input.focus)}${input.clip ? ' (clipped)' : ''}` : ''}`;
   return wrapImageResult(result, 'renderView', label);
 }
 
@@ -3675,7 +3776,8 @@ async function executeRenderViews(api: PartwrightAPI, input: Record<string, unkn
   const label = angles && angles.length > 0
     ? `views: ${angles.length} custom angles (${size}px per cell)`
     : `views: ${views} composite (${size}px per cell)`;
-  return wrapImageResult(result, 'renderViews', label);
+  const focus = input.focus ? `, focus ${JSON.stringify(input.focus)}${input.clip ? ' (clipped)' : ''}` : '';
+  return wrapImageResult(result, 'renderViews', label + focus);
 }
 
 async function executeRunIsolated(api: PartwrightAPI, input: Record<string, unknown>): Promise<ToolExecResult> {
@@ -4314,11 +4416,29 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
         : 16;
       const strokes = (api.listAnnotations() as AnnotationStroke[] | undefined) ?? [];
       const texts = (api.listTextAnnotations() as unknown[] | undefined) ?? [];
+      const views = (api.listAnnotationViews?.() as { id: string; title: string; summary: string; createdAt: number; attachedAt?: number }[] | undefined) ?? [];
       return {
         count: api.getAnnotationCount(),
         strokes: strokes.map(s => summarizeStroke(s, maxPts)),
         texts,
+        views: views.map(v => ({ id: v.id, title: v.title, summary: v.summary, createdAt: v.createdAt, attached: v.attachedAt !== undefined })),
       };
+    }
+    case 'viewAnnotationView': {
+      if (typeof input.id !== 'string') return { error: 'viewAnnotationView: `id` must be a string.' };
+      const v = api.getAnnotationView(input.id, { includeImage: true }) as Record<string, unknown> | null;
+      if (!v || 'error' in v) return v;
+      const { image: frame, ...meta } = v as { image?: string } & Record<string, unknown>;
+      let src = frame;
+      if (input.fresh === true) {
+        const r = api.renderAnnotationView(input.id) as { image?: string; error?: string };
+        if (r.error) return r;
+        src = r.image;
+      }
+      const img = typeof src === 'string' ? parseImageDataUrl(src) : null;
+      if (!img) return meta;
+      const label = `${String(meta.title)}${input.fresh === true ? ' (current model, same camera)' : ''}`;
+      return { content: JSON.stringify(meta), isError: false, image: { ...img, label } };
     }
     case 'diffVersions': {
       const wantGeometry = input.geometry === true || input.heatmap === true;
