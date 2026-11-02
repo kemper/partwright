@@ -290,11 +290,11 @@ than this fraction of their piece go back across the seam), `label`.
 - **`clearance` is a real gap on every seam type.** Medial cuts are measured along the cut, and the clearance comes off the neighbour's side, so the piece keeps its exact surface.
 - **In code** it's `api.splitParts(m, opts)` with the same options (`flatTolerance` too). It works on any labelled manifold-js shape, so you can call it on `api.label` parts too. The run's log line `[splitParts] {…}` is the report.
 - **One object per piece:** a saved split is one object of separate solids. Export it with `split: 'parts'`. To get a separate object per piece in the session, use `extractObjectParts({ parts: [...], separate: true })`.
-- **Cost:** each cut samples a lattice over its part's box (up to `resolution`³ points) and does two booleans on the remaining mesh. For scale, NED, an 11-piece figure at about 400k triangles, took about 150 s and peaked at about 1.5 GB of engine memory per split. Simplify dense scans first (`simplifyModel`, about 400k triangles keeps eye and finger detail), and settle the parts before you start re-running splits, because each run pays the full cost again.
+- **Cost:** each cut samples a lattice over its part's box (up to `resolution`³ points) and does two booleans on the remaining mesh. For scale, an 11-piece sculpted figure at about 400k triangles took about 150 s and peaked at about 1.5 GB of engine memory per split. Simplify dense scans first (`simplifyModel`, about 400k triangles keeps eye and finger detail), and settle the parts before you start re-running splits, because each run pays the full cost again.
 
 ### Recipe: a fused figurine
 
-This worked on NED, a sculpted figure with head, arms along the belly, legs, a tail, eyes and fins:
+This worked on a sculpted figure with head, arms along the belly, legs, a tail, eyes and fins:
 
 1. **Simplify** the import to about 400k triangles. Check it's still manifold.
 2. **Limbs and torso first:** seeded `thickness`, with one or two seeds per piece. Add extra torso seeds where neighbours would leak in: at the crotch and under each buttock, or the legs and tail spill into the torso.

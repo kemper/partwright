@@ -114,7 +114,7 @@ test.describe('split into printable pieces', () => {
       const api = (window as unknown as { partwright: PW }).partwright;
       await api.createSession('split-shells');
       // The figure plus a fin sunk into the head (a separate shell, like
-      // NED's fins) and a free-standing badge.
+      // a figure's fins) and a free-standing badge.
       const code = figure.replace('return body.add(head).add(arm).add(eye);', [
         'const fused = body.add(head).add(arm).add(eye);',
         "const fin = api.label(Manifold.cube([3, 10, 8], true).translate([13.5, 0, 34]), 'fin');",

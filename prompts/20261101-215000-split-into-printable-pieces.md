@@ -6,14 +6,14 @@ tools: [subagent, model-preview, playwright]
 
 ## Human
 
-My AI agent tried to chop up the NED_V2 3MF figure for printing and failed:
+My AI agent tried to chop up a 3MF figure for printing and failed:
 it cut with hand-placed planes and guessed cylinders, never used detectParts,
 left jagged arm skin on the torso and cut through the eyes. Its feedback asked
 for: segment-first instructions, a "split by part" tool with smooth seams, a
 cut preview with stray-fragment list, a groove finder, cheap single-piece
 renders, and using annotations. [Attached: the failed 11-object 3MF.] What
 should we build? — Then: create the new tools as recommended, have an agent use
-them to do a high-quality split of NED from Google Drive, and fix the
+them to do a high-quality split of the figure from Google Drive, and fix the
 instructions as needed.
 
 ## Assistant
@@ -91,7 +91,7 @@ wrapper and six kernel/UI issues; all fixed with regression tests:
   restores the code; the modal reports a split that ran but didn't save.
 - Preview spread moved to `ui.splitPreviewExplode` (Advanced Settings).
 
-## Assistant (NED run follow-up)
+## Assistant (figure run follow-up)
 
 The user's 46 MB source model couldn't come through the Drive connector (10 MB
 cap); their "anyone with the link" Drive URL downloaded directly. An agent then
@@ -103,7 +103,7 @@ Bambu export — 11 clean, assemblable pieces.
 Fixes from what that run hit:
 - **Separate shells**: splitParts now handles each physically separate shell
   on its own. A shell carrying 2+ pieces is cut; a shell belonging to one
-  piece (NED's fins) passes through, and if it's sunk into a neighbour it is
+  piece (the figure's fins) passes through, and if it's sunk into a neighbour it is
   trimmed back to that surface (`trimOverlaps`, default true) with its trimmed
   faces relabelled. Cutting the fins against the ear they were sunk into had
   carved whole ears; leaving them out dropped them as "fragments".
@@ -116,7 +116,7 @@ Pre-existing bugs the run surfaced were filed rather than widened into this
 PR (#1221 black paint exports blue, #1222 smooth-edge accept scrambles
 imported paint, #1223 seam-polish / inspection follow-ups).
 
-The rerun of NED through the official `splitIntoPieces` (fins left to the new
+The rerun of the figure through the official `splitIntoPieces` (fins left to the new
 separate-shell path) matched the agent's manual workaround piece-for-piece and
 peaked at 1.46 GB instead of 3.1 GB. Docs now describe separate shells and
 `trimOverlaps`, and an e2e test covers a sunk fin plus a free-standing shell.
@@ -128,7 +128,7 @@ feedback on the process?
 
 ## Assistant
 
-Asked the NED agent for a process retrospective from the in-app AI's point of
+Asked the figure-splitting agent for a process retrospective from the in-app AI's point of
 view (docs + AI tools only). Folded the cheap, confident parts into the
 instructions now: a "Recipe: a fused figurine" in segmentation.md (seeded
 thickness, then lock and crease-watershed; chin-underside head seed; extra
@@ -139,3 +139,17 @@ split), and a corrected warning that a smooth accept scrambles imported paint
 recipe. Tool work it ranked (paint scramble, a per-piece seam preview with an
 undercut check, a cheaper re-run, residual memory) is tracked in #1221–#1223
 and left for the user to prioritise.
+
+## Human
+
+Remove references to the figure's name from the PR description, and check
+whether other PR descriptions reference model names.
+
+## Assistant
+
+The repo is public, so the figure's name was scrubbed everywhere this branch
+and its issues carried it (PR description, docs, code comments, test comment,
+this log, the follow-up issues, the Visual proof comment re-uploaded under
+neutral file names). Older commit messages and comment edit history still
+carry it; rewriting those needs a force-push / manual revision deletion, left
+to the user's call.

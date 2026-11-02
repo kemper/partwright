@@ -1158,7 +1158,7 @@ export function createMeshSdfOps(module: any) {
     const peel = (m: any, mesh: any, triIds: Uint32Array, items: Group[], keepItem: Group): void => {
       // Free intermediates as soon as they're used: a cut chain over a dense
       // import otherwise holds several copies of the remaining mesh per piece
-      // until the run ends (NED: 3.1 GB of the 4 GB engine heap). Never the
+      // until the run ends (an 11-piece figure: 3.1 GB of the 4 GB engine heap). Never the
       // input itself; a double free is harmless (the sandbox's end-of-run
       // sweep catches it).
       const free = (...xs: any[]) => { for (const x of xs) if (x && x !== m) { try { x.delete(); } catch { /* already freed */ } } };
@@ -1337,7 +1337,7 @@ export function createMeshSdfOps(module: any) {
     // two or more of the pieces is cut between them; a shell that belongs to
     // one piece (fins printed apart, a separate eyeball) passes through whole —
     // it already is a piece, and cutting it against the shell it is embedded
-    // in would carve that shell (#1220 review: NED's fins carved its ears).
+    // in would carve that shell (#1220: a figure's fins carved its ears).
     const regroup = (g: Group, ids: Uint32Array): Group => {
       const mask = new Uint8Array(ids.length);
       for (let t = 0; t < ids.length; t++) if (g.ids.has(ids[t])) mask[t] = 1;
