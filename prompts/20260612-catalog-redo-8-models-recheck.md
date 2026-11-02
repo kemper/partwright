@@ -5,7 +5,7 @@ files_changed:
   - public/catalog/d20_die.partwright.json
   - public/catalog/geodesic_lantern.partwright.json
   - public/catalog/ringed_planet.partwright.json
-  - public/catalog/pacman_ghost.partwright.json
+  - public/catalog/arcade_ghost.partwright.json
   - public/catalog/spiral_staircase.partwright.json
   - public/catalog/castle_tower.partwright.json
   - public/catalog/royal_crown.partwright.json

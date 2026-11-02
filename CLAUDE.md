@@ -222,6 +222,7 @@ What to capture:
 - **New feature** → the feature in its key state(s) (e.g. opened panel, result rendered).
 - **Changed behavior or a visual fix** → a **before (main) / after (this PR)** pair, side by side in a table. Capture "before" by running the same spec against `origin/main` (e.g. in a `git worktree`) before you change it, or by checking out main briefly.
 - **Theme- or size-sensitive UI** → add a light-mode and/or a 375 px-wide (mobile) shot when the change touches those.
+- **Only the app's own content in the shot** — a model built in the app, a synthetic test mesh, or a model the owner made or that carries a license allowing it. Never screenshot a user's imported third-party model, a scan of someone else's figure or product, or a reference photo, even when that is what you were testing. Re-run the check on a stand-in and capture that. See [Copyright, licenses and trademarks](#copyright-licenses-and-trademarks--no-third-party-work-without-permission).
 
 **How to attach: `npm run pr:screenshots`** (`scripts/pr-screenshots.mjs` + the `Visual proof comment` workflow, `.github/workflows/pr-visual-proof.yml`):
 
@@ -636,6 +637,33 @@ This repo runs a lightweight self-improving loop so agents make the *next* agent
 
 - **When you finish a meaningful task (≈ a PR), run `/retro`** (`.claude/skills/retro/SKILL.md`). It drops a short **4-Ls** reflection — *Liked · Lacked · Learned · Longed for* — into `retros/inbox/`. Think like an engineer about your own toolchain: the most valuable note is what would have made delivery faster (the "Longed for" bucket), not just what broke. A `Stop` hook nudges you when the tree is dirty, but the call is yours — skip it when nothing was notable. Entries are append-only and commit with the work.
 - **`/retro-review`** (`.claude/skills/retro-review/SKILL.md`) is the weekly facilitator, fired by a scheduled trigger. It clusters the inbox (frequency across independent agents = the vote), applies the confident process diffs to `CLAUDE.md`/`docs`/skills, files tooling asks as backlog items, writes a durable report to `retros/reports/`, archives the entries, and opens a **draft PR** for human review. It never merges itself.
+
+### Copyright, licenses and trademarks — no third-party work without permission
+
+The repo, its PRs and its issues are public, and the site is free and open, so nothing in them may infringe someone else's copyright, license or trademark. That covers everything that ships or gets posted: models, meshes, scans, photos, renders, textures, fonts, sounds, code, data, names and logos. A user handing you a file (an STL, a 3MF, a scan, a photo) is permission to work on it in the session, not to publish it. When unsure, ask the owner before committing or posting. If a rights holder objects, remove the content first and discuss afterwards.
+
+**Files and media**
+
+1. **Test and demo with content we may share:** models built in the app, synthetic meshes, the owner's own designs, or files whose license allows it (rule 3). A user's third-party files stay local: `/tmp`, the scratchpad, or a gitignored path. Never commit them, not even under `.plans/` (it's gitignored, so committing there takes a force-add, which is a red flag).
+2. **Record the source and license of every third-party file you commit, at the moment you download it** — in a README next to it (title, author, source page URL, license, what you changed) and in the catalog description when it ships. Sources can't be reliably recovered later: seven eval reference photos once had to be traced back after the fact. Re-check a license before relying on it, because licenses change (3DBenchy moved from CC BY-ND to CC0 in 2025).
+3. **Which licenses are OK.** CC0 and public domain: yes. CC BY: yes, with the credit from rule 2. CC BY-SA: only as a standalone asset, credited and marked BY-SA. **Not without the owner's approval:** ND (no derivatives, so no reconstructing, remixing or even cropping), NC (the code is PolyForm Noncommercial, but NC assets would block any later commercial use), "personal use only", "all rights reserved", "free download" with no license, and anything whose license you can't find. A search result, a gallery listing or "it's all over the internet" is not a license: read the license on the item's own page.
+
+**Characters, brands and real people**
+
+4. **No recognisable third-party characters, brands, logos or products in shipped content:** catalog entries, `examples/`, presets, the ideas page and starter prompts, docs, AI prompts, and captured or derived data. Describe the shape, not the IP ("soccer figure", "horned creature", "arcade ghost"), and don't name a model, file or preset after a character. Data captured from a third-party model (a hair capture, a fitted spec, a reconstruction) is derived from it, so the same rule applies. **Renaming doesn't fix a copy:** new content must not reproduce a specific character's or product's distinctive design under a generic name either. Make an original design in the genre instead ("a chunky robot", "a pixel ghost").
+5. **No likeness of a real, identifiable person** (a celebrity, public figure or private individual) in shipped content or on GitHub, unless it's the owner or someone who agreed to it. Photo-to-bust demos and tests use the owner's own photos or a synthetic stand-in.
+6. **Trademarks in prose:** naming another product to say what we work with is fine ("exports a 3MF that Bambu Studio opens", "the OpenSCAD engine", "Minecraft-style voxels"). Using a brand as the name of our feature, model, preset or file, or showing its logo anywhere, is not.
+
+**Code, dependencies and fonts**
+
+7. **Don't paste code from other projects, docs or Q&A sites** beyond a few trivial lines unless its license is compatible (MIT, BSD, Apache-2.0, ISC, 0BSD, CC0). Keep its copyright and license header, and name the source in the commit. Never copy GPL, AGPL or LGPL code into the repo, nor CC BY-SA snippets (Stack Overflow) without crediting them in a comment. Otherwise, write it yourself from the idea.
+8. **Check the license before adding a dependency, WASM module, font, texture or vendored library** (its `package.json` `license` field or LICENSE file). Permissive licenses are fine. Flag copyleft (GPL, AGPL, LGPL, MPL), noncommercial, custom or missing licenses to the owner before adding. A shipped font needs a license that allows embedding (OFL, Apache), and its license file ships with it. Never strip license headers, NOTICE files or attribution from vendored code (e.g. `public/openscad-libs/BOSL2/`).
+
+**On GitHub**
+
+9. **Keep it off GitHub too:** no screenshots, photos or renders of a user's third-party model in PRs, issues or comments (the `pr-assets` screenshot branch is public and append-only, so a mistake there can't be cleaned up), and don't name private files, scans or characters in titles, descriptions, commit messages, prompt logs or retros. Write "the user's figurine scan" or "a 3MF figure", never its file or character name.
+
+The `work-reviewer` checks diffs against these rules; the model-building agents and skills (`model-sculpt`, `model-critic`, `inverse-sculpt`, `/sculpt`, `/inverse-cad`) carry the short form.
 
 ### Prompt Logs
 
