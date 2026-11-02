@@ -222,6 +222,7 @@ What to capture:
 - **New feature** → the feature in its key state(s) (e.g. opened panel, result rendered).
 - **Changed behavior or a visual fix** → a **before (main) / after (this PR)** pair, side by side in a table. Capture "before" by running the same spec against `origin/main` (e.g. in a `git worktree`) before you change it, or by checking out main briefly.
 - **Theme- or size-sensitive UI** → add a light-mode and/or a 375 px-wide (mobile) shot when the change touches those.
+- **Only the app's own content in the shot** — a model built in the app, a synthetic test mesh, or a model the owner made or that carries a license allowing it. Never screenshot a user's imported third-party model, a scan of someone else's figure or product, or a reference photo, even when that is what you were testing. Re-run the check on a stand-in and capture that. See [Third-party content](#third-party-content--keep-it-out-of-the-repo-and-off-github).
 
 **How to attach: `npm run pr:screenshots`** (`scripts/pr-screenshots.mjs` + the `Visual proof comment` workflow, `.github/workflows/pr-visual-proof.yml`):
 
@@ -636,6 +637,17 @@ This repo runs a lightweight self-improving loop so agents make the *next* agent
 
 - **When you finish a meaningful task (≈ a PR), run `/retro`** (`.claude/skills/retro/SKILL.md`). It drops a short **4-Ls** reflection — *Liked · Lacked · Learned · Longed for* — into `retros/inbox/`. Think like an engineer about your own toolchain: the most valuable note is what would have made delivery faster (the "Longed for" bucket), not just what broke. A `Stop` hook nudges you when the tree is dirty, but the call is yours — skip it when nothing was notable. Entries are append-only and commit with the work.
 - **`/retro-review`** (`.claude/skills/retro-review/SKILL.md`) is the weekly facilitator, fired by a scheduled trigger. It clusters the inbox (frequency across independent agents = the vote), applies the confident process diffs to `CLAUDE.md`/`docs`/skills, files tooling asks as backlog items, writes a durable report to `retros/reports/`, archives the entries, and opens a **draft PR** for human review. It never merges itself.
+
+### Third-party content — keep it out of the repo and off GitHub
+
+The repo and its PRs and issues are public, and the site is free and open, so nothing in them may depend on someone else's unlicensed work. A user handing you a file (an STL, a 3MF, a scan, a photo) is permission to work on it in the session, not to publish it.
+
+1. **Test and demo with content we may share:** models built in the app, synthetic meshes, the owner's own designs, or files under a license that allows redistribution (CC0, or CC BY with attribution). A user's third-party files stay local: `/tmp`, the scratchpad, or a gitignored path. Never commit them, not even under `.plans/` (it's gitignored, so committing there takes a force-add, which is a red flag).
+2. **No recognisable third-party characters, brands or products in shipped content:** catalog entries, `examples/`, presets, captured or derived data, docs and AI prompts. Describe the shape, not the IP ("soccer figure", "horned creature", "arcade ghost"), and don't name a model, file or preset after a character. Data captured from a third-party model (a hair capture, a fitted spec, a reconstruction) is derived from that model, so the same rule applies to it.
+3. **Record the source and license of every third-party file that is committed** — next to it in a README (title, author, source URL, license) and in the catalog description when it ships. Re-check the license before relying on it, because licenses change (3DBenchy moved from CC BY-ND to CC0 in 2025). If a license forbids derivatives, don't reconstruct, remix or ship it.
+4. **Keep it off GitHub too:** no screenshots, photos or renders of a user's third-party model in PRs, issues or comments, and don't name private files, scans or characters in titles, descriptions, commit messages or prompt logs. Write "the user's figurine scan" or "a 3MF figure", never its file or character name.
+
+When unsure whether something may be shared, ask the owner before committing or posting it. If a rights holder objects, remove the content first and discuss afterwards.
 
 ### Prompt Logs
 
