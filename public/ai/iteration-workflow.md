@@ -324,6 +324,20 @@ Every Advanced Settings (⚙) field is readable and settable, validated exactly 
 browser and apply immediately, except rendering settings that need a reload. The in-app assistant
 may only change a short allow-list of result-affecting settings, and the user confirms each change.
 
+## Debugging with console.log
+
+Model code can print with `console.log` / `info` / `warn` / `error`, in
+manifold-js, voxel and BREP sessions. The lines come back as `logs: string[]` on
+`run`, `runAndSave`, `setParams`, `runIsolated`, `runAndAssert` and
+`runAndExplain` results (also when the code throws), and `getGeometryData().logs`
+holds the last run's, including runs the user started. People see the same lines
+in the viewport's Console drawer.
+
+- Objects print as compact JSON, and a Manifold prints as `Manifold{tris, bbox}`.
+- `warn:` / `error:` / `assert:` prefixes mark the level.
+- Output is capped per run (200 lines / 20,000 characters by default, set in
+  Advanced Settings), so log summaries rather than every loop iteration.
+
 ## Debugging with the Diagnostic Log
 
 ```js

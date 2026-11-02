@@ -75,7 +75,7 @@ export const SUBDOC_NAMES_LIST = [
   'fasteners', 'joints', 'gears', 'threads', 'reference-images', 'file-io', 'annotations',
   'printing', 'relief', 'textures', 'mechanisms', 'iteration-workflow', 'gotchas',
   'visual-verification', 'spending', 'manifold-api', 'reconstruction', 'deform', 'segmentation', 'ui-control',
-  'feasibility',
+  'enclosure', 'knurl', 'headform', 'feasibility',
   // Deprecated: 'print-fit' split into 'fasteners' + 'joints'. Kept so an older
   // cached prompt requesting it gets the redirect stub instead of an error.
   'print-fit',
@@ -1928,7 +1928,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'thicknessMap',
-    description: 'Wall-thickness map of the current model: EVERY triangle\'s distance straight through the solid to the opposite wall (exact on flat walls, a close estimate on curved ones — checkPrintability only samples a few hundred). Returns the thinnest wall and where, the median, how much surface is below `threshold` (default 2 × the printer nozzle width), and the thin SPOTS — connected thin areas, thinnest first, each with { center, thinnest, thickness, area, triangleCount } — so you can thicken exactly those places. render: true adds a heatmap image (red ≤ ½·threshold, yellow at the threshold, grey ≥ 2·threshold).',
+    description: 'Wall thickness under EVERY triangle of the current model (checkPrintability only samples). Returns the thinnest wall and where, the median, the share below `threshold`, and the thin SPOTS (connected areas, thinnest first: center, thinnest, thickness, area) to thicken. render: true adds a heatmap (red ≤ ½·threshold, yellow at it, grey ≥ 2×).',
     input_schema: {
       type: 'object',
       properties: {
@@ -2421,7 +2421,7 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: 'renderSection',
-    description: 'Render a CROSS-SECTION image of the current model cut along any axis — see inside: wall thickness, cavities, internal supports, a press-fit gap. axis x | y | z (default z); offset = where along that axis to cut (default: the middle of the model). The image reads like the matching view: a y cut is seen from the front (+X right, +Z up), an x cut from the right (+Y right, +Z up), a z cut from above (+X right, +Y up); it is captioned, has labelled axis arrows and a scale bar, and outlines the setReferenceGeometry ghost (dashed green) when one is set. Returns the image plus { axis, offset, area, contours, view: {right, up, from}, boundingBox (in those image axes), referenceContours? } (contours > 1 = hollow or several pieces). sliceAtZVisual is the z-only shortcut.',
+    description: 'CROSS-SECTION image of the current model along any axis — see walls, cavities, a press-fit gap. offset defaults to the middle. Oriented like the matching view (y from the front, x from the right, z from above), with a caption, axis arrows, a scale bar, and the reference ghost dashed. Returns the image + { area, contours, view: {right, up, from}, boundingBox (image axes), referenceContours? }; contours > 1 = hollow or several pieces.',
     input_schema: {
       type: 'object',
       properties: {
