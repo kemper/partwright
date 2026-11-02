@@ -93,7 +93,7 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Round/chamfer all sharp edges of a solid | `Curves.fillet(solid, {angle: 60})` (mesh-smoothing) | BOSL2 `cuboid(rounding=...)`, `round3d(...)` | **`.fillet(radius)` / `.chamfer(distance)` -> `/ai/replicad.md` (exact, BREP-true)** |
 | Round/chamfer ONLY specific edges (e.g. top rim only) | (not available) | BOSL2 `edge_profile()` (rough) | **`.fillet(r, {minZ, maxZ, nearPoint+withinDist, parallelToPlane, inDirection})` — selective, BREP-only. See `/ai/replicad.md` for the full EdgeFilter.** |
 | STEP export | (not available) | (not available) | **`partwright.exportSTEP()` after a BREP-language run -> `/ai/replicad.md`** |
-| STEP import (read a `.step` / `.stp` file as a CAD shape) | (use partwright.importFile UI, choose manifold-js — tessellates) | (not available) | **partwright.importFile UI, choose BREP — preserves exact surfaces. `api.imports[0]` in the replicad sandbox is the BrepShape.** |
+| STEP import (read a `.step` / `.stp` file as a CAD shape) | (`importStepData(b64, name, {mode:'mesh'})` — tessellates) | (not available) | **`importStepData(b64, name)` (default BREP) — exact surfaces. `api.imports[0]` in the replicad sandbox is the BrepShape.** |
 | Ring/linear/mirror copies | `api.circularPattern / linearPattern / mirrorCopy` (or `Curves.ringCopy / linearCopy / mirrorCopy`) | BOSL2 `ring_copies()`, `xcopies()`, `mirror_copy()` | (use manifold-js helpers) |
 | Place A on top of B (no mental trig) | `api.placeOn(a, b, {gap?, at?})` | BOSL2 attachments: `attach(TOP, BOTTOM)` | (use manifold-js — convert BREP→Manifold first) |
 | Align A's edge/face to B (per axis) | `api.alignTo(a, b, {x?, y?, z?})` (min/max/center) | BOSL2 `position()`/`anchor()` | (use manifold-js — convert BREP→Manifold first) |
@@ -169,17 +169,18 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `voxel` | Before writing voxel-language code or importing an image as voxels. Covers the `api.voxels()` grid API, colors, coordinate system, and image import. |
 | `mechanisms` | Before modeling a print-in-place / multi-part assembly that **moves** — a screw, spinner, hinge, captive ball, or slider. Covers clearance gaps, `componentCount` verification, twist-extrude threads/spirals, matched-taper nesting, and cutaway checks. |
 | `print-safety` | Before exporting STL/3MF for FDM printing — minimum wall thickness, taper traps, sub-extrusion-width layer detection. |
-| `printing` | The print-readiness toolkit — `checkPrintability` (overhangs, walls, bed fit, tip-over), `thicknessMap` (exact wall thickness everywhere: the thin spots and a heatmap) and `get/setPrinterSettings`. The same check also runs automatically on STL / OBJ / 3MF / GLB export. Read before declaring a model print-ready, then steer the user to the dedicated Resize and Split tools if it doesn't fit. |
+| `printing` | The print-readiness toolkit — `checkPrintability` (overhangs, walls, bed fit, tip-over), `thicknessMap` (exact wall thickness everywhere: the thin spots and a heatmap) and `get/setPrinterSettings`. Read before declaring a model print-ready; if it doesn't fit, point the user to Resize and Split. |
 | `fasteners` | Before building parts that mate with real hardware — `api.fasteners.*` screw holes, tap/pilot holes, heat-set insert bosses, captive-nut pockets, the M2–M8 metric table, clearance presets, and a calibration coupon. |
 | `joints` | Before connecting printed parts to each other — `api.joints.*` alignment pins, sliding dovetails, snap-fits, print-in-place barrel hinges, articulating ball joints (friction / clamp / snap retention), and annular snap rims for press-on lids. |
 | `gears` | Before modeling an involute spur gear, a meshing gear pair, or a rack — `api.gears.spur/pair/rack(...)`, module/teeth/pressure-angle, centre distance, ratio, bores and hubs. |
 | `threads` | Before modeling a threaded rod, bolt, or nut — `api.threads.rod/bolt/nut(...)`, the metric coarse-pitch table, fit clearance, and handedness. |
 | `enclosure` | Before modeling a project box / case, a rounded shell, or PCB standoffs — `api.enclosure.box/shell/standoff(...)`, lip vs screw lids, mate clearance, and the `componentCount === 2` fit check. |
+| `headform` | Before designing anything a person WEARS (mask, helmet, glasses, hat): `api.headform()`, a real-size adult head in mm with landmarks. |
 | `knurl` | Before adding a functional grip to a knob, thumbscrew, or handle — `api.knurl.diamond/straight/ribs(...)` knurled cylinders (distinct from decorative surface textures). |
 | `colors` | Before any paint operation — the picker decision tree, labelled construction, vision-driven painting, export behavior. |
 | `reference-images` | When the user attaches a photo or asks you to model from one — `setImages` shape, label conventions, the five-step photo-to-model loop. |
 | `file-io` | Before exporting or importing programmatically — `*Data()` byte-returning methods, Recent Exports inbox, session payload shape. |
-| `annotations` | When the user has marked up the model with the Annotate tool (or you need to write annotations programmatically). |
+| `annotations` | When the user has marked up the model with the Annotate tool (or sent an annotation view, or you need to write annotations programmatically). |
 | `relief` | When making an image-derived part (keychain / tile / silhouette / stepped relief) via `importImageAsRelief`, or reading the single-nozzle swap guide (`getReliefSwapGuide`) / optical preview (`setReliefPreviewMode`). |
 | `textures` | Before adding fuzzy-skin / fabric / knit surface detail — the `applySurfaceTexture(id, opts?, mode?)` tool or `api.surface.<id>({…})` in manifold-js code (ids: `fuzzy`, `knit`, `cable`, `waffle`, `fur`, `woven`, `knurl`, `voronoi`, `smooth`) — normal-displaced textures, their parameters, scoping a texture to one labelled region, and the paint-ordering rules. Also covers `applyVoronoiLamp` — a true perforated Voronoi shell (see-through lamp/planter; smooth-mesh output by default, optional voxel) — and `engraveModel`, which stamps text (or, from the UI, an image) onto the model as recessed channels, holes cut clean through (stencil), or an embossed raised relief (`raised: true`), with optional letter `color` for multicolor prints. |
 | `deform` | Before shaping meshes with the Blender-parity verbs — `api.wrapAround` (text on a mug), `api.bend`/`api.twist`/`api.taper`, `api.alongCurve` (strip along a path), `api.scatter` (spikes/studs/rivets across a surface), `api.round` (fillet EVERY edge of any solid), `api.shell` (hollow any solid to a uniform wall — masks, helmets) and `api.offset` (grow/shrink any solid uniformly), `api.smoothWeld` (smoothUnion for plain meshes), `api.sculpt.grab/inflate/flatten/transform` (declarative brush nudges + soft-selection transforms), `select:` selectors (`{label}` / `{region}` / `{where: {facing}}`) that confine any of these to one part, `api.material` (viewport shading presets: brass/glass/…), and the `exportTurntable`/`exportExplode`/`exportParamSweep` video tools. |
@@ -199,7 +200,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 - **Hand-rolling curve math instead of using helpers** -- if you need a smooth surface or curve, check the verb table above. `Curves.loft` / BOSL2 `skin()` are far more reliable than a hand-written polygon-sampling loop.
 - **Building an organic figure as "primitive soup"** -- modeling a figurine, character, animal, or body by `union`-ing constant-radius spheres and capsules. It validates (manifold, prints) so nothing forces a rethink, but the ceiling is tubes-and-balls: every limb a cylinder, every joint a visible ball. For anything anatomical, reach for `api.sdf` `smoothUnion` (capsule limbs blended into ellipsoid masses) from the first version → `readDoc("sdf")`. "Smooth/organic figure" should trigger SDF the way "exact fillet" triggers BREP.
 - **Not saving versions** -- a session is always open for you; save your work with `runAndSave` so the user can review it in the gallery.
-- **Modelling straight on a huge import.** A 500k–1M-triangle scan or sculpt makes every run slow (tens of seconds) and memory-heavy, and `.simplify()` inside the model code re-runs every time. Decimate ONCE with `partwright.simplifyModel({ targetTris: 200000 })`, which saves a lighter version to build on (the original stays in history). See [/ai/file-io.md → Big imports](/ai/file-io.md#big-imports--decimate-once-first).
+- **Modelling straight on a huge import.** Runs on a 500k+ triangle scan are slow; decimate once with `partwright.simplifyModel({ targetTris: 200000 })`, not `.simplify()` in code (it re-runs) — see [/ai/file-io.md](/ai/file-io.md#big-imports--decimate-once-first).
 - **Skipping visual verification** -- stats alone can't catch visual defects. After structural changes, call `renderViews()`; `renderViews({views: "box"})` is the only set that shows the back, left, and bottom faces.
 - **Placing the front face on the wrong side** — "Front" in Partwright means the −Y face. The default Front view camera is at −Y looking toward +Y, so a door, a character's face, a screen, or any feature intended to face the viewer must have its outward normal pointing in the −Y direction. If `renderViews()` shows the back of your model in the "Front" tile, rotate the model 180° around Z (`model.rotate([0,0,180])`).
 - **Flush boolean placement** -- shapes must overlap by at least 0.5 units to union correctly. Merely touching at a face produces disconnected components.
@@ -255,7 +256,7 @@ Call `partwright.help()` for a full method list, or `partwright.help('methodName
 
 ```js
 partwright.run(code?)          // Run code, update views, return geometry stats (+ `logs`: the model code's console output)
-partwright.getGeometryData()   // Current stats (same as #geometry-data) + `logs`: what the last run printed, even one the user started
+partwright.getGeometryData()   // Current stats (same as #geometry-data) + `logs` (what the last run printed)
 partwright.validate(code)      // Check code without rendering -> {valid, error?}
 partwright.getCode()           // Read editor contents
 partwright.setCode(code)       // Set editor contents (no auto-run)
@@ -272,7 +273,7 @@ await partwright.evalAgainstImport(i?, opts?) // Chamfer/hausdorff report: curre
 partwright.toggleClip(on?)     // Toggle 3D clipping plane -> {enabled, z, min, max}
 partwright.setClipZ(z)         // Set clip height -> {enabled, z, min, max}
 partwright.getClipState()      // -> {enabled, z, min, max}
-await partwright.setReferenceGeometry(code, {color?, opacity?, wireframe?}) // Translucent fitment ghost built in the (sandboxed) engine Worker (manifold-js); superseded (error) if a newer set/clear or a session switch lands first -> Promise<{success, boundingBox?, volume?, error?}>. The ghost also appears in renderView/renderViews images (depth-tested, so you see where it pokes through; `reference: false` hides it) and as a dashed outline in renderSection — check a fit visually, not just by construction
+await partwright.setReferenceGeometry(code, {color?, opacity?, wireframe?}) // Translucent fitment ghost built in the (sandboxed) engine Worker (manifold-js); superseded (error) if a newer set/clear or a session switch lands first -> Promise<{success, boundingBox?, volume?, error?}>. Also drawn in renders and sections (`reference: false` hides it)
 partwright.clearReferenceGeometry() / partwright.hasReferenceGeometry() // Remove the ghost / -> boolean
 partwright.setUnits('mm'|'cm'|'in'|'unitless') / partwright.getUnits() // Declared unit system (export metadata only; no scaling)
 
@@ -353,7 +354,7 @@ await partwright.exportGLBObjects(objectIds?, filename?, {split?, exclude?})  //
 // ...each has a *Data twin (export{3MF,OBJ,STL,GLB}ObjectsData) that RETURNS the bytes instead of downloading.
 // Results carry {objects: N}. The pre-rename export*Parts / export*PartsData names still work (deprecated aliases).
 await partwright.exportSessionData()    // -> {filename, mimeType, data, sizeBytes} (parsed JSON)
-await partwright.exportSession(sessionId?, {includeThumbnails?, includeAnnotations?, includeNotes?, includeColorRegions?}) // -> the ExportedSession object itself (default: current; thumbnails off by default), null if none, or {error}
+await partwright.exportSession(sessionId?, {includeThumbnails?, includeAnnotations?, includeNotes?, includeColorRegions?, includeChat?, includeLatestMeshes?}) // -> the ExportedSession object (default: current), null if none, or {error}
 partwright.exportCodeData()             // -> {filename, mimeType, language, text, sizeBytes}
 await partwright.importSessionData(parsedJson)         // -> {sessionId} or {error}
 await partwright.importSession(exportedSession)        // Import a parsed session object (regenerates thumbnails) and open it -> {id, name, warning?} or {error}
@@ -381,7 +382,7 @@ await partwright.setCurvatureQuality({quality?: 'low'|'medium'|'high'|'highest'|
 await partwright.simplifyModel({mode?: 'simplify'|'enhance', targetTris? | targetEdge?, amount?, preserveColor?})  // Quality panel Simplify/Enhance on the MESH; saves a version (a baked mesh, not code) -> {ok, mode, before, after, version, message, warnings?}
 partwright.getAppConfig()                // Advanced Settings: {section: {key: {value, default, min?, max?, integer?, modified?}}}
 partwright.setAppConfig(section, key, value)  // Change one Advanced Settings value (validated like the field) -> {section, key, value, previous} or {error}
-await partwright.getDiagnosticLog({level?, source?, limit?})  // The ⚠ Diagnostic Log, newest first, secrets (incl. your saved API keys) redacted -> {entries:[{id, time, level, source, message, detail?}], matched, total}
+await partwright.getDiagnosticLog({level?, source?, limit?})  // The ⚠ Diagnostic Log, newest first, secrets (incl. your saved API keys) redacted -> {entries:[{id, time, level, source, message, detail?}], matched, total}; AI chat trace: getAiSessionTrace()
 partwright.getWorkerHealth()             // Worker health panel: per-worker liveness/restarts + recent geometry runs (durationMs main-thread round trip vs workerMs compute) -> {workers, runs}
 partwright.getEngineSandboxStatus()      // Engine sandbox (Settings → Security): {requested (this tab), active, state: idle|loading|ready|unavailable|bypassed, pendingAfterReload, frameCrossOriginIsolated, workerCrossOriginIsolated, frameOrigin, unavailableReason, frameRestarts, sandboxOrigin, defaultMode, modes}
 partwright.setEngineSandboxMode('origin'|'off')  // 'origin' = run model code in a hidden iframe on a separate origin (no access to app storage/keys, network blocked) — the DEFAULT where the site has a sandbox host; 'off' = plain Worker (the kill switch). This browser; RELOAD to apply -> {mode, previous, note}. The old 'opaque' mode was removed -> {error}
@@ -393,13 +394,13 @@ await partwright.runAndAssert(code, assertions) // -> {passed, failures?, stats,
 await partwright.runAndExplain(code)     // -> {stats, components[], hints[], logs?} (debug disconnects)
 await partwright.modifyAndTest(patchFn, assertions?) // Modify current code + test in isolation
 partwright.query({sliceAt?, decompose?, boundingBox?}) // Multi-query current geometry in one call
-partwright.renderView({elevation?, azimuth?, ortho?, size?, edges?, reference?})  // Render ONE angle -> data URL. edges: 'none'|'crease'|'wireframe' (default 'crease' uncolored / 'none' painted); reference: draw the setReferenceGeometry ghost (default true when one is set)
-await partwright.renderViews({views?: 'auto'|'tri'|'all'|'box', angles?, size?, edges?, reference?})  // multi-angle labeled composite -> data URL; reference: the setReferenceGeometry ghost (default true when one is set); 'auto' (default) picks angles by aspect ratio; 'box' = all 6 faces (the all-faces final check); pass `angles` for a custom set; `edges` sets the overlay on every tile; prefer for verification
+partwright.renderView({elevation?, azimuth?, ortho?, size?, edges?, reference?, focus?, padding?, clip?})  // ONE angle -> data URL. focus/clip: zoom onto a part or box (/ai/visual-verification.md). edges: 'none'|'crease'|'wireframe'; reference: the setReferenceGeometry ghost
+await partwright.renderViews({views?: 'auto'|'tri'|'all'|'box', angles?, size?, edges?, reference?, focus?, padding?, clip?})  // multi-angle labeled composite -> data URL; options as renderView; 'auto' (default) picks angles by aspect ratio; 'box' = all 6 faces (the all-faces final check); `angles` for a custom set; prefer for verification
 await partwright.photoMatch({image?, view?: {azimuth, elevation, ortho?}, crop?, bg?, bgTolerance?, bgMode?, mask?, exclude?, merge?, ignore?, bands?, fit?, pixelAspect?, size?, overlay?, views?: [{image, azimuth, elevation, …}]})  // TEXT-ONLY likeness score vs a reference photo (attachment id/label or data URL) -> {silhouetteIoU, aspect, bands[] (+ left/right edge offsets), outline[], regions[], worst[], warnings[]}; views[] scores several angles at once (mean silhouetteIoU). Use instead of renders for routine likeness passes — see /ai/reference-images.md#photo-match
 await partwright.setThumbnailCamera({azimuth, elevation} | 'current' | null)  // Pin the session's thumbnail/catalog-tile camera angle (degrees) instead of the default iso 3/4 view (default az 45° — the +X/−Y corner — el 35°). 'current' pins the angle you're looking at in the viewport (orbit, then pin — no guessing numbers); null clears. Persists on the session. -> {thumbCamera} or {error}
 partwright.getThumbnailCamera()         // -> {azimuth, elevation} or null (unpinned ⇒ default iso)
 partwright.sliceAtZVisual(z)            // Cross-section SVG at height z -> {svg, area, contours}, null (no geometry) or {error}
-partwright.renderSection({axis?, offset?, size?, reference?})  // Slice on any axis -> {dataUrl, svg, axis, offset, area, contours, view: {right, up, from}, boundingBox, referenceContours?}. axis: 'x'|'y'|'z' (default 'z'). offset defaults to bbox midpoint along axis. The image reads like the matching view — y cut from the front (+X right, +Z up), x cut from the right (+Y right, +Z up), z cut from above (+X right, +Y up) — and is captioned with labelled axis arrows, a scale bar and the section's extents; `boundingBox` is in those image axes. `reference` (default true when one is set) outlines the setReferenceGeometry ghost's section, dashed green. Engine-agnostic (works for SCAD too).
+partwright.renderSection({axis?, offset?, size?, reference?})  // Slice on any axis ('z' default, offset default mid-bbox) -> {dataUrl, svg, area, contours, view: {right, up, from}, boundingBox, referenceContours?}. Oriented like the matching renderView, with axes, a scale bar and extents; `reference` outlines the ghost. Any engine.
 partwright.componentBounds()             // -> [{index, volume, triangleCount, bbox: {min,max,size,center}}], largest first. Use to find leaked / satellite pieces after a boolean.
 partwright.pointInside([x,y,z])          // -> boolean (or null if no geometry). Tiny-probe-cube method; ambiguous within ~1e-5 of the surface.
 partwright.healCurrent({tolerance?})     // -> {ok, volumeDelta, triangleDelta, componentCountBefore, componentCountAfter}. Runs .simplify() on the current model and applies the result. Engine-agnostic.
@@ -414,7 +415,7 @@ partwright.measureMode(on?) / partwright.getMeasurement() // Interactive two-cli
 partwright.getPrinterSettings()          // -> {bed:[x,y,z], nozzleWidth, overhangAngleDeg, clearance} (mm)
 partwright.setPrinterSettings({bed?, nozzleWidth?, overhangAngleDeg?, clearance?}) // update any subset -> merged settings or {error}
 partwright.checkPrintability({bed?, nozzleWidth?, overhangAngleDeg?}?) // bed fit / overhang / thin wall / small feature / tip-over / watertight report, or {error}
-await partwright.thicknessMap({threshold?, limit?, render?, views?, size?}?) // EXACT wall thickness under every triangle -> {minThickness, thinnest, medianThickness, thinArea, thinFraction, spots[] (connected thin areas, thinnest first: center, thinnest, thickness, area), image? (heatmap)} — find WHERE walls are thin; see /ai/printing.md#thicknessmapopts
+await partwright.thicknessMap({threshold?, limit?, render?, views?, size?}?) // EXACT wall thickness per triangle -> {minThickness, medianThickness, thinFraction, spots[] (thin areas, thinnest first), image? (heatmap)} — find WHERE walls are thin; see /ai/printing.md#thicknessmapopts
 partwright.isRunning()                   // -> boolean (is code executing?)
 
 // Spending mode (AI budget) -- respect what the user set; see #spending-mode
@@ -453,6 +454,7 @@ partwright.getCharacterSpec()                         // Read the spec from the 
 partwright.listCharacterPresets()               // Character Creator starting characters -> [{id, label, description, spec}]; pass .spec (optionally tweaked) to buildCharacter.
 await partwright.randomCharacter({seed?, save?, label?}) // Random, coherent humanoid (the panel's 🎲 Random) -> {seed, spec, code, ...}. Same seed = same character.
 await partwright.saveVersion(label?)     // Save current state as version
+partwright.getModelDrift() / restoreSavedModel() / keepRebuiltModel() / dismissModelDrift() // a version whose code now builds a different model than saved -- /ai/file-io.md#built-differently-than-saved
 await partwright.commitWithColors({code?, label?, assertions?}) // Routes for you: new code -> runAndSave; same/omitted code -> saveVersion snapshot -> {routed:'run'|'snapshot', ...} or {error}
 await partwright.saveAllObjects()        // Save every object with unsaved changes (visits each, restores the active object) -> {saved, failed} or {error}
 await partwright.listVersions()          // -> [{id, index, label, timestamp, status}]
@@ -488,7 +490,7 @@ partwright.listObjects()                 // -> [{id, name, order, group?, isCurr
 partwright.showObjectsOverview()         // Open the all-objects thumbnail overview (contact sheet; click a tile to switch)
 partwright.getCurrentObject()            // -> {id, name, order, group?} or null
 await partwright.createObject(name?)     // New empty object + switch to it -> {id, name, order}
-await partwright.changeObject(name|id|index)   // Switch active object (loads its latest version)
+await partwright.changeObject(name|id|index)   // Switch active object, like clicking it in the list
 await partwright.renameObject(name|id|index, newName)  // Rename an object
 await partwright.setObjectGroup(target|target[], group|null)  // Thread objects under a collapsible group header in the object list (null/'' ungroups) -> {grouped, group}
 await partwright.deleteObject(name|id|index)   // Delete an object + its versions -- moved to Recover deleted, not erased (the last one resets to a blank "Object 1")
@@ -511,7 +513,8 @@ partwright.getPartDraft() / partwright.setPartsOverlay(bool) / await partwright.
 partwright.getPartSeeds() / partwright.setPartSeeds([{label, point, color?, maxRadius?}]) / partwright.openPartsPanel()  // pins (panel markers) + open the panel; maxRadius caps a seed's geodesic growth
 partwright.setPartSelection([id|name], {mode?}) / partwright.getPartSelection() / partwright.setPartsView({mode:'all'|'solo', parts?}) / partwright.partAt([x,y,z])  // highlight / solo parts for the user; which part is at a point
 await partwright.reopenParts({importIndex?})  // re-open parts saved on an import (with their seeds) as the draft
-await partwright.acceptParts({label?, smoothEdges?, applyColors?})   // commit: parts become labels via api.importWithParts(i), each in the colour it shows (applyColors:false = labels only); with edge smoothing on (default) the import is re-meshed along smooth boundaries; saves a version
+await partwright.acceptParts({label?, smoothEdges?, applyColors?})   // commit: parts become labels via api.importWithParts(i), each in the colour it shows (applyColors:false = labels only); smooth edges re-mesh the import; saves a version
+await partwright.splitIntoPieces(opts)
 partwright.listObjectParts()             // The current object's parts (api.label regions) + pieces (separate solids) -> {object, parts:[{name, triangleCount, color?, colorSource?, hidden?}], lostParts, unlabeledTriangleCount, pieces:[{index, triangleCount, part?}], unmatchedPaint, emptyPaint, renameSuggestions, selected}
 partwright.highlightObjectPart(name | {piece} | {unlabeled:true} | null) // Transient visual tint to show the user which one you mean (doesn't change the selection)
 partwright.setObjectPartHidden(name | {piece} | [..], hidden = true)  // Hide/show a part/piece (or a list) in the viewport only (code, versions, exports keep it) -> {ok, hidden}
@@ -585,9 +588,7 @@ partwright.setPaletteCapacity(n) / setPaletteConstrained(on)
 partwright.getBucketTolerance() / setBucketTolerance(t)                   // UI bucket tool config
 partwright.getBrushSize() / setBrushSize(r)                               // UI brush tool config
 partwright.getBrushSmooth() / setBrushSmooth(on) / setBrushSmoothDivisor(2..1024) // UI smooth-brush config (detail = radius ÷ divisor)
-partwright.getBrushSurface() / setBrushSurface('geodesic'|'slab'|'sphere') / setBrushDepth(d) // UI brush volume + slab depth (0 = auto)
-partwright.getBrushAlign() / setBrushAlign('view'|'surface'|'area')           // UI brush direction: view (default) = camera ray, surface = triangle normal, area = averaged normal
-partwright.getBrushFrontFacesOnly() / setBrushFrontFacesOnly(bool)           // UI brush: only paint triangles facing the camera (default on)
+partwright.get/setBrushSurface, setBrushDepth, get/setBrushAlign, get/setBrushFrontFacesOnly // UI brush settings -- /ai/colors.md#ui-brush-settings
 partwright.getBrushWrapAngle() / setBrushWrapAngle(0..180)                 // UI brush wrap tolerance (max edge bend paint crosses)
 partwright.getLabelNames()                                                // -> string[] label names from the current run (lighter than listLabels)
 await partwright.waitForPaint()                                           // resolve when no paint subdivision is in flight (only for pointer-driven brush tests)
@@ -666,7 +667,7 @@ On error: `{"status":"error","error":"...","executionTimeMs":2,"codeHash":"..."}
 
 Code runs in a sandbox via `new Function('api', code)`. All transforms return new immutable Manifold instances -- chaining works.
 
-**Locked-down environment:** model code runs in a Hardened JavaScript (SES) compartment inside a geometry Worker that has no network, storage, DOM or GPU access. It can name only `api` (below), the standard JavaScript built-ins (`Math` incl. `Math.random`, `Date` incl. `Date.now()`, `JSON`, `Array`/`Map`/`Set`/…, every typed array incl. `Float32Array`/`Float64Array`, `TextEncoder`/`TextDecoder`), `console` and `performance.now()`. There is **no** `self`/`window`/`globalThis` Worker scope, `navigator`, `setTimeout`/timers, `fetch`, `WebAssembly`, `crypto`, `URL`, `structuredClone` or `Intl`. Built-ins and the `api` objects are **frozen**: you can't patch `Array.prototype`, `Math` or `api.Manifold.prototype` (assigning throws a TypeError) — write a helper function instead. Each run gets a fresh compartment, so nothing you put on `globalThis` survives into the next run. Reading or assigning an undeclared name throws `ReferenceError: X is not defined` (with the line) as in normal strict JavaScript, and `typeof X` is still `'undefined'` — one difference: a name declared *somewhere* in the code but read outside its scope reads as `undefined` instead of throwing. The text `import(` and `eval(` in **code** is refused (the error names the line); in comments and strings it's fine. If you see `fetch is not a function`, `X is not defined`, `Cannot read properties of undefined (reading 'open')`, or `… is disabled in the geometry sandbox`, the code reached for a blocked browser API. That's deliberate, not a bug to work around. Pass external data in through imports (`api.imports`), `api.params`, or the console API instead.
+**Locked-down environment:** model code runs in a Hardened JavaScript (SES) compartment inside a geometry Worker that has no network, storage, DOM or GPU access. It can name only `api` (below), the standard JavaScript built-ins (`Math` incl. `Math.random`, `Date` incl. `Date.now()`, `JSON`, `Array`/`Map`/`Set`/…, every typed array incl. `Float32Array`/`Float64Array`, `TextEncoder`/`TextDecoder`), `console` and `performance.now()`. There is **no** `self`/`window`/`globalThis` Worker scope, `navigator`, `setTimeout`/timers, `fetch`, `WebAssembly`, `crypto`, `URL`, `structuredClone` or `Intl`. Built-ins and `api` objects are **frozen** (patching `Array.prototype`, `Math`, `api.Manifold.prototype` throws) — write a helper instead. Each run gets a fresh compartment, so nothing persists between runs. Reading or assigning an undeclared name throws `ReferenceError: X is not defined` (with the line) as in normal strict JavaScript, and `typeof X` is still `'undefined'`. `import(` and `eval(` in **code** are refused (fine in comments/strings). Errors like `fetch is not a function`, `X is not defined` or `… is disabled in the geometry sandbox` mean the code reached for a blocked API. Pass external data via `api.imports`/`api.params`.
 
 ```js
 const { Manifold, CrossSection, Curves, setCircularSegments } = api;
@@ -686,9 +687,10 @@ const { Manifold, CrossSection, Curves, setCircularSegments } = api;
 - `joints` -- part-to-part joinery: pins, dovetails, snap-fits, print-in-place hinges, ball joints, snap rims. See **[/ai/joints.md](/ai/joints.md)**. (`printFit` is a deprecated alias spreading both `fasteners` and `joints` — old sessions keep working; write new code against the split namespaces.)
 - `enclosure` -- two-part project boxes (`box` → `{base, lid}`, lip or screw lid), rounded `shell`s, and PCB `standoff` posts; composes `fasteners` for the screw variant. A correct box reports `componentCount === 2`. See **[/ai/enclosure.md](/ai/enclosure.md)**.
 - `knurl` -- functional grips: `diamond`/`straight`/`ribs` knurled cylinders for knobs, thumbscrews, and handles (distinct from decorative `surface` textures). See **[/ai/knurl.md](/ai/knurl.md)**.
+- `headform(opts?)` -- a real-size adult head in mm, plus `headform.landmarks()`, for wearable fit (manifold-js). See **[/ai/headform.md](/ai/headform.md)**.
 - `setCircularSegments`, `setMinCircularAngle`, `setMinCircularEdgeLength` -- global curve resolution defaults.
 
-**Debug with `console.log` — its output comes back to you.** Whatever model code prints with `console.log` / `info` / `warn` / `error` (in manifold-js, voxel and BREP sessions) is returned as `logs: string[]` by `run`, `runAndSave`, `setParams`, `runIsolated`, `runAndAssert` and `runAndExplain` (and the `runCode` / `runAndSave` chat tools), and `getGeometryData()` carries the last run's `logs` whoever started it (the user's Run button or an auto-run included), **including when the code throws** — so print intermediate values instead of throwing `JSON.stringify(...)` in an Error. Objects print as compact JSON, a Manifold prints as `Manifold{tris, bbox}`, and `warn`/`error` lines are prefixed. Output is capped per run (200 lines / 20,000 characters by default — Advanced Settings), so log summaries, not every loop iteration.:
+**Debug with `console.log` — its output comes back to you.** What model code prints (`log` / `info` / `warn` / `error`) is returned as `logs: string[]` by `run`, `runAndSave`, `setParams`, `runIsolated`, `runAndAssert` and `runAndExplain` (and the chat tools), **even when the code throws**; `getGeometryData().logs` has the last run's. Print intermediate values instead of throwing `JSON.stringify(...)` (a Manifold prints as `Manifold{tris, bbox}`; capped at 200 lines by default).:
 
 ```js
 const head = Manifold.ofMesh(api.imports[0]);
@@ -895,7 +897,7 @@ return part;
 
 #### Surface textures in code — `api.surface.*`
 
-Just like paint, **surface textures** can live in the code instead of being baked: `api.surface.fuzzy / .knit / .cable / .waffle / .fur / .woven / .knurl / .voronoi / .smooth` (or the generic `api.surface.apply('knit', {…})`). Each call records a texture op applied to the **final returned mesh**, in order — a parametric, non-baking counterpart of the `applyFuzzySkin` / `applyKnitTexture` / … tools (same options; size-relative defaults fill in omissions).
+Just like paint, **surface textures** can live in the code instead of being baked: `api.surface.fuzzy / .knit / .cable / .waffle / .fur / .woven / .knurl / .voronoi / .smooth` (or the generic `api.surface.apply('knit', {…})`). Each call records a texture op applied to the **final returned mesh**, in order — a parametric, non-baking counterpart of the `applyFuzzySkin` / `applyKnitTexture` / … tools (same options minus bake-only `preserveColor`; size-relative defaults fill in omissions).
 
 ```js
 const { Manifold } = api;
@@ -903,9 +905,9 @@ api.surface.knit({ stitchWidth: 1.2, amplitude: 0.6 });
 return Manifold.sphere(10, 64);
 ```
 
-Textures are expensive, so they're **memoized on the base mesh content**: any run that produces the same geometry (whitespace/comment/refactor edits included) renders the cached result instantly. **Every run applies the chain** — `partwright.run` / `runAndSave`, the Run button, version loads, and live typing alike — computing in a dedicated Worker behind an inline "Applying texture… Xs" status + Cancel, so the result you render/inspect is already textured with no extra step. Cancelling parks the chain behind a "⟳ Re-apply" pill (recover via the pill, `ensureSurfaceTexturesApplied()`, or any re-run). manifold-js-only. `partwright.applySurfaceTextureAsCode(id, opts?)` writes/updates the call in the code for you (insert before the final `return`, or edit the existing call), re-runs, and saves a version — the same path the Surface panel's "Apply as code" button takes. `partwright.applySurfaceTexture(id, opts?, mode?)` is the auto-routing wrapper: 'auto' (default) takes this in-code path on manifold-js and falls back to the bake tools elsewhere — returns `path: 'code' | 'bake'`. See [textures](/ai/textures.md#textures-as-code--apisurface-non-baking-in-a-manifold-js-session).
+Textures are **memoized on the base mesh content**: any run producing the same geometry (whitespace/comment edits included) reuses the cached result. **Every run applies the chain** — `partwright.run` / `runAndSave`, the Run button, version loads, and live typing alike (computed in a Worker behind an "Applying texture… Xs" status + Cancel), so what you render is already textured. Cancelling parks the chain behind a "⟳ Re-apply" pill (recover with `ensureSurfaceTexturesApplied()` or any re-run). manifold-js-only. `partwright.applySurfaceTextureAsCode(id, opts?)` writes/updates the call in the code for you (insert before the final `return`, or edit the existing call), re-runs, and saves a version. `partwright.applySurfaceTexture(id, opts?, mode?)` is the auto-routing wrapper: 'auto' (default) takes this in-code path on manifold-js and falls back to the bake tools elsewhere — returns `path: 'code' | 'bake'`. See [textures](/ai/textures.md#textures-as-code--apisurface-non-baking-in-a-manifold-js-session).
 
-**Scope a texture to part of the model** with one extra option: `api.surface.knurl({ label: 'grip' })` textures only an `api.label(…)` region (so you can texture one shape of a union), and `api.surface.fuzzy({ region: { point: [x,y,z], radius } })` textures only the triangles near a world-space point. The label's color carries onto the textured region. (Scope keys are manifold-js-code only; ignored on the bake path.)
+**Scope a texture to part of the model** with one extra option: `api.surface.knurl({ label: 'grip' })` textures only an `api.label(…)` region (so you can texture one shape of a union), and `api.surface.fuzzy({ region: { point: [x,y,z], radius } })` textures only the triangles near a world-space point. The label's color carries onto the textured region. (Scope keys are manifold-js-code only; the bake path rejects them.)
 
 ### Primitive origins and orientations
 
@@ -954,6 +956,7 @@ These are agent-leverage helpers: tasks you'd otherwise solve with mental trig (
 api.intersects(a, b)             // true if a∩b has any volume (bbox fast-reject)
 api.contains(outer, inner)       // true if inner ⊂ outer
 api.pointInside(m, [x,y,z])      // true if point is inside the solid
+api.raycast(m, o, dir) / api.closestPoint(m, p)  // surface queries — /ai/manifold-api.md
 api.bbox(m)                      // { min, max, size, center } — the missing accessor
 api.componentBounds(m)           // [{ index, volume, triangleCount, bbox }], largest first
 api.volumeDelta(a, b)            // b.volume() - a.volume()
@@ -1194,7 +1197,7 @@ The user can attach reference photos via `partwright.setImages([...])`; they app
 
 **Call `readDoc({name: "reference-images"})`** when the user attaches a photo or asks you to model something from an image — covers `setImages`/`getAttachments` arguments, label conventions for elevation matching, the durable-attachments model, and the five-step photo-to-model loop (major masses first, verify each elevation, iterate details).
 
-**Figure from a photo (a person, a Funko / chibi toy) — fill a spec, don't write code.** Picking parameters costs far fewer tokens than writing and debugging figure code, and every spec build is valid and painted by construction. (1) View the photo once. (2) Fill in a CharacterSpec: `body.proportions` ('realistic' | 'chibi' | 'funko'), `headScale`, hair `style` ('anime' / 'shag' (layered spiky mop) / 'captured' (the Tsubasa Funko hairdo) / 'mop' + knobs), clothing — incl. collar/cuff `trim`, chest/back `print` lettering, knee `shorts`, striped `socks`, `'toy'` shoes with `cleats` — bead eyes, `headSink`, `colors`, `pose.hold` for a ball. (3) Call `buildCharacter(spec)`. (4) Score with `photoMatch` (text only; a built figure faces +X, so azimuth 0 = front). (5) Adjust spec fields from its `worst[]` (`getCharacterSpec()` returns the current spec). (6) Repeat, looking at images only at checkpoints. (7) Hand-write code only for what the spec can't express (logos, accessories, other props). Full recipe: `/ai/figure.md#figure-from-a-photo--fill-a-spec-dont-write-code`.
+**Figure from a photo (a person, a Funko / chibi toy) — fill a spec, don't write code.** Picking parameters costs far fewer tokens than writing and debugging figure code, and every spec build is valid and painted by construction. (1) View the photo once. (2) Fill in a CharacterSpec: `body.proportions` ('realistic' | 'chibi' | 'funko'), `headScale`, hair `style` ('anime' / 'shag' (layered spiky mop) / 'captured' (a captured shaggy mop) / 'mop' + knobs), clothing — incl. collar/cuff `trim`, chest/back `print` lettering, knee `shorts`, striped `socks`, `'toy'` shoes with `cleats` — bead eyes, `headSink`, `colors`, `pose.hold` for a ball. (3) Call `buildCharacter(spec)`. (4) Score with `photoMatch` (text only; a built figure faces +X, so azimuth 0 = front). (5) Adjust spec fields from its `worst[]` (`getCharacterSpec()` returns the current spec). (6) Repeat, looking at images only at checkpoints. (7) Hand-write code only for what the spec can't express (logos, accessories, other props). Full recipe: `/ai/figure.md#figure-from-a-photo--fill-a-spec-dont-write-code`.
 
 ## Iteration workflow
 
@@ -1313,7 +1316,7 @@ const r = partwright.query({
   decompose: true,             // component breakdown
   boundingBox: true,           // bounding box
 });
-// r.slices     = { z5: {area, contours, ...}, z10: {...}, ... }
+// r.slices     = { z5: {area, polygons, svg, boundingBox}, ... }
 // r.components = [{ index, volume, centroid, boundingBox }, ...]
 // r.boundingBox = { min: [...], max: [...] }
 // r.stats      = current geometry-data stats

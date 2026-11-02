@@ -31,6 +31,9 @@ import { getPricing, pricingTierFor, type CatalogPricing } from './catalog';
 
 const CACHE_READ_MULTIPLIER = 0.1;
 const CACHE_WRITE_MULTIPLIER = 1.25;
+/** Anthropic bills 1-hour cache writes at 2× base input (5-minute: 1.25×).
+ *  The catalog's `cache_write` rate is the 5-minute one. */
+const CACHE_WRITE_1H_MULTIPLIER = 2;
 
 /** Explicit prices for known cheap models the build-time catalog snapshot
  *  doesn't carry (it's filtered to the last year of releases, so an
@@ -67,6 +70,12 @@ function pricingFor(provider: string, model: string): CatalogPricing | null {
   // because the call sites pass `provider` as a raw string (the same way
   // the rest of the cost meter does).
   return getPricing(provider as Provider, model) ?? KNOWN_MODEL_PRICING[`${provider}/${model}`] ?? null;
+}
+
+/** A model's base output rate (USD per 1M tokens), or null when unpriced.
+ *  Used to tell whether a candidate worker model is actually cheaper. */
+export function outputRateUsd(provider: string, model: string): number | null {
+  return pricingFor(provider, model)?.output ?? null;
 }
 
 /** Local (WebGPU) and custom (self-hosted OpenAI-compatible endpoint) turns
@@ -106,7 +115,9 @@ export function turnCostUsd(provider: string, model: string, usage: TurnUsage): 
   const cacheReadRate = rate.cacheRead ?? rate.input * CACHE_READ_MULTIPLIER;
   const cacheWriteRate = rate.cacheWrite ?? rate.input * CACHE_WRITE_MULTIPLIER;
   const cacheReadCost = (usage.cacheReadInputTokens * cacheReadRate) / 1_000_000;
-  const cacheWriteCost = (usage.cacheCreationInputTokens * cacheWriteRate) / 1_000_000;
+  const oneHourWrite = Math.min(usage.cacheCreation1hInputTokens ?? 0, usage.cacheCreationInputTokens);
+  const cacheWriteCost = ((usage.cacheCreationInputTokens - oneHourWrite) * cacheWriteRate
+    + oneHourWrite * rate.input * CACHE_WRITE_1H_MULTIPLIER) / 1_000_000;
   return inputCost + cacheReadCost + cacheWriteCost + outputCost;
 }
 

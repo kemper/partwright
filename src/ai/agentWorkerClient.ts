@@ -222,6 +222,7 @@ export async function runTurn(
     // snapshot it for openTool's id enum — the Worker's registry is empty.
     uiTools:            buildUiToolCatalog(),
     preloadToolGroups:  input.preloadToolGroups,
+    iterationLimit:     input.iterationLimit,
   };
 
   return new Promise<ChatMessage[]>((resolve, reject) => {

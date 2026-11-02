@@ -5,42 +5,42 @@ import {
   createSession,
   deleteSession,
   openSession,
-  importSession,
   clearAllSessions,
   exportSession,
   effectiveVersionLanguage,
   getState,
   type Session,
-  type ExportedSession,
 } from '../storage/sessionManager';
-import type { ImportedMesh } from '../import/importedMesh';
 import { getSessionLatestVersion, getSessionVersionCount, type Version } from '../storage/db';
 import { languageBadge } from './languageBadge';
 import { showToast } from './toast';
 import { confirmDialog, promptDialog } from './dialogs';
 import { updateAppHistory } from './appHistory';
 import { appPath } from '../deployment';
+import { jsonToBlob } from '../export/jsonBlob';
+import { parseJsonBlob } from '../import/jsonBytes';
 
 let modalEl: HTMLElement | null = null;
 /** Loads the session `openSession` just opened into the editor — its version
  *  (code, language, params, paint, annotations), or null when it has none.
  *  `switchedSession` is true when a different session was open before. */
 let onLoadVersion: ((version: Version | null, switchedSession: boolean) => void | Promise<void>) | null = null;
-type RegenerateThumbnailFn = (
-  code: string,
-  importedMeshes: ImportedMesh[] | undefined,
-) => Promise<Blob | null>;
+/** Imports a parsed session file and opens it — the app's one import path
+ *  (validation, newer-schema warnings, offscreen thumbnail backfill), so the
+ *  modal's Import behaves exactly like the toolbar's. It validates first and
+ *  calls `accept()` only for a real session file, right before importing. */
+type ImportPayloadFn = (data: unknown, accept: () => void) => Promise<void>;
 
-let regenerateThumbnailFn: RegenerateThumbnailFn | null = null;
+let importPayloadFn: ImportPayloadFn | null = null;
 let onNewSessionFn: (() => void) | null = null;
 
 export function initSessionList(
   loadVersion: (version: Version | null, switchedSession: boolean) => void | Promise<void>,
-  regenerateThumbnail?: RegenerateThumbnailFn,
+  importPayload?: ImportPayloadFn,
   onNewSession?: () => void,
 ): void {
   onLoadVersion = loadVersion;
-  regenerateThumbnailFn = regenerateThumbnail ?? null;
+  importPayloadFn = importPayload ?? null;
   onNewSessionFn = onNewSession ?? null;
 }
 
@@ -82,24 +82,14 @@ export async function showSessionList(): Promise<void> {
       const file = input.files?.[0];
       if (!file) return;
       try {
-        const text = await file.text();
-        const data = JSON.parse(text) as ExportedSession;
-        if ((!data.partwright && !data.mainifold) || !data.session || !Array.isArray(data.versions)) {
-          showToast('Invalid session file.', { variant: 'warn', source: 'import' });
-          return;
-        }
-        const session = await importSession(data, regenerateThumbnailFn ?? undefined, (msg) => showToast(msg, { variant: 'warn', source: 'import' }));
-        // Push the editor entry before the session-mutating open so the Back
-        // button returns to the prior session (updateURL only replaceState's).
-        updateAppHistory(appPath('/editor'), 'push');
-        const prevSessionId = getState().session?.id;
-        const version = await openSession(session.id);
-        closeModal();
-        // The load can take a while (a slow model compile) and reports its own
-        // errors — it isn't part of the import, so don't hold the modal or
-        // blame the import for it.
-        void Promise.resolve(onLoadVersion?.(version, prevSessionId !== session.id)).catch((e: unknown) => {
-          showToast('Imported, but opening it failed: ' + (e instanceof Error ? e.message : String(e)), { variant: 'warn', source: 'import' });
+        const data: unknown = await parseJsonBlob(file);
+        if (!importPayloadFn) return;
+        await importPayloadFn(data, () => {
+          // Push the editor entry before the session-mutating open so the Back
+          // button returns to the prior session (updateURL only replaceState's),
+          // and close first: opening the imported model can take a while.
+          updateAppHistory(appPath('/editor'), 'push');
+          closeModal();
         });
       } catch (e) {
         showToast('Failed to import session: ' + (e as Error).message, { variant: 'warn', source: 'import' });
@@ -252,7 +242,7 @@ async function createSessionRow(session: Session): Promise<HTMLElement> {
       );
       return;
     }
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const blob = jsonToBlob(data, 2);
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
     link.download = `${session.name.replace(/[^a-zA-Z0-9_-]/g, '_')}.partwright.json`;

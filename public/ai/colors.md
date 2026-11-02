@@ -878,7 +878,7 @@ await partwright.paintImage({
 })
 ```
 
-- **Placement:** pass `view` (auto-anchored at the model centre, optionally centred on a `label`) for the common case, OR explicit `at` + `normal` for precision — get those from `probeRay({origin, direction})` (returns hit point + face normal), `probePixel`, or a known face centre. With `view`, the projection direction is the view axis (front=-Y, back=+Y, right=+X, left=-X, top=+Z, bottom=-Z) and the surface anchor is found by ray-casting toward the model centre.
+- **Placement:** pass `view` (auto-anchored at the model centre, optionally centred on a `label`) for the common case, OR explicit `at` + `normal` for precision — get those from `probeRay(origin, direction)` (positional; `.hits[0]` has the hit point + face normal), `probePixel`, or a known face centre. With `view`, the projection direction is the view axis (front=-Y, back=+Y, right=+X, left=-X, top=+Z, bottom=-Z) and the surface anchor is found by ray-casting toward the model centre.
 - Only **forward-facing** triangles inside the footprint are painted, and a depth slab stops paint bleeding through to the far side.
 - After painting, **verify** with `renderView`/`renderViews` from the projection direction — confirm the graphic landed where you intended and is the right size before saving.
 - The stamp subdivides the footprint for crisp edges (smooth mode), so the model's triangle count rises locally — call `getGeometryData()` after if you care about the budget.
@@ -918,3 +918,12 @@ partwright.setPaletteConstrained(true)          // snap paint to the loaded slot
 
 Aim for a region count within `capacity` for a single-pass multi-material print; beyond it the UI flags the model over-budget.
 
+## UI brush settings
+
+The Paint panel's brush settings (the user's interactive brush), readable and settable from the console:
+
+```js
+partwright.getBrushSurface() / setBrushSurface('geodesic'|'slab'|'sphere') / setBrushDepth(d) // UI brush volume + slab depth (0 = auto)
+partwright.getBrushAlign() / setBrushAlign('view'|'surface'|'area')           // UI brush direction: view (default) = camera ray, surface = triangle normal, area = averaged normal
+partwright.getBrushFrontFacesOnly() / setBrushFrontFacesOnly(bool)           // UI brush: only paint triangles facing the camera (default on)
+```

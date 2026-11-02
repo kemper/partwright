@@ -53,7 +53,7 @@ const INTERRUPTED_CONTENT =
  *  drops them on the wire, so they must not count as a neighbour when deciding
  *  which assistant turn a tool_result answers — otherwise a repair run on the
  *  live `state.history` could strip a valid carrier sitting just past one. */
-function isEphemeral(m: ChatMessage): boolean {
+export function isEphemeral(m: ChatMessage): boolean {
   return m.errored === true || m.stopNotice !== undefined;
 }
 

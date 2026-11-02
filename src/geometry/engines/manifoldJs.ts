@@ -13,6 +13,7 @@ import { createFastenersNamespace } from '../fasteners';
 import { createJointsNamespace } from '../joints';
 import { createGearsNamespace } from '../gears';
 import { createThreadsNamespace } from '../threads';
+import { createHeadform } from '../headform';
 import { createEnclosureNamespace } from '../enclosure';
 import { createKnurlNamespace } from '../knurl';
 import { createSculptOps } from '../sculpt';
@@ -933,6 +934,8 @@ export const manifoldJsEngine: Engine = {
       threads: threadsNamespace,
       enclosure: enclosureNamespace,
       knurl: knurlNamespace,
+      // Metric adult head proxy for wearable fit (masks, helmets, glasses).
+      headform: createHeadform(sdfNamespace),
       // Text helpers — flat aliases so agents can write api.text(...) directly.
       text: curvesNamespace.text,
       textSection: curvesNamespace.textSection,
@@ -949,6 +952,8 @@ export const manifoldJsEngine: Engine = {
       intersects: meshOpsNamespace.intersects,
       contains: meshOpsNamespace.contains,
       pointInside: meshOpsNamespace.pointInside,
+      raycast: meshOpsNamespace.raycast,
+      closestPoint: meshOpsNamespace.closestPoint,
       bbox: meshOpsNamespace.bbox,
       componentBounds: meshOpsNamespace.componentBounds,
       volumeDelta: meshOpsNamespace.volumeDelta,
@@ -974,6 +979,8 @@ export const manifoldJsEngine: Engine = {
       smoothWeld: meshOpsNamespace.smoothWeld,
       // Edit one part as a solid (cut at its seam, transform, re-attach):
       editPart: meshOpsNamespace.editPart,
+      // Cut a solid into separate printable pieces along its part seams:
+      splitParts: meshOpsNamespace.splitParts,
       // Declarative sculpt nudges (grab / inflate / flatten):
       sculpt: sculptNamespace,
       // Robust booleans + heal:

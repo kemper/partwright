@@ -13,7 +13,7 @@ Do all remaining follow-ups of #1056.
 
 ## Key decisions
 
-**Low-confidence must never hide the findings that fix the model.** The four-view Tsubasa check (front, back, q34, busy-backdrop hero) exposed two false triggers:
+**Low-confidence must never hide the findings that fix the model.** The four-view figurine check (front, back, q34, busy-backdrop hero) exposed two false triggers:
 
 1. Tiny same-coloured parts (eye highlight, brows) flagged the HAIR. The flag is now size-aware: a partner only counts when its model area is at least 10% of the region's own.
 2. When the model's hair was mis-shaped, the photo under it was skin, so hair looked "skin-coloured" and its size findings were suppressed. The swallowed-colour rule now requires the region's OWN colour to find almost nothing in the photo (under 25% of its model area), which is the real swallow case. The reason text is direction-neutral ("X looks Y-coloured in the photo").

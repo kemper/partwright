@@ -18,7 +18,7 @@ fail loudly when buried, and keep every existing figure byte-identical.
 chunky swoopy pointed locks (fringe, side bangs, crown tufts, layered nape),
 with a tilted hairline and an arched face window so the 3/4 view does not read
 as a helmet. Params `locks/fringe/spike/swoop/length/volume/seed/ears/on`,
-plus optional cap/tuft helpers. Validate by rebuilding the Tsubasa chibi as v4,
+plus optional cap/tuft helpers. Validate by rebuilding the soccer-figure chibi as v4,
 scored against the photo by text, with few image reads.
 
 ## Assistant

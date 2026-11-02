@@ -1,6 +1,6 @@
 ---
 name: refresh-models-catalog
-description: "Weekly job: regenerate src/ai/generated/modelsCatalog.json from models.dev, validate (build + unit), and open or update a draft PR into main labelled ignore-for-release. Run from the weekly models-refresh routine or when the model catalog is stale."
+description: "Weekly job: regenerate src/ai/generated/modelsCatalog.json from models.dev, validate (build + unit), and open or update a ready-for-review PR into main labelled ignore-for-release. Run from the weekly models-refresh routine or when the model catalog is stale."
 ---
 
 # Refresh models catalog (weekly)
@@ -65,8 +65,23 @@ prompt-log commit guard.
   branch (`create_or_update_file`, message `chore: refresh models catalog
   snapshot`). Updating the file on an existing open PR's branch updates the PR
   in place — no new PR needed.
+- **Merge conflict resolution:** After pushing the file, attempt
+  `update_pull_request_branch`. If it fails with a conflict (the branch and
+  `main` both modified `modelsCatalog.json`), resolve locally:
+  ```bash
+  git fetch origin main chore/refresh-models-catalog
+  git stash -u   # stash any local changes first
+  git checkout -B chore/refresh-models-catalog origin/chore/refresh-models-catalog
+  git merge origin/main -X ours --no-edit   # fresh snapshot always wins
+  git push -u origin chore/refresh-models-catalog
+  git checkout -   # return to previous branch
+  git stash pop
+  ```
+  This is a merge commit (no new logic), so the prompt-log guard does not apply
+  (`-X ours` keeps our snapshot, the merge commit itself touches only files
+  already on `main`).
 - **PR:** if no open PR has `chore/refresh-models-catalog` as its head into
-  `main`, open one (`create_pull_request`, `draft: true`, base `main`):
+  `main`, open one (`create_pull_request`, `draft: false`, base `main`):
   - **Title:** `chore: refresh models catalog snapshot`
   - **Body:** "Automated weekly refresh of `src/ai/generated/modelsCatalog.json`
     from models.dev. Build + unit validated before opening. Merging triggers the
@@ -75,10 +90,19 @@ prompt-log commit guard.
   - If a PR is already open, the file push above already updated it — just say so
     and stop.
 
-### 5. Stop — the human reviews and merges
-`pr-checks` runs on the PR (it was opened under a human identity, so it fires).
-You don't need to babysit it unless asked; the refresh is a routine, low-risk
-content bump. The main → staging gate promotes the snapshot once the PR merges.
+### 5. Watch CI and merge when green
+This is a content-only bump — no logic changes — so merge it yourself once all
+`pr-checks` pass (build + unit + e2e shards all green):
+
+```
+merge_pull_request(owner, repo, pullNumber, merge_method="squash",
+                   commit_title="chore: refresh models catalog snapshot")
+```
+
+Poll `get_check_runs` every ~2 minutes (using Monitor or a timed loop) until
+every check shows `status: completed`. Merge only when **all** conclusions are
+`success`. If any check fails, diagnose and fix before merging — a content-only
+snapshot should never cause build or test failures; investigate if it does.
 
 ## Reminders
 - The PR carries **only** the regenerated snapshot — nothing else. If `git

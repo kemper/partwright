@@ -248,8 +248,8 @@ export const THINKING_LEVELS: Record<ThinkingLevel, { label: string; promptLabel
   off:     { label: 'Off',     promptLabel: 'off',     hint: 'No extended reasoning where the model allows it. Claude models that always think (Opus 5.x / Fable) run at their lowest effort; OpenAI reasoning models use their own default. Cheapest + fastest.' },
   default: { label: 'Default', promptLabel: 'default', hint: 'No override — the model decides how much to think, using its provider default. Thinking is shown when the model does think.' },
   low:     { label: 'Low',     promptLabel: 'low',     hint: 'A short think before acting. Good for routine edits where a little planning helps.' },
-  medium:  { label: 'Med',     promptLabel: 'medium',  hint: 'Balanced reasoning for multi-step geometry, assemblies, and tricky paint selectors.' },
-  high:    { label: 'High',    promptLabel: 'high',    hint: 'Deep reasoning for hard spatial problems. The recommended default for modeling.' },
+  medium:  { label: 'Med',     promptLabel: 'medium',  hint: 'Balanced reasoning for multi-step geometry, assemblies, and tricky paint selectors. The default.' },
+  high:    { label: 'High',    promptLabel: 'high',    hint: 'Deep reasoning for hard spatial problems. Slower and costlier — a hard step can think for several minutes.' },
   xhigh:   { label: 'XHigh',   promptLabel: 'extra-high', hint: 'Beyond High — what Anthropic recommends for agentic work on newer Claude models. Falls back to High where a model has no such level.' },
   max:     { label: 'Max',     promptLabel: 'max',     hint: 'The most reasoning the model offers. Slow and costly — for one-off hard problems. Falls back to the model\'s highest level.' },
 };
@@ -274,6 +274,11 @@ export type TurnOutcomeReason =
   | 'aborted'
   | 'error'
   | 'other';
+
+/** Outcome `detail` for a max_tokens stop that produced no text and no tool
+ *  call: the model used its whole output allowance thinking. That reasoning
+ *  can't be resumed, so "keep going" restarts the step. */
+export const MAX_TOKENS_WHILE_THINKING = 'thinking';
 
 /** Persisted per-message record. One row per chat message in IndexedDB. */
 export interface ChatMessage {
@@ -325,7 +330,7 @@ export interface ChatMessage {
    *  Rendered as a distinct amber notice with a "Keep going" button that
    *  continues the agent loop from the existing history (no new user prompt).
    *  Not persisted to IndexedDB. */
-  stopNotice?: { reason: TurnOutcomeReason; detail?: string; iterations: number };
+  stopNotice?: { reason: TurnOutcomeReason; detail?: string; iterations: number; /** Thinking level a cut-off-while-thinking step ran at. */ ranAtThinking?: ThinkingLevel };
   /** Marks the synthetic user prompt the agent loop injects to auto-continue a
    *  turn that ended without calling `finish` (auto-continue mode). Rendered as
    *  a subtle divider rather than a normal user bubble, but persisted (and sent
@@ -337,6 +342,68 @@ export interface ChatMessage {
   /** Cumulative model time in milliseconds across all API calls since the
    *  user triggered this turn (resets each time the user sends a message). */
   turnElapsedMs?: number;
+  /** What was sent and what came back for the API call that produced this
+   *  assistant message — provider/model, stop reason, request shape, transient
+   *  retries. Observability only: no request builder reads it. Feeds the
+   *  session-trace export (src/ai/sessionTrace.ts). Absent on messages written
+   *  before it existed. */
+  call?: ApiCallTrace;
+  /** On a compaction summary (`compacted: true`): totals of the messages the
+   *  summary replaced (they are deleted), so a session trace can still account
+   *  for their spend, plus the summarizer call's own usage. */
+  compaction?: CompactionTrace;
+}
+
+/** Per-request telemetry for one agent-loop API call. See ChatMessage.call. */
+export interface ApiCallTrace {
+  provider: Provider;
+  model: string;
+  /** Provider-canonical stop reason (end_turn / tool_use / max_tokens / …). */
+  stopReason: string;
+  thinking: ThinkingLevel;
+  /** 0-based agent-loop iteration within the user turn. */
+  iteration: number;
+  request: {
+    /** Messages in the request after image elision / payload pruning. */
+    messages: number;
+    /** Tool names offered on this request, in order — written only when the
+     *  list differs from the previous call in the same user turn (omitted =
+     *  unchanged), so a long session doesn't store it on every call. */
+    tools?: string[];
+    /** How many tools were offered (always present). */
+    toolCount: number;
+    /** JSON length of the tool definitions (a proxy for their token cost). */
+    toolSchemaChars: number;
+    systemPromptChars: number;
+    /** Per-turn toggle suffix appended to the system prompt. */
+    systemSuffixChars: number;
+    /** Text chars of the history as sent (blocks, tool inputs, tool results). */
+    historyChars: number;
+    /** Text chars removed from the history by stale-payload pruning. */
+    prunedChars: number;
+    /** Images in the request (user attachments + tool-result renders). */
+    imagesSent: number;
+    /** Images in the history that were elided from this request. */
+    imagesElided: number;
+  };
+  /** Transient failures retried before this call succeeded (error text
+   *  secret-redacted before it is persisted). */
+  retries?: { error: string; durationMs: number }[];
+}
+
+export interface CompactionTrace {
+  /** Messages deleted and replaced by this summary. */
+  droppedMessages: number;
+  /** Totals of the deleted messages (rolled up through nested compactions). */
+  dropped: {
+    apiCalls: number;
+    toolCalls: number;
+    toolErrors: number;
+    usage: TurnUsage;
+    costUsd: number;
+  };
+  /** The summarization call itself. */
+  summarizer?: { model: string; inputTokens: number; outputTokens: number; costUsd: number };
 }
 
 export type ChatBlock =
@@ -405,6 +472,10 @@ export interface PersistedToolResult {
    *  to the model as a multimodal content block AND rendered inline in the
    *  panel so the user sees what the agent saw. */
   image?: ImageSource;
+  /** Wall-clock ms the tool took, summed over retries (observability only). */
+  durationMs?: number;
+  /** Executions when the tool was auto-retried (absent = ran once). */
+  attempts?: number;
 }
 
 export interface TurnUsage {
@@ -412,6 +483,10 @@ export interface TurnUsage {
   outputTokens: number;
   cacheCreationInputTokens: number;
   cacheReadInputTokens: number;
+  /** The part of `cacheCreationInputTokens` written to Anthropic's 1-hour
+   *  cache, which bills at 2× input instead of the 5-minute 1.25×. Absent on
+   *  older persisted turns and every other provider (= all 5-minute). */
+  cacheCreation1hInputTokens?: number;
 }
 
 export interface KeyRecord {

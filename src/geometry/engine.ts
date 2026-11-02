@@ -826,7 +826,7 @@ export async function executeCodeAsync(
     // figures rough out fast. The Worker further gates on the source actually
     // doing an SDF `.build()`, so non-SDF code never pays for a second pass.
     const sdfPreviewScale = (onPreview && l === 'manifold-js') ? getConfig().renderer.sdfPreviewScale : undefined;
-    worker.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, manifoldFactsMinTriangles: getConfig().renderer.lazyManifoldMinTriangles, containmentSamples: getConfig().renderer.containmentSamples, modelLog: { maxLines: getConfig().renderer.modelLogMaxLines, maxChars: getConfig().renderer.modelLogMaxChars }, ...(sdfPreviewScale ? { sdfPreviewScale } : {}), ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
+    worker.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, manifoldFactsMinTriangles: getConfig().renderer.lazyManifoldMinTriangles, voxelSdfMaxSamples: getConfig().import.voxelSdfMaxSamples, containmentSamples: getConfig().renderer.containmentSamples, modelLog: { maxLines: getConfig().renderer.modelLogMaxLines, maxChars: getConfig().renderer.modelLogMaxChars }, ...(sdfPreviewScale ? { sdfPreviewScale } : {}), ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
   });
 }
 
@@ -843,7 +843,7 @@ export async function runVoxelGridInWorker(
   const callId = `voxgrid-${++callIdCounter}`;
   return new Promise((resolve, reject) => {
     pendingVoxelGrids.set(callId, { resolve, reject });
-    worker.postMessage({ type: 'voxel_grid', callId, code, params: params ?? null });
+    worker.postMessage({ type: 'voxel_grid', callId, code, params: params ?? null, voxelSdfMaxSamples: getConfig().import.voxelSdfMaxSamples });
   });
 }
 

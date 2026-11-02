@@ -16,8 +16,8 @@ async function waitForEngine(page: Page) {
 
 test('migrated catalog entry renders colours from code, not the paint sidecar', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
-  // companion_cube: body/hearts/edges were byLabel paint, now api.paint.label in code.
-  await page.goto('/editor?catalog=companion_cube.partwright.json');
+  // heart_cube: body/hearts/edges were byLabel paint, now api.paint.label in code.
+  await page.goto('/editor?catalog=heart_cube.partwright.json');
   await waitForEngine(page);
   await page.waitForTimeout(3500); // import + run + paint resolve
 

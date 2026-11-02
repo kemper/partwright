@@ -38,7 +38,9 @@ test.describe('Multi-tab single-writer leader', () => {
     await page2.waitForSelector('text=Ready', { timeout: 15000 });
     await expect(page2.locator('#session-viewer-overlay')).toHaveCount(0, { timeout: 10000 });
     await expect(page2).toHaveURL(/\/editor\?session=/);
-    await expect(page2.url()).not.toContain('takeover');
+    // The ?takeover=1 strip runs late in init, so wait for it rather than
+    // sampling the URL once.
+    await expect(page2).not.toHaveURL(/takeover/, { timeout: 10000 });
     await expect(page1.locator('#session-viewer-overlay')).toBeVisible({ timeout: 10000 });
 
     // page2 (leader) saves a new version; page1 (read-only viewer) should mirror

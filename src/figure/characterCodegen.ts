@@ -17,6 +17,7 @@
 // Pure text generation (no DOM/engine) so it unit-tests in the vitest tier,
 // like surfaceCodegen.ts.
 
+import { DEFAULT_HAIR_PRESET } from '../geometry/hairCapture/presetNames';
 import {
   type CharacterSpec,
   type Joint,
@@ -213,7 +214,7 @@ export function specToCode(spec: CharacterSpec): string {
       // Measured on the real head. Captured reads its OWN fringe knob — the
       // lock styles' `fringe` was ignored here before, so old specs keep their code.
       const knobs = obj({
-        preset: hair.preset !== 'tsubasa' ? hair.preset : undefined,
+        preset: hair.preset !== DEFAULT_HAIR_PRESET ? hair.preset : undefined,
         spikiness: hair.spikiness !== 1 ? hair.spikiness : undefined,
         smooth: hair.smooth !== 0 ? hair.smooth : undefined,
         mirror: hair.mirror ? true : undefined,
