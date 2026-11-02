@@ -47,6 +47,13 @@ part, each with `state.json` as the resume file.
 
 ## Rules
 
+- **Check the target's license before you start.** A reconstruction is a
+  derivative of the target. CC0 or CC BY targets are fine: record title,
+  author, source URL and license in a README beside the converged parts (see
+  `scripts/inverse-cad/converged/benchy/README.md`). ND forbids it. A user's
+  target with an unknown license stays local and uncommitted, and its
+  reconstruction doesn't ship without the owner's approval.
+
 - Never run two git-mutating steps concurrently with subagents; subagents
   never touch git at all.
 - The gates (`gates.mjs`) are the acceptance predicate — do not soften

@@ -52,6 +52,11 @@ on, and what "done" means. You implement exactly that, verify it, and report.
   via `errorLog.capture` with a `source` tag. No hand-rolled message nodes.
 - **Engine awareness**: anything that bakes a result back into a session must
   handle (or warn about) all four engines via `engineBakeWarning`.
+- **Licensing** (CLAUDE.md § Copyright, licenses and trademarks): don't paste
+  code from other projects or Q&A sites, or add a dependency, font or asset,
+  unless its license is permissive (MIT, BSD, Apache-2.0, ISC, CC0). Report
+  anything else instead of adding it. No character, brand or real-person names
+  in code, fixtures, test data or file names.
 
 ## Verify before reporting
 
