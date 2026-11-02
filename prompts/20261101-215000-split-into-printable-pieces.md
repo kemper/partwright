@@ -153,3 +153,15 @@ this log, the follow-up issues, the Visual proof comment re-uploaded under
 neutral file names). Older commit messages and comment edit history still
 carry it; rewriting those needs a force-push / manual revision deletion, left
 to the user's call.
+
+## Assistant (budget after syncing main)
+
+`main` had gone over the AI context budget after kemper/partwright#1198, and
+this PR adds a tool schema plus an `ai.md` line on top. Merged `main`, took the
+same budget fix as kemper/partwright#1225 (cherry-picked, so the two merge
+cleanly), and trimmed the rest inside the segmentation area rather than raising
+a ceiling: shorter `detectParts` / `autoDetectParts` / seed / denoise
+descriptions (the details live in segmentation.md), the split tool's schema
+without its rarely-needed knobs (`resolution`, `smoothing`, `explode`,
+`label`, seam `normal` — the console method still takes them), and a shorter
+`acceptParts` line in `ai.md`.

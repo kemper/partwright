@@ -1307,7 +1307,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'detectParts',
-    description: 'Split an IMPORTED mesh (e.g. a fused STL figurine) into named parts — hair, face, eyes, shirt, ball… — so paint can follow real part boundaries instead of boxes/slabs/normal floods. Creates a DRAFT (nothing saved), shows a coloured overlay and opens the Part Detection panel so the user can refine it by hand. "auto-merge" (Auto patches) needs no seeds: it splits the surface along its grooves into generic "patch N" parts — rename/merge them with editParts, or convert them to seeds (editParts seedsFromParts) and refine. For "crease-watershed" pass seeds: one or more {label, point} per part — get points from probePixel on a renderViews image; several seeds may share a label (add more for big or wrapped parts like a shirt front+back). Boundaries settle on the sculpted grooves between seeds and cover hidden surfaces too (inner arms behind a ball). "pieces" needs no seeds (separate bodies). Returns {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor}], quality, unassigned}. Then call renderParts to SEE the result and fix it with editParts. Read /ai/segmentation.md first.',
+    description: 'Split an IMPORTED mesh (e.g. a fused STL figurine) into named parts (hair, face, eyes, shirt…) so paint and cuts follow real part boundaries. Creates a DRAFT (nothing saved) with an overlay and opens the Part Detection panel. "auto-merge" needs no seeds (generic "patch N" parts to rename/merge with editParts); "crease-watershed" takes seeds {label, point} per part (points from probePixel; several per label for big or wrapped parts); "pieces" splits separate bodies. Then renderParts to SEE it and editParts to fix it. Read /ai/segmentation.md first.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1320,8 +1320,8 @@ const ALL_TOOLS: ToolDefinition[] = [
             properties: {
               label: { type: 'string', description: 'Part name this seed belongs to.' },
               point: { type: 'array', items: { type: 'number' }, description: '[x, y, z] on the surface (from probePixel / probeRay).' },
-              color: { type: 'string', description: 'Optional "#rrggbb": becomes the part\'s colour (kept through acceptParts). listPartDetectors labelPresets has default colours for common figure parts.' },
-              maxRadius: { type: 'number', description: 'Optional cap (model units, measured along the surface) on how far this seed may grow — stops a seed on an ungrooved area leaking. Prefer paintAlongBoundary for collars/cuffs.' },
+              color: { type: 'string', description: 'Optional "#rrggbb" part colour.' },
+              maxRadius: { type: 'number', description: 'Optional cap on how far this seed grows along the surface (stops leaks on ungrooved areas).' },
             },
             required: ['label', 'point'],
           },
@@ -1331,8 +1331,8 @@ const ALL_TOOLS: ToolDefinition[] = [
           type: 'object',
           description: 'Shared surface analysis. Usually omit.',
           properties: {
-            normalSmoothRadius: { type: 'number', minimum: 0, description: 'World-unit radius for denoising normals before measuring grooves. Omit = raw (default); try ~3× the mesh edge length only on very noisy scans.' },
-            normalSmoothEdgeLengths: { type: 'number', minimum: 0, description: 'Same denoise, as a multiple of the median edge length (3 ≈ a noisy scan). Ignored when normalSmoothRadius is set.' },
+            normalSmoothRadius: { type: 'number', minimum: 0, description: 'Normal-denoise radius (world units); only for very noisy scans.' },
+            normalSmoothEdgeLengths: { type: 'number', minimum: 0, description: 'Same, as a multiple of the median edge length.' },
           },
         },
         importIndex: { type: 'integer', minimum: 0, description: 'Which import (default 0).' },
@@ -1342,7 +1342,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'autoDetectParts',
-    description: 'Seedless first pass on an IMPORTED mesh — the same proposal an interactive STL import runs. Tries every automatic detector (listPartDetectors autoPropose:true), cheapest first, and the first that splits the mesh into 2+ parts REPLACES the current draft (e.g. "pieces" on a multi-body figure, one body per colour). Returns {proposed:true, proposedBy, tried, parts, quality} — then renderParts to check and editParts to rename — or {proposed:false, tried, reason} with the existing draft untouched (one solid piece: place named seeds and call detectParts with a seeded detector; or too many loose pieces to be colour bodies).',
+    description: 'Seedless first pass on an IMPORTED mesh, as an interactive STL import runs: tries the automatic detectors cheapest first; the first that finds 2+ parts REPLACES the draft (e.g. "pieces" on a multi-body figure). proposed:false leaves the draft untouched; for one solid piece, place named seeds and call detectParts.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1507,20 +1507,16 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'splitIntoPieces',
-    description: 'Cut the model into separate printable pieces along its PART boundaries (after acceptParts, or api.label parts). Use this instead of hand-placed planes across fused contacts. preview (default) pulls pieces apart + renders, no save; then same options with preview:false saves. Read /ai/segmentation.md#split-into-printable-pieces.',
+    description: 'Cut the model into printable pieces along its accepted parts; never hand-place planes across fused parts. preview (default) renders pulled-apart pieces without saving; preview:false saves. See /ai/segmentation.md.',
     input_schema: {
       type: 'object',
       properties: {
         parts: { type: 'array', items: { type: 'string' }, description: 'Piece names; "a+b" = one piece. Default: every part.' },
-        seams: { type: 'array', description: 'Seam per piece (others auto).', items: { type: 'object', properties: { piece: { type: 'string' }, mode: { type: 'string', enum: ['auto', 'medial', 'flat', 'plug'] }, axis: { type: 'array', items: { type: 'number' } }, depth: { type: 'number' }, normal: { type: 'array', items: { type: 'number' } } }, required: ['piece', 'mode'] } },
+        seams: { type: 'array', description: 'Seam per piece (others auto).', items: { type: 'object', properties: { piece: { type: 'string' }, mode: { type: 'string', enum: ['auto', 'medial', 'flat', 'plug'] }, axis: { type: 'array', items: { type: 'number' } }, depth: { type: 'number' } }, required: ['piece', 'mode'] } },
         keep: { type: 'string', description: 'Piece that keeps the rest (default largest).' },
         clearance: { type: 'number', minimum: 0 },
-        resolution: { type: 'integer', minimum: 32, maximum: 192 },
-        smoothing: { type: 'integer', minimum: 0, maximum: 12 },
-        explode: { type: 'number', minimum: 0 },
         preview: { type: 'boolean' },
         remove: { type: 'boolean' },
-        label: { type: 'string' },
       },
     },
   },
