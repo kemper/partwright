@@ -130,11 +130,11 @@ const AXIS_SCHEMA = { type: 'string', enum: ['x', 'y', 'z'] };
 const VIEW_FOCUS_PROPS = {
   focus: {
     type: 'object',
-    description: 'Zoom onto a small feature instead of framing the whole model: {part:"name"} (a labelled part — listObjectParts), {piece:i}, or a world box {min:[x,y,z], max:[x,y,z]}.',
+    description: 'Zoom onto a feature: {part:"name"} (listObjectParts), {piece:i}, or a world box {min:[x,y,z], max:[x,y,z]}.',
     properties: { part: { type: 'string' }, piece: { type: 'integer' }, min: VEC3_SCHEMA, max: VEC3_SCHEMA },
   },
-  padding: { type: 'number', description: 'Margin around focus as a fraction of its largest side (default 0.15, an Advanced Setting).' },
-  clip: { type: 'boolean', description: 'With focus: hide everything outside the focus box, so nearer geometry (a lip, a mask) cannot block the view. Use to look into sockets and slots.' },
+  padding: { type: 'number', description: 'Margin around focus, as a fraction of its largest side (default 0.15).' },
+  clip: { type: 'boolean', description: 'With focus: hide everything outside the focus box, so nearer geometry cannot block the view (sockets, slots).' },
 };
 
 const ALL_TOOLS: ToolDefinition[] = [

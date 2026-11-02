@@ -42,3 +42,10 @@ history later, after landing the open branches.
   deck-shield project are left as they are (their own design, not a third-party
   name).
 - PR/issue text on GitHub was scrubbed the same way, outside git.
+
+**`main` was over the AI context budget** (system prompt +50 chars, tool
+schemas +356) after kemper/partwright#1198, which turns every PR's unit tier
+red. Fixed by trimming, not by raising the ceilings: the zoom options'
+descriptions repeat across four tool schemas, so shortening them recovers the
+schema budget; the `ai.md` renderView line drops default values that the
+visual-verification subdoc documents (the reference-ghost default moved there).
