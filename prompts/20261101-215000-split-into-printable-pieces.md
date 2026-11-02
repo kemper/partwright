@@ -90,3 +90,28 @@ wrapper and six kernel/UI issues; all fixed with regression tests:
   separate from fragments handed back across a seam; a run that times out
   restores the code; the modal reports a split that ran but didn't save.
 - Preview spread moved to `ui.splitPreviewExplode` (Advanced Settings).
+
+## Assistant (NED run follow-up)
+
+The user's 46 MB source model couldn't come through the Drive connector (10 MB
+cap); their "anyone with the link" Drive URL downloaded directly. An agent then
+drove the real app through the warm daemon: simplify to ~400k triangles,
+seeded thickness + crease-watershed detection, accept, splitParts (plug eyes,
+medial arms/tail, flat neck/legs, 0.15 clearance), seam-by-seam inspection,
+Bambu export — 11 clean, assemblable pieces.
+
+Fixes from what that run hit:
+- **Separate shells**: splitParts now handles each physically separate shell
+  on its own. A shell carrying 2+ pieces is cut; a shell belonging to one
+  piece (NED's fins) passes through, and if it's sunk into a neighbour it is
+  trimmed back to that surface (`trimOverlaps`, default true) with its trimmed
+  faces relabelled. Cutting the fins against the ear they were sunk into had
+  carved whole ears; leaving them out dropped them as "fragments".
+- **Memory**: the cut chain frees intermediates as it goes (rest copies,
+  raw level sets, decompose handles in dropSlivers/pieceVolumes). The run had
+  peaked at 3.1 GB of the 4 GB engine heap.
+- **Daemon**: `detectChromiumExecutable` also checks `chrome-linux64/` like
+  playwright.config.ts does.
+Pre-existing bugs the run surfaced were filed rather than widened into this
+PR (#1221 black paint exports blue, #1222 smooth-edge accept scrambles
+imported paint, #1223 seam-polish / inspection follow-ups).
