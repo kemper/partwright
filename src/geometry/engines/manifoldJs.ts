@@ -976,6 +976,8 @@ export const manifoldJsEngine: Engine = {
       smoothWeld: meshOpsNamespace.smoothWeld,
       // Edit one part as a solid (cut at its seam, transform, re-attach):
       editPart: meshOpsNamespace.editPart,
+      // Cut a solid into separate printable pieces along its part seams:
+      splitParts: meshOpsNamespace.splitParts,
       // Declarative sculpt nudges (grab / inflate / flatten):
       sculpt: sculptNamespace,
       // Robust booleans + heal:

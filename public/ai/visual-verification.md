@@ -81,6 +81,8 @@ partwright.setEdgesVisible(true)                         // the viewport "Edges"
 (+X), 180 = back; elevation 0 = horizon, 90 = top-down, negative = from below. Omitted fields keep
 their current value. `frameObjectPart` keeps the current viewing direction.
 
+**Reference ghost (`reference`):** when a `setReferenceGeometry` ghost is set, `renderView` and `renderViews` draw it by default. Pass `reference: false` to hide it.
+
 ## Edge overlay (`edges`)
 
 Both `renderView` and `renderViews` take an `edges` option controlling what is drawn

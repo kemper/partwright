@@ -51,7 +51,7 @@ export function formatSurfaceParams(params: Record<string, unknown>): string {
  *  fooled by code-shaped text inside strings or comments, and indices map 1:1
  *  back onto the original source. Also returns the brace depth at each index
  *  (counted on the masked text, so braces in strings/comments don't count). */
-function lexicalMask(code: string): { masked: string; depth: Int32Array } {
+export function lexicalMask(code: string): { masked: string; depth: Int32Array } {
   const len = code.length;
   const out = code.split('');
   const depth = new Int32Array(len);

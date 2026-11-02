@@ -130,11 +130,11 @@ const AXIS_SCHEMA = { type: 'string', enum: ['x', 'y', 'z'] };
 const VIEW_FOCUS_PROPS = {
   focus: {
     type: 'object',
-    description: 'Zoom onto a small feature instead of framing the whole model: {part:"name"} (a labelled part — listObjectParts), {piece:i}, or a world box {min:[x,y,z], max:[x,y,z]}.',
+    description: 'Zoom onto a feature: {part:"name"} (listObjectParts), {piece:i}, or a world box {min:[x,y,z], max:[x,y,z]}.',
     properties: { part: { type: 'string' }, piece: { type: 'integer' }, min: VEC3_SCHEMA, max: VEC3_SCHEMA },
   },
-  padding: { type: 'number', description: 'Margin around focus as a fraction of its largest side (default 0.15, an Advanced Setting).' },
-  clip: { type: 'boolean', description: 'With focus: hide everything outside the focus box, so nearer geometry (a lip, a mask) cannot block the view. Use to look into sockets and slots.' },
+  padding: { type: 'number', description: 'Margin around focus, as a fraction of its largest side (default 0.15).' },
+  clip: { type: 'boolean', description: 'With focus: hide everything outside the focus box, so nearer geometry cannot block the view (sockets, slots).' },
 };
 
 const ALL_TOOLS: ToolDefinition[] = [
@@ -1307,7 +1307,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'detectParts',
-    description: 'Split an IMPORTED mesh (e.g. a fused STL figurine) into named parts — hair, face, eyes, shirt, ball… — so paint can follow real part boundaries instead of boxes/slabs/normal floods. Creates a DRAFT (nothing saved), shows a coloured overlay and opens the Part Detection panel so the user can refine it by hand. "auto-merge" (Auto patches) needs no seeds: it splits the surface along its grooves into generic "patch N" parts — rename/merge them with editParts, or convert them to seeds (editParts seedsFromParts) and refine. For "crease-watershed" pass seeds: one or more {label, point} per part — get points from probePixel on a renderViews image; several seeds may share a label (add more for big or wrapped parts like a shirt front+back). Boundaries settle on the sculpted grooves between seeds and cover hidden surfaces too (inner arms behind a ball). "pieces" needs no seeds (separate bodies). Returns {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor}], quality, unassigned}. Then call renderParts to SEE the result and fix it with editParts. Read /ai/segmentation.md first.',
+    description: 'Split an IMPORTED mesh (e.g. a fused STL figurine) into named parts (hair, face, eyes, shirt…) so paint and cuts follow real part boundaries. Creates a DRAFT (nothing saved) with an overlay and opens the Part Detection panel. "auto-merge" needs no seeds (generic "patch N" parts to rename/merge with editParts); "crease-watershed" takes seeds {label, point} per part (points from probePixel; several per label for big or wrapped parts); "pieces" splits separate bodies. Then renderParts to SEE it and editParts to fix it. Read /ai/segmentation.md first.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1320,8 +1320,8 @@ const ALL_TOOLS: ToolDefinition[] = [
             properties: {
               label: { type: 'string', description: 'Part name this seed belongs to.' },
               point: { type: 'array', items: { type: 'number' }, description: '[x, y, z] on the surface (from probePixel / probeRay).' },
-              color: { type: 'string', description: 'Optional "#rrggbb": becomes the part\'s colour (kept through acceptParts). listPartDetectors labelPresets has default colours for common figure parts.' },
-              maxRadius: { type: 'number', description: 'Optional cap (model units, measured along the surface) on how far this seed may grow — stops a seed on an ungrooved area leaking. Prefer paintAlongBoundary for collars/cuffs.' },
+              color: { type: 'string', description: 'Optional "#rrggbb" part colour.' },
+              maxRadius: { type: 'number', description: 'Optional cap on how far this seed grows along the surface (stops leaks on ungrooved areas).' },
             },
             required: ['label', 'point'],
           },
@@ -1331,8 +1331,8 @@ const ALL_TOOLS: ToolDefinition[] = [
           type: 'object',
           description: 'Shared surface analysis. Usually omit.',
           properties: {
-            normalSmoothRadius: { type: 'number', minimum: 0, description: 'World-unit radius for denoising normals before measuring grooves. Omit = raw (default); try ~3× the mesh edge length only on very noisy scans.' },
-            normalSmoothEdgeLengths: { type: 'number', minimum: 0, description: 'Same denoise, as a multiple of the median edge length (3 ≈ a noisy scan). Ignored when normalSmoothRadius is set.' },
+            normalSmoothRadius: { type: 'number', minimum: 0, description: 'Normal-denoise radius (world units); only for very noisy scans.' },
+            normalSmoothEdgeLengths: { type: 'number', minimum: 0, description: 'Same, as a multiple of the median edge length.' },
           },
         },
         importIndex: { type: 'integer', minimum: 0, description: 'Which import (default 0).' },
@@ -1342,7 +1342,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'autoDetectParts',
-    description: 'Seedless first pass on an IMPORTED mesh — the same proposal an interactive STL import runs. Tries every automatic detector (listPartDetectors autoPropose:true), cheapest first, and the first that splits the mesh into 2+ parts REPLACES the current draft (e.g. "pieces" on a multi-body figure, one body per colour). Returns {proposed:true, proposedBy, tried, parts, quality} — then renderParts to check and editParts to rename — or {proposed:false, tried, reason} with the existing draft untouched (one solid piece: place named seeds and call detectParts with a seeded detector; or too many loose pieces to be colour bodies).',
+    description: 'Seedless first pass on an IMPORTED mesh, as an interactive STL import runs: tries the automatic detectors cheapest first; the first that finds 2+ parts REPLACES the draft (e.g. "pieces" on a multi-body figure). proposed:false leaves the draft untouched; for one solid piece, place named seeds and call detectParts.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1502,6 +1502,21 @@ const ALL_TOOLS: ToolDefinition[] = [
         label: { type: 'string', description: 'Version label (default "Detected parts").' },
         smoothEdges: { type: 'boolean', description: 'With edge smoothing on (the default, 3), the import is re-meshed along the smooth part boundaries. false keeps the original triangles.' },
         applyColors: { type: 'boolean', description: 'Default true: every part\'s visible colour becomes its model colour. false saves labels only (no colours).' },
+      },
+    },
+  },
+  {
+    name: 'splitIntoPieces',
+    description: 'Cut the model into printable pieces along its accepted parts; never hand-place planes across fused parts. preview (default) renders pulled-apart pieces without saving; preview:false saves. See /ai/segmentation.md.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        parts: { type: 'array', items: { type: 'string' }, description: 'Piece names; "a+b" = one piece. Default: every part.' },
+        seams: { type: 'array', description: 'Seam per piece (others auto).', items: { type: 'object', properties: { piece: { type: 'string' }, mode: { type: 'string', enum: ['auto', 'medial', 'flat', 'plug'] }, axis: { type: 'array', items: { type: 'number' } }, depth: { type: 'number' } }, required: ['piece', 'mode'] } },
+        keep: { type: 'string', description: 'Piece that keeps the rest (default largest).' },
+        clearance: { type: 'number', minimum: 0 },
+        preview: { type: 'boolean' },
+        remove: { type: 'boolean' },
       },
     },
   },
@@ -2772,6 +2787,7 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   'healCurrent', 'replaceColor', 'setRegionVisibility', 'paintAirbrush', 'renderSection',
   'getObjectPartInfo', 'setObjectPartColor', 'renameObjectPart', 'bakeObjectPartColor',
   'extractObjectPiece', 'extractObjectParts', 'reassignPaint', 'partAction', 'undoPartEdit',
+  'splitIntoPieces',
 ]);
 
 /** Read-only object-targetable tools. When one targets an object other than
@@ -3089,7 +3105,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams', 'setCurvatureQuality']);
-const SAVE_GATED = new Set(['runAndSave', 'forkVersion', 'loadVersion', 'saveVersion', 'resolveModelDrift', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts', 'partAction', 'undoPartEdit']);
+const SAVE_GATED = new Set(['runAndSave', 'forkVersion', 'loadVersion', 'saveVersion', 'resolveModelDrift', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts', 'partAction', 'undoPartEdit', 'splitIntoPieces']);
 /** SAVE_GATED tools that touch version history WITHOUT executing new code, so
  *  they only need the saveVersions scope (not runCode). */
 const SAVE_NON_RUNNING = new Set(['loadVersion', 'saveVersion', 'renameVersion', 'deleteVersion', 'saveAllObjects']);
@@ -4232,6 +4248,27 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.setPartsOverlay(input.visible);
     case 'acceptParts':
       return api.acceptParts(input);
+    case 'splitIntoPieces': {
+      // The schema carries seams as [{piece, mode, axis?, depth?, normal?}]
+      // (every object param declares its fields); the API takes { piece: seam }.
+      const args: Record<string, unknown> = { ...input };
+      if (Array.isArray(input.seams)) {
+        const seams: Record<string, unknown> = {};
+        for (const raw of input.seams as Record<string, unknown>[]) {
+          if (!raw || typeof raw.piece !== 'string') return { error: 'splitIntoPieces: each seams entry needs a piece name and a mode.' };
+          const { piece, ...spec } = raw;
+          seams[piece as string] = Object.keys(spec).length === 1 && typeof spec.mode === 'string' ? spec.mode : spec;
+        }
+        args.seams = seams;
+      }
+      const result = await api.splitIntoPieces(args) as Record<string, unknown>;
+      if (!result || typeof result !== 'object' || 'error' in result) return result;
+      const image = result.image as string | undefined;
+      delete result.image;
+      const img = typeof image === 'string' ? parseImageDataUrl(image) : null;
+      if (!img) return result;
+      return { content: `splitIntoPieces: ${JSON.stringify(result)}`, isError: false, image: { ...img, label: 'splitIntoPieces preview' } } satisfies ToolExecResult;
+    }
     case 'discardParts':
       return api.discardParts();
     case 'listObjectParts':

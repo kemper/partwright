@@ -2091,6 +2091,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={2000} max={60_000} integer
           onChange={v => set('ui', 'undoToastDurationMs', v)}
         />
+        <Field cfgKey="ui.splitPreviewExplode"
+          label="Split preview spread"
+          hint="How far a Split into pieces preview pulls the pieces apart (0 = in place)."
+          tooltip="Split into printable pieces shows a preview first, with each piece moved away from the model's centre by this factor so every seam is visible. A saved split keeps the pieces in place."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.splitPreviewExplode}
+          value={c.ui.splitPreviewExplode}
+          min={0} max={3}
+          onChange={v => set('ui', 'splitPreviewExplode', v)}
+        />
         <Field cfgKey="ui.modelConsoleAutoHideMs"
           label="Console pill auto-hide"
           unit="ms"

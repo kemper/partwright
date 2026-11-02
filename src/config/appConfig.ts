@@ -568,6 +568,10 @@ export interface AppConfig {
      *  reached. After it fades, "Recover deleted" in the Objects list still
      *  restores the item. */
     undoToastDurationMs: number;
+    /** How far splitIntoPieces' preview pulls the pieces apart from the
+     *  model's centre (the api.splitParts `explode` factor; 0 = in place).
+     *  A saved split keeps the pieces in place unless the caller sets one. */
+    splitPreviewExplode: number;
     /** How long the collapsed model-console pill (shown when a run prints with
      *  console.log / warn) stays in the viewport corner before fading away
      *  (ms). 0 keeps it until dismissed. Output with errors never auto-hides;
@@ -956,6 +960,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     maxAppliedNoteChars: 400,
     toastDurationMs: 2200,
     undoToastDurationMs: 8000,
+    splitPreviewExplode: 0.6,
     modelConsoleAutoHideMs: 10_000,
     deletedObjectRetentionDays: 30,
     annotationViewMaxWidth: 1280,

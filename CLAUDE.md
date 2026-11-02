@@ -390,6 +390,7 @@ The AI chat input supports `/command` shortcuts (`src/ai/slashCommands.ts`). A l
 | `/portrait` (alias `/bust`) | Prefill a prompt to model a stylized 3D bust from a photo you attach |
 | `/reconstruct` (alias `/convert`) | Prefill a prompt to reverse-engineer an imported mesh into editable code |
 | `/parts` (alias `/segment`) | Prefill a prompt to split an imported mesh into named parts and paint each one (#1025) |
+| `/split` (alias `/pieces`) | Prefill a prompt to cut an imported mesh into separate printable pieces along its accepted parts (`splitIntoPieces`) |
 | `/help` (alias `/commands`) | List all commands in chat |
 
 The command names and descriptions are defined in `SLASH_COMMANDS` in `slashCommands.ts`; the panel's handler map is type-checked against `SlashCommandName` so a name can't exist without a handler. Tests: `tests/unit/slashCommands.test.ts` (unit), `tests/ai-slash-commands.spec.ts` (e2e).
