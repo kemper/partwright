@@ -17,7 +17,7 @@ pattern's analytic field (soccer, plus stripes/checker where cheap), scoped by
 a smooth slab. UI↔API parity: `partwright.paintPattern` + help(), model-code
 support if possible, a `paintPattern` AI tool, a Paint-panel "Soccer ball"
 button on the "Paint within" part, docs (incl. fixing colors.md's wrong
-`paintStroke` surface default). Unit + e2e tests, visual check on the tsubasa
+`paintStroke` surface default). Unit + e2e tests, visual check on the figurine
 figurine, save/reopen timings. Commit on the worktree branch; don't push.
 
 ## Assistant
@@ -60,7 +60,7 @@ subdivides, so `api.paint.pattern` accepts `soccer` + `withinPart` but rejects
 **smooth default** is false for `paintPattern` (explicit, matches the in-code
 whole-triangle behaviour); the Paint-panel button passes `smooth: true`.
 
-**Verification.** Tsubasa figurine (470k tris): ball fit r=10.34 at
+**Verification.** The figurine (470k tris): ball fit r=10.34 at
 [146.75,119.87,42.26]; paint 2.5 s → +8.7k triangles; descriptor 182 bytes;
 save 1.2 s; export+import of the whole session 14 s vs 11 s for the same
 session before painting (one fewer version) — the import cost is the 470k-tri

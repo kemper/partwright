@@ -2,6 +2,6 @@
 // Add a preset: run `node scripts/capture-hair.mjs <mesh> --out
 // src/geometry/hairCapture/presets/<name>.ts`, then list it here.
 import type { HairCapturePreset } from '../field';
-import { tsubasa } from './tsubasa';
+import { shaggy } from './shaggy';
 
-export const HAIR_PRESETS: Readonly<Record<string, HairCapturePreset>> = { tsubasa };
+export const HAIR_PRESETS: Readonly<Record<string, HairCapturePreset>> = { shaggy };

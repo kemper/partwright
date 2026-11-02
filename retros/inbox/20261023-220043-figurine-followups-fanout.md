@@ -1,6 +1,6 @@
 ---
 date: "2026-10-23T22:00:43Z"
-task: "Tsubasa follow-ups: #1049, #1050, #1055, #1056, #1059 + captured hair (tracking #1069)"
+task: "Figurine follow-ups: #1049, #1050, #1055, #1056, #1059 + captured hair (tracking #1069)"
 pr: 1081
 areas: [agents, worktrees, ci, pr-workflow, figures, segmentation, photo-match]
 cost: medium

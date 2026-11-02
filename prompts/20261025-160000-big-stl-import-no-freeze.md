@@ -13,7 +13,7 @@ hangs. I don't want that. Please fix. Create PR.
 Follow-up: switching between large objects in the object list also freezes and
 lags. The app should always be snappy — a "complex model, processing" message
 with a progress bar is fine, but it must never freeze. [Shared a 187 MB,
-3.7M-triangle STL (NED_V2.stl) via a Drive link for reference.]
+3.7M-triangle STL via a Drive link for reference.]
 
 ## Assistant
 

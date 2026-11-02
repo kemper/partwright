@@ -9,7 +9,7 @@ tools: [subagent, git-worktree, playwright]
 
 (Orchestrating agent, relaying the owner's request from issue #1050.) The Part
 Detection panel is tedious: "I could hand paint faster than I could merge
-several auto detected areas together." A UX review on the 460k-triangle Tsubasa
+several auto detected areas together." A UX review on the 460k-triangle figurine
 figurine measured about 70–100 actions to reach 9 coloured parts through auto
 patches + merge. Build palette-first "label chips" (hair, face, eyes, shirt,
 arms, shorts, socks, shoes, ball + custom, with a figure/generic preset list)

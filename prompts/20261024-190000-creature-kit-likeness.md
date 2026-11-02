@@ -7,10 +7,10 @@ tools: [model-preview, playwright]
 
 ## Human
 
-The Ned has the same problems the in-app AI's version had:
+The creature has the same problems the in-app AI's version had:
 - the eyes aren't perfectly round like the model's;
-- the real Ned has a particular slope and shape to his ear;
-- the mouth isn't an indentation following a line: Ned has an almost
+- the real creature has a particular slope and shape to his ear;
+- the mouth isn't an indentation following a line: the creature has an almost
   cat-like upper lip, with depth and texture, that pushes out from the face
   like some Dr Seuss characters.
 
@@ -53,7 +53,7 @@ they depend on where the face is.
   than the leaf fell away before the tip and squared it off.
 - The membrane starts outside the skull, so its root edge is clean.
 
-For Ned the ears stick out nearly level (lift 8), with a span of about 1.7×
+For the creature the ears stick out nearly level (lift 8), with a span of about 1.7×
 the head width. Too much belly squares off the tip; that's documented.
 
 **Skull → one tapered egg.** Two overlapping skull ellipsoids leave a hood
@@ -61,6 +61,6 @@ crease. The head was also enlarged about 12% to match the photos' head/body
 ratio.
 
 **Docs.** creature.md now teaches these as rules (round lidded eyes, muzzle
-as volume, ear silhouette and slope) and carries the new Ned code. The
+as volume, ear silhouette and slope) and carries the new creature code. The
 routing text in the system prompt, ai.md and sdf.md names the new
 capabilities.

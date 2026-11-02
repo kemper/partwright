@@ -1,6 +1,6 @@
 ---
 date: "2026-10-24T17:20:00Z"
-task: "feat: add api.sdf.creature kit and a Ned creature example"
+task: "feat: add api.sdf.creature kit and a horned creature example"
 pr: 1099
 areas: [tooling, docs, testing, agents]
 cost: medium
