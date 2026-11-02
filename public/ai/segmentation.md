@@ -276,14 +276,14 @@ await partwright.export3MFObjects(undefined, 'figure', { split: { [obj]: 'parts'
 **Options:** `parts` (piece names; `'torso+tail'` or `['torso', 'tail']` keeps
 parts together as one piece; default every part), `keep` (the piece that keeps
 whatever is left, default the largest; it has no seam of its own), `clearance` (0),
-`resolution` (96; raise it for small or detailed parts), `smoothing`, `explode`
+`resolution` (96; raise it for small or detailed parts), `smoothing`, `trimOverlaps` (true), `explode`
 (preview default 0.6, saved default 0), `minFragment` (0.02: loose bits smaller
 than this fraction of their piece go back across the seam), `label`.
 
 - **Order:** plugs are cut first, then the smallest pieces first. The kept piece takes whatever is left.
 - **Read the warnings.** "came out as N separate solids" means that seam is wrong. Try another mode, a higher `resolution`, or fix the part boundary with `editParts` and accept again. Every piece should be one solid.
 - **Check the result geometrically.** In the saved split, `componentCount` should equal the number of pieces, and `listObjectParts().pieces` should name one part per piece.
-- **Already-separate parts** (fins printed apart, say) need no cut. They come through as their own piece.
+- **Separate shells aren't cut.** Each physically separate shell is handled on its own. A shell that belongs to one part (fins modelled apart, a separate eyeball) comes through whole as its own piece (`mode: 'separate'`). If it's sunk into a neighbour, it's trimmed back to that surface so it can be glued on. A warning gives how far it was sunk. `trimOverlaps: false` keeps it whole. Shells holding two or more parts are cut as usual.
 - **Parts you leave out of `parts`** aren't cut off. They stay with whichever piece they're attached to and keep their own labels (a `parts: ['head', 'body']` split keeps the eyes on the head).
 - **`clearance` is a real gap on every seam type.** Medial cuts are measured along the cut, and the clearance comes off the neighbour's side, so the piece keeps its exact surface.
 - **In code** it's `api.splitParts(m, opts)` with the same options (`flatTolerance` too). It works on any labelled manifold-js shape, so you can call it on `api.label` parts too. The run's log line `[splitParts] {…}` is the report.

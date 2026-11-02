@@ -115,3 +115,8 @@ Fixes from what that run hit:
 Pre-existing bugs the run surfaced were filed rather than widened into this
 PR (#1221 black paint exports blue, #1222 smooth-edge accept scrambles
 imported paint, #1223 seam-polish / inspection follow-ups).
+
+The rerun of NED through the official `splitIntoPieces` (fins left to the new
+separate-shell path) matched the agent's manual workaround piece-for-piece and
+peaked at 1.46 GB instead of 3.1 GB. Docs now describe separate shells and
+`trimOverlaps`, and an e2e test covers a sunk fin plus a free-standing shell.

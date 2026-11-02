@@ -108,6 +108,39 @@ test.describe('split into printable pieces', () => {
     expect(out.gapManifold).toBe(true);
   });
 
+  test('separate shells pass through as their own pieces; a sunk shell is trimmed to its neighbour', async () => {
+    test.setTimeout(180_000);
+    const out = await page.evaluate(async (figure) => {
+      const api = (window as unknown as { partwright: PW }).partwright;
+      await api.createSession('split-shells');
+      // The figure plus a fin sunk into the head (a separate shell, like
+      // NED's fins) and a free-standing badge.
+      const code = figure.replace('return body.add(head).add(arm).add(eye);', [
+        'const fused = body.add(head).add(arm).add(eye);',
+        "const fin = api.label(Manifold.cube([3, 10, 8], true).translate([13.5, 0, 34]), 'fin');",
+        "const badge = api.label(Manifold.cylinder(1, 4, 4, 32).translate([40, 0, 0]), 'badge');",
+        'return Manifold.compose([fused, fin, badge]);',
+      ].join('\n'));
+      await api.runAndSave(code, 'figure + shells');
+      const r = await api.splitIntoPieces({ seams: { eye: 'plug' }, render: false });
+      const geo = await api.getGeometryData();
+      const view = api.listObjectParts();
+      return {
+        error: (r as { error?: string }).error ?? null,
+        modes: Object.fromEntries(((r.pieces ?? []) as { name: string; mode: string }[]).map(p => [p.name, p.mode])),
+        warnings: (r.warnings ?? []) as string[],
+        components: geo?.componentCount, manifold: geo?.isManifold,
+        pieceParts: (view.pieces ?? []).map(p => p.part ?? null).sort(),
+      };
+    }, FIGURE);
+    expect(out.error).toBeNull();
+    expect(out.modes).toEqual({ eye: 'plug', arm: 'medial', head: 'flat', body: 'kept', fin: 'separate', badge: 'separate' });
+    expect(out.warnings.some(w => /fin: was sunk \d+% into its neighbour/.test(w))).toBe(true);
+    expect(out.components).toBe(6);
+    expect(out.manifold).toBe(true);
+    expect(out.pieceParts).toEqual(['arm', 'badge', 'body', 'eye', 'fin', 'head']);
+  });
+
   test('the Split modal previews pieces from the Tools menu', async () => {
     test.setTimeout(180_000);
     await page.evaluate(async (figure) => {
