@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import { buildToolList, type ToolDefinition } from '../../src/ai/tools';
 import { buildSystemPrompt, toggleSuffix } from '../../src/ai/systemPrompt';
-import { toolsForRequest } from '../../src/ai/chatLoop';
+import { toolsForRequest, turnToolList } from '../../src/ai/chatLoop';
 import { CORE_TOOLS, TOOL_GROUPS } from '../../src/ai/toolGroups';
 import { applyPreset, loadSettings } from '../../src/ai/settings';
 import type { ChatToggles } from '../../src/ai/types';
@@ -42,7 +42,7 @@ const standard: ChatToggles = loadSettings().toggles;
 const allOn: ChatToggles = applyPreset(loadSettings(), 'full').toggles;
 
 function turn0(t: ChatToggles) {
-  const gated = buildToolList(t, []);
+  const gated = turnToolList(t, []);
   const { tools, suffixLine } = toolsForRequest(t, gated, []);
   const system = buildSystemPrompt(aiMd).length;
   const suffix = toggleSuffix(t).length + suffixLine.length;

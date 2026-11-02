@@ -26,7 +26,7 @@ Touch only the hair-capture files, the script and the tests.
 
 **Carrying the field.** `carryField(box, field, pad)` returns `box.displace(pad, (box − field) / pad)`. This still evaluates to exactly the field, but the bounds grow only by the existing pad instead of a fixed world unit. A non-finite field sample maps to 1e9 (far outside). `displace` zeroes a non-finite field, which would have returned the box's own negative interior as solid hair. It is exported and unit-tested with a plain box.
 
-**Script hygiene.** The export identifier maps non-identifier characters to `_` and prefixes a leading digit with `_`. The script prints the identifier, since the preset must be registered under that name. Text placed in `//` comments (the name, the source and the input basename) has control characters and line separators replaced. Regenerating the tsubasa preset gives a byte-identical file.
+**Script hygiene.** The export identifier maps non-identifier characters to `_` and prefixes a leading digit with `_`. The script prints the identifier, since the preset must be registered under that name. Text placed in `//` comments (the name, the source and the input basename) has control characters and line separators replaced. Regenerating the shaggy preset gives a byte-identical file.
 
 **Quantization.** It moved into `quantizeRadii`, which widens a zero span to 1e-3.
 

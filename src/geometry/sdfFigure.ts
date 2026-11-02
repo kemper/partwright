@@ -4806,7 +4806,7 @@ const SHAG_ONLY_FIELDS = ['layers', 'raggedness', 'crown', 'flare', 'tipWidth', 
 const SHAG_CROWNS = ['spiky', 'tousled'] as const;
 
 /** `F.hair(rig, { style: 'shag' })`: a shaggy, LAYERED vinyl-toy mop (the
- *  Captain-Tsubasa / jet-black spiky-mop look) — the anime cap plus many
+ *  anime / jet-black spiky-mop look) — the anime cap plus many
  *  MEDIUM ribbon locks:
  *   - an uneven, messy fringe (seeded per-lock length, lean and width) added
  *     last with a tight blend so its points stay crisp instead of melting

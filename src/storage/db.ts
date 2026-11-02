@@ -10,6 +10,7 @@ import {
 export type { AttachedImage, SessionAttachment, AttachmentKind } from './attachment';
 import { packStoredArrays, unpackStoredArrays } from './storedArrays';
 import { getConfig } from '../config/appConfig';
+import type { AnnotationView } from '../annotations/annotationViewTypes';
 
 /** A version as written to the `versions` store: its big typed arrays (import
  *  meshes, persisted textures, detected parts) become Blobs, so the put does
@@ -52,7 +53,7 @@ export interface Session {
    *  snapshot (stored opaquely as a record to keep this storage layer decoupled
    *  from the AI types) and `preset` mirrors the settings preset. Sessions saved
    *  before this field gains `toggles` simply restore provider/model only. */
-  aiPreference?: { provider: string; model: string; toggles?: Record<string, unknown>; preset?: string };
+  aiPreference?: { provider: string; model: string; toggles?: Record<string, unknown>; preset?: string; /** AI settings rev the toggles were saved under (absent = before rev 2). */ settingsRev?: number };
   /** Pinned thumbnail camera angle (degrees). When set, captured thumbnails
    *  (catalog tiles, gallery, version snapshots) render from this azimuth /
    *  elevation instead of the default iso 3/4 view — so a faced model can show
@@ -178,6 +179,19 @@ export interface Version {
    *  dev/test builds where the version resolves to 'unknown' (we store nothing
    *  rather than the placeholder). Read by the cross-major migration seam. */
   appVersion?: string;
+  /** Geometry fingerprint of the mesh this version's code built when it was
+   *  saved (`ModelFingerprint`, src/geometry/modelFingerprint.ts; opaque here).
+   *  Opening the version compares it with the rebuilt mesh to notice when the
+   *  code now builds a different model. Absent on versions saved before
+   *  fingerprints existed, or by a save that had no matching run. */
+  fingerprint?: unknown;
+  /** The mesh this version displayed when saved (`SavedMesh`,
+   *  src/storage/versionMesh.ts; opaque here), colours included. Kept ONLY on
+   *  each object's newest version: saving a new version drops the previous
+   *  newest version's copy, so storage grows with objects, not history. Never
+   *  stored for a version whose model is already stored mesh data (imports, an
+   *  in-code surface texture, a baked voxel grid). */
+  latestMesh?: unknown;
 }
 
 /** Editor working buffer scoped to (session, part, language). One slot per
@@ -221,7 +235,7 @@ const DB_NAME = 'partwright';
 const LEGACY_DB_NAME = 'mainifold';
 const LEGACY_MIGRATION_KEY = 'partwright-migrated-mainifold-db';
 const PARTS_MIGRATION_KEY = 'partwright-migrated-parts';
-const DB_VERSION = 11;
+const DB_VERSION = 12;
 
 /** Opens the partwright IndexedDB. Exposed so the AI subsystem can attach
  *  its own stores (`aiKeys`, `aiChats`) without duplicating the connection. */
@@ -349,6 +363,13 @@ function openDB(): Promise<IDBDatabase> {
       // src/ai/customEndpoints.ts.
       if (!db.objectStoreNames.contains('aiEndpoints')) {
         db.createObjectStore('aiEndpoints', { keyPath: 'id' });
+      }
+      // v12: annotation-view history — one row per saved Snapshot markup
+      // (camera + captured frame + marks + hits), indexed by sessionId. See
+      // src/annotations/annotationViews.ts.
+      if (!db.objectStoreNames.contains('annotationViews')) {
+        const store = db.createObjectStore('annotationViews', { keyPath: 'id' });
+        store.createIndex('sessionId', 'sessionId', { unique: false });
       }
     };
     req.onsuccess = () => {
@@ -717,6 +738,7 @@ export async function deleteSession(id: string): Promise<void> {
   if (db.objectStoreNames.contains('reliefSources')) stores.push('reliefSources');
   // `deletedObjects` (the object bin) only exists from v9.
   if (db.objectStoreNames.contains('deletedObjects')) stores.push('deletedObjects');
+  if (db.objectStoreNames.contains('annotationViews')) stores.push('annotationViews');
   const txn = db.transaction(stores, 'readwrite');
   txn.objectStore('sessions').delete(id);
   // The relief source blob is keyed by sessionId, so a direct key delete clears
@@ -750,6 +772,7 @@ export async function deleteSession(id: string): Promise<void> {
   ];
   if (db.objectStoreNames.contains('drafts')) cascades.push(deleteByIndex('drafts'));
   if (db.objectStoreNames.contains('deletedObjects')) cascades.push(deleteByIndex('deletedObjects'));
+  if (db.objectStoreNames.contains('annotationViews')) cascades.push(deleteByIndex('annotationViews'));
   await Promise.all(cascades);
   // Wait for the entire transaction to commit
   await txComplete(txn);
@@ -1013,6 +1036,11 @@ export interface SaveVersionOptions {
    *  Caller passes `buildInfo.version` (omit/undefined in dev where it's
    *  'unknown'); the db layer just stores it opaquely. */
   appVersion?: string;
+  /** Geometry fingerprint — see {@link Version.fingerprint}. */
+  fingerprint?: unknown;
+  /** Displayed mesh — see {@link Version.latestMesh}. Saving any version drops
+   *  the part's previous newest version's copy, whether or not this one has one. */
+  latestMesh?: unknown;
 }
 
 export async function saveVersion(
@@ -1036,6 +1064,8 @@ export async function saveVersion(
     operation,
     surfaceTexture,
     appVersion,
+    fingerprint,
+    latestMesh,
   } = options ?? {};
   // Compute the next index and write the version inside ONE readwrite
   // transaction. IndexedDB serializes overlapping readwrite transactions on
@@ -1057,6 +1087,9 @@ export async function saveVersion(
     cursorReq.onsuccess = () => {
       const cursor = cursorReq.result;
       const maxIndex = cursor ? (cursor.key as [string, number])[1] : 0;
+      // The part's newest version so far: the only one that can hold a
+      // latestMesh (see Version.latestMesh). This save supersedes it.
+      const prevNewestId = cursor ? cursor.primaryKey as string : null;
       const nextIndex = maxIndex + 1;
       const v: Version = {
         id: generateId(),
@@ -1078,9 +1111,23 @@ export async function saveVersion(
         ...(operation ? { operation } : {}),
         ...(surfaceTexture ? { surfaceTexture } : {}),
         ...(appVersion ? { appVersion } : {}),
+        ...(fingerprint ? { fingerprint } : {}),
+        ...(latestMesh ? { latestMesh } : {}),
       };
       const putReq = store.put(storedVersion(v));
-      putReq.onsuccess = () => resolve(v);
+      putReq.onsuccess = () => {
+        resolve(v);
+        // Drop the superseded newest version's mesh in the same transaction,
+        // chained from callbacks (an await here would let it auto-commit).
+        if (!prevNewestId) return;
+        const getReq = store.get(prevNewestId);
+        getReq.onsuccess = () => {
+          const prev = getReq.result as Version | undefined;
+          if (!prev || prev.latestMesh === undefined) return;
+          const { latestMesh: _dropped, ...rest } = prev;
+          store.put(rest);
+        };
+      };
       putReq.onerror = () => reject(putReq.error);
     };
     cursorReq.onerror = () => reject(cursorReq.error);
@@ -1330,6 +1377,7 @@ export async function clearAllData(): Promise<void> {
   if (db.objectStoreNames.contains('reliefSources')) stores.push('reliefSources');
   if (db.objectStoreNames.contains('deletedObjects')) stores.push('deletedObjects');
   if (db.objectStoreNames.contains('paintRefineCache')) stores.push('paintRefineCache');
+  if (db.objectStoreNames.contains('annotationViews')) stores.push('annotationViews');
   const txn = db.transaction(stores, 'readwrite');
   if (db.objectStoreNames.contains('paintRefineCache')) txn.objectStore('paintRefineCache').clear();
   txn.objectStore('sessions').clear();
@@ -1343,7 +1391,28 @@ export async function clearAllData(): Promise<void> {
   if (db.objectStoreNames.contains('drafts')) txn.objectStore('drafts').clear();
   if (db.objectStoreNames.contains('reliefSources')) txn.objectStore('reliefSources').clear();
   if (db.objectStoreNames.contains('deletedObjects')) txn.objectStore('deletedObjects').clear();
+  if (db.objectStoreNames.contains('annotationViews')) txn.objectStore('annotationViews').clear();
   await txComplete(txn);
+}
+
+// === Annotation views (per session) ===
+
+export async function putAnnotationView(view: AnnotationView): Promise<void> {
+  const store = await tx('annotationViews', 'readwrite');
+  store.put(view);
+  await txComplete(store.transaction);
+}
+
+export async function listAnnotationViews(sessionId: string): Promise<AnnotationView[]> {
+  const store = await tx('annotationViews', 'readonly');
+  const views = await reqToPromise(store.index('sessionId').getAll(IDBKeyRange.only(sessionId))) as AnnotationView[];
+  return views.sort((a, b) => a.createdAt - b.createdAt);
+}
+
+export async function deleteAnnotationView(id: string): Promise<void> {
+  const store = await tx('annotationViews', 'readwrite');
+  store.delete(id);
+  await txComplete(store.transaction);
 }
 
 // === Editor drafts (per session, per part, per language) ===

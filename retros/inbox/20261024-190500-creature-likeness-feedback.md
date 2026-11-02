@@ -1,13 +1,13 @@
 ---
 date: "2026-10-24T19:05:00Z"
-task: "fix: Ned likeness — round lidded eyes, C.muzzle, leaf ears"
+task: "fix: creature likeness — round lidded eyes, C.muzzle, leaf ears"
 pr: 1099
 areas: [tooling, docs, agents]
 cost: high
 ---
 
 ## Lacked
-- I shipped the first Ned after checking it against my *own* earlier renders,
+- I shipped the first creature after checking it against my *own* earlier renders,
   not the photos. The user immediately named three likeness misses: non-round
   eyes, generic ears, and a mouth groove instead of a muzzle. A side-by-side
   with the reference crop at the same angle would have caught all three

@@ -25,6 +25,7 @@ sessions.)
 | Nudge a surface: bump, dent, pull, flat spot | `api.sculpt.grab/inflate/flatten(...)` |
 | Move / scale / rotate ONE part in place ("bigger head", "raise the arm") | `api.editPart(m, 'head', { scale: 1.3 })` (rigid, cut at the seam) or `api.sculpt.transform(m, { select, scale \| rotate \| translate, blend })` (soft warp) |
 | Swap / delete / rebuild one part | `api.editPart(m, 'hat', (part, info) => newHat)` — return `null` to delete |
+| Cut the model into separate printable pieces along its parts | `api.splitParts(m, { seams: { eye: 'plug' } })` — see [/ai/segmentation.md](/ai/segmentation.md#split-into-printable-pieces) |
 | Check an edit touched only what it should | `partwright.diffVersions(a, b, { geometry: true, render: true })`; the chat tool: `diffVersions { a, b, geometry: true, heatmap: true }` |
 | Confine any of the above to one part / region / facing | `select: { label } \| { region } \| { where }` — see below |
 

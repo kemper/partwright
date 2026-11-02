@@ -12,7 +12,7 @@ and captured hair knobs, collar/cuff trim, striped socks, toy cleated shoes,
 garment lettering, knee-length shorts) through the CharacterSpec, the codegen,
 the Character Creator panel (collapsed Details / Print sections, eye-height box,
 eye-layout reset, 44 px touch targets) and the buildCharacter AI tool + docs,
-keeping old specs byte-identical, then rebuild the Tsubasa Funko from a spec
+keeping old specs byte-identical, then rebuild the Funko figure from a spec
 only and score it against the hand-written v7.
 
 ## Assistant
@@ -44,7 +44,7 @@ style keeps the eye size; `applyStyle('funko')` now picks bead eyes, a 0.4
 head sink and mitten hands.
 
 **Added `face.jaw/chin/cheek` and `body.mittens`** beyond the issue list: the
-spec-only Tsubasa scored 0.884 / 0.891 until the head-shape knobs were
+spec-only figurine scored 0.884 / 0.891 until the head-shape knobs were
 exposed (the lower face was 10–15 % narrow); with them it scores 0.914 front /
 0.899 back (shag, 1.17 k chars) vs the hand-written v7's 0.912 / 0.911; the
 captured-hair variant scores 0.896 / 0.875.

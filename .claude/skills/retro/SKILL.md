@@ -59,6 +59,7 @@ cost: medium       # rough friction cost this session: low | medium | high
 
 ## Discipline
 
+- The inbox is public: don't name a user's private files or models, or the characters, brands or real people they depict. Describe the shape ("the user's figurine scan").
 - Entries are **append-only** — never edit or delete someone else's entry. The facilitator archives them after processing; it does not rewrite them.
 - Commit the entry (it belongs in the repo so it survives the ephemeral container and shows up for review). A retro entry can ride along in the same PR as the work it reflects on, or its own small commit — either is fine.
 - Honest and specific beats polished. The facilitator can synthesize; it can't invent the friction you actually hit.

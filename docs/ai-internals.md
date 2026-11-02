@@ -21,6 +21,13 @@ In streaming, the signature can ride the `functionCall` part, the answer text pa
 - **OpenAI** — maps to `reasoning.effort` on the Responses API, sent only for reasoning models (`isReasoningModel`), clamped to the catalog's per-model effort list: `off` → `none` where listed (gpt-5.1+) else omitted; `default` omits it; e.g. gpt-5-pro only ever gets `high`. Without catalog data, xhigh needs gpt-5.2+ and max gpt-5.6+. Non-reasoning models go via Chat Completions and never see a reasoning request. The **Custom** provider sends `include_reasoning: true` above Off, plus the level as `reasoning_effort` only when the user opted in on the Custom tab.
 - **Local** — no effect (`<think>` is stripped).
 
+**Default and cost.** The Standard preset defaults to **Medium** (settings rev 2 lowers a stored pre-rev-2 High once — `migrateThinking` in `settings.ts`). On a hard modeling step, High on Opus 5.x can think for 30k+ tokens and 5+ minutes per agent step. Two consequences are handled explicitly:
+
+- **Cache expiry.** Anthropic's default prompt cache lives 5 minutes. A step that thinks longer than that expires it, and the next step re-writes the whole conversation at 1.25× input. With `ai.extendedCacheForDeepThinking` on (default), High/XHigh/Max turns put the 1-hour TTL on every breakpoint (`cacheTtlForThinking` / `cacheControlFor` in `anthropicCache.ts`; one TTL per request because the API requires longer-lived entries to precede shorter ones). 1-hour writes bill at 2× input: `TurnUsage.cacheCreation1hInputTokens` carries the 1-hour part, priced in `cost.ts`.
+- **Cut off while thinking.** A `max_tokens` stop with no text and no tool call gets outcome detail `MAX_TOKENS_WHILE_THINKING`. The unfinished thinking is dropped from history (an assistant turn can't end in thinking), so the panel says the step will restart and offers "Retry at <one level lower> thinking" (`lowerThinkingLevel`) ahead of "Keep going at this level".
+
+The AI Call Log (🩺) records cache reads, cache writes (with the 1-hour part) and per-call cost, so an expired cache shows up as a large cache write on a mid-conversation call.
+
 ## Auto-continue (the ♾ pill)
 
 `ChatToggles.autoResume` (boolean, **off by default**; on only in the explicit max-autonomy full preset) keeps the agent working until the model calls the **`finish`** sentinel tool instead of stopping at every `end_turn`. It's off in standard (the app default) and minimal because auto-continuing surprises users — the agent presses past a clarifying question instead of waiting for an answer. The default lives in `DEFAULT_TOGGLES_BY_PRESET`; turning it on (or off) writes a `custom` preset that `mergeWithDefaults` preserves (an explicit choice is never overwritten).
@@ -52,6 +59,13 @@ Turning **off** is byte-for-byte the old behavior — no `finish` tool, no nudge
   - Auto-compaction and `/compact` wait while a plan is pending, because the plan is anchored by history index.
 - **Build** sends `planApprovalText(latestPlanReply(...).text)`, i.e. `[Plan approved — …]` plus the plan Markdown. The build turn runs with `planFirst: false`, so it gets the full tool list. **Discard** deletes the planning messages and restores the request in the input.
 
+### Planning styles, estimates and the build checkpoint (#1209)
+
+- **Styles.** A new plan request opens a picker (`renderPlanStylePicker` in `src/ui/aiPlanUi.ts`) unless `AiSettings.askPlanStyle` is off; `AiSettings.planStyle` is the remembered choice. Each style has its own request prefix (`PLAN_FIRST_PREFIX` = quick, `PLAN_ASSESS_PREFIX`, `PLAN_COMPARE_PREFIX` via `planRequestPrefix`), and `planTurn()` reports the style. "Assess first" planning turns are capped at `ai.planAssessMaxRounds` rounds.
+- **Estimate.** `proposePlan` takes an optional `estimate` (difficulty, confidence, roundsMin/roundsMax, quality, gaps, risks), validated and parsed in `src/ai/planEstimate.ts`. The model never prices itself: the card's cost range is the rounds × this chat's average priced round (`perRoundCostUsd`, last `ai.planCostSampleRounds`). `readDoc("feasibility")` (`public/ai/feasibility.md`) is the difficulty map the planner reads.
+- **Build budget.** Build starts a `BuildBudget` from the plan's estimate. While set, every build turn passes `RunTurnInput.iterationLimit = remainingRounds(budget)`, which **replaces** the ⟲ `maxIterations` cap (the $ cap still applies). Reaching it is an `iteration_cap` stop with detail `plan_checkpoint`, rendered as the checkpoint card: Keep going extends the limit by `checkpointExtension(...)` (`ai.planCheckpointExtensionFraction`, min `ai.planCheckpointMinExtension`), Accept ends the build. The budget is in-memory only, like stop notices.
+- **Calibration.** When a build ends (finished, accepted, or abandoned by a new request / session switch) `calibrationRecord` is appended to `localStorage['partwright.planCalibration']` (`src/ai/planCalibration.ts`, ring of `ai.planCalibrationMaxEntries`). Once there are `ai.planCalibrationMinBuilds`, `summarizeCalibration` is shown on plan cards and sent with each new plan request as a `[UI · app note]` line.
+
 ## OpenAI routing (Chat Completions vs Responses API)
 
 `streamTurn` routes per model (gated by `isReasoningModel`):
@@ -60,6 +74,24 @@ Turning **off** is byte-for-byte the old behavior — no `finish` tool, no nudge
 - **All other models** → Chat Completions (`/v1/chat/completions`). Uses `messages`/`tool_calls`/`tool` shape.
 
 Both share dangling-tool-call repair, image handling, and review serialization. Non-tool helpers (`validateKey`/`listModels`/`summarize`) always use Chat Completions.
+
+## Worker delegation (`delegateTask`)
+
+On hosted providers (not in plan mode, with at least one of run code / save versions / paint in scope, and `ai.delegateToWorker` on), the main agent is offered `delegateTask` (`src/ai/delegate.ts` for the schema and pure helpers; `turnToolList` in `chatLoop.ts` adds it). The call hands one self-contained, measurable sub-task (`task` + `acceptance` + optional `context`/`maxSteps`) to a **worker**.
+
+The worker is a nested `runTurn` in the same agent loop context. `executeAllWithRetry` answers the tool itself, as it does `loadTools`, because the worker needs the API key and the loop.
+
+- **Model.** The provider's cheaper default (`resolveWorkerModel`: Sonnet 5.5 / GPT-5 mini / Gemini Flash). It falls back to the main model when that is no more expensive or is unpriced.
+- **Toggles.** The main chat's, at Medium thinking (or Off/Low when the user chose that), with auto-continue, plan mode and auto-review off (`workerToggles`).
+- **History.** Empty: the worker's only user message is `buildWorkerBrief`. The main chat's loaded tool groups are preloaded.
+- **Persistence.** None: `persist: false` keeps its steps out of IndexedDB and the transcript.
+- **Tools.** Never `delegateTask`, `askUser`, `proposePlan`, or any confirm-gated tool (`WORKER_TOOL_EXCLUSIONS`): the user would be asked to approve an action from a conversation they can't see.
+- **Caps.** `iterationLimit` (≤ `ai.workerMaxSteps`) and `spendCapUsd`, which is min(`ai.workerMaxSpendUsd`, what's left of the session $ budget). No worker starts below `ai.workerMinBudgetUsd`, or on a model with no known price (its cap couldn't be enforced). The main loop re-checks the session cap right after a worker's spend lands, before its next request.
+- **Stall.** A worker model request silent for `ai.workerStallTimeoutMs` is aborted through the worker's own `AbortController` (chained to the user's Stop), and its partial report comes back as an error. Tool runs don't count; they have their own timeout. `runWorkerTask` never throws: a failure becomes an error report carrying whatever the worker already spent, which is summed per step. The last two steps get a countdown note appended to the tool-result turn via `onDrainQueuedBlocks`, so the cache-friendly history still gets a report written in time.
+- **Result.** The worker's final reply (when it was cut off, its last message is flagged "not a final report"), headed `[Worker <model> finished · N steps · M tool calls · $X]` (`formatWorkerReport`, capped at `ai.workerReportMaxChars`), plus its last render image (render tools only). Its cost is added to the turn and stored as `costUsd` on the tool-result message, so `totalCost(history)` and the $ cap include it.
+- **Progress.** Its progress is relayed as the `tool` phase (`worker · <model> · step n/N · …`), which the panel's stall watchdog ignores, so a slow worker call can't abort and re-run the whole delegation.
+- **Auto-review.** `isModelChangingTool('delegateTask')` is true, so auto-review covers delegated work.
+- **Main cache.** A main turn that offers `delegateTask` uses the 1-hour prompt cache (with `ai.extendedCacheForDeepThinking`), because a worker run can outlast the 5-minute one and make the next main request re-write the whole conversation. The tool's schema is static, so editing a worker setting never changes the cached tool prefix.
 
 ## Context size: tool groups, Custom endpoints and stale tool payloads
 

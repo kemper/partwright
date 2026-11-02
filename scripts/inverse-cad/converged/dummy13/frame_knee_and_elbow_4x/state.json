@@ -10,7 +10,7 @@
   },
   "strategiesTried": [
     "slice-stack bootstrap (superseded: carried socket mid-slices through depth)",
-    "traced-base + pacman socket refill + revolved hourglass cavity + exact 45deg chamfer cuts (CONVERGED, attempt 4)"
+    "traced-base + wedge-cut socket refill + revolved hourglass cavity + exact 45deg chamfer cuts (CONVERGED, attempt 4)"
   ],
   "attempts": [
     {
@@ -30,13 +30,13 @@
     },
     {
       "id": 1,
-      "note": "restructure: full-height traced base + pac-man socket refill + revolved hourglass cavities (counterbore 2.4x0.4, 45deg cones, waist 1.5407) per ray probes",
+      "note": "restructure: full-height traced base + wedge-cut socket refill + revolved hourglass cavities (counterbore 2.4x0.4, 45deg cones, waist 1.5407) per ray probes",
       "verdict": "render-error",
       "error": "outer0.union is not a function"
     },
     {
       "id": 2,
-      "note": "restructure: full-height traced base + pac-man socket refill + revolved hourglass cavities (counterbore 2.4x0.4, 45deg cones, waist 1.5407) per ray probes",
+      "note": "restructure: full-height traced base + wedge-cut socket refill + revolved hourglass cavities (counterbore 2.4x0.4, 45deg cones, waist 1.5407) per ray probes",
       "verdict": "regressed",
       "score": 1.1319,
       "phase": "tune",

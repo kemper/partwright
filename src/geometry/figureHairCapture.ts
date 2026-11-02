@@ -20,6 +20,7 @@ import { assertBoolean, assertEnum, assertNumber } from '../validation/apiValida
 import { bakeField, decodePreset, DEFAULT_KNOBS, fieldValue, cellDir, dirVec, sampleLinear, type HairField, type HairGrids, type HairKnobs, type V3 } from './hairCapture/field';
 import type { HeadLandmarks } from './hairCapture/capture';
 import { HAIR_PRESETS } from './hairCapture/presets';
+import { DEFAULT_HAIR_PRESET, resolveHairPresetName } from './hairCapture/presetNames';
 
 /** Style-only option keys (the dispatch's allow-list / misplacement check). */
 export const CAPTURED_HAIR_FIELDS = ['preset', 'spikiness', 'smooth', 'mirror', 'tilt', 'windowScale'];
@@ -99,7 +100,9 @@ export function measureHeadLandmarks(head: { evaluate(x: number, y: number, z: n
 export function buildCapturedHair<N extends CapNode<N>>(
   sdf: { box(size: V3): N }, rig: CapRig, o: Record<string, unknown>, head: N, t: number, volume: number, lenMul: number,
 ): N {
-  const presetName = o.preset === undefined ? 'tsubasa' : assertEnum(o.preset, Object.keys(HAIR_PRESETS), 'hair.preset');
+  const presetName = o.preset === undefined
+    ? DEFAULT_HAIR_PRESET
+    : assertEnum(typeof o.preset === 'string' ? resolveHairPresetName(o.preset) : o.preset, Object.keys(HAIR_PRESETS), 'hair.preset');
   const nOpt = (k: string, def: number, min: number, max: number): number =>
     (o[k] === undefined ? def : assertNumber(o[k], `hair.${k}`, { min, max }) as number);
   const knobs: HairKnobs = {

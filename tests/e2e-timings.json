@@ -55,6 +55,7 @@
     "gallery-additions.spec.ts": 1.6,
     "gears-threads.spec.ts": 2.3,
     "getReferenceImages.spec.ts": 3.8,
+    "headform.spec.ts": 80.0,
     "ideas.spec.ts": 5.3,
     "image-paint-stamp-with-brush.spec.ts": 4.3,
     "import-merge-select.spec.ts": 2.9,

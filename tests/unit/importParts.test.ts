@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { generateImportCode, rewriteImportsWithParts } from '../../src/import/codegen';
 import type { ImportedMesh } from '../../src/import/importedMesh';
-import { normalizeImportParts, orderTrianglesByPart, removeImportPartTriangles } from '../../src/import/importParts';
+import { normalizeImportParts, orderTrianglesByPart, partsFromLabels, removeImportPartTriangles } from '../../src/import/importParts';
+import type { MeshData } from '../../src/geometry/types';
 
 describe('orderTrianglesByPart', () => {
   it('groups triangles into contiguous runs, unassigned last', () => {
@@ -98,5 +99,54 @@ describe('removeImportPartTriangles', () => {
     expect(out.openings).toBe(0);
     expect(out.triVerts.length / 3).toBe(12);
     expect(isClosed(out.triVerts)).toBe(true);
+  });
+});
+
+describe('partsFromLabels (carry parts through a bake, #1025)', () => {
+  // Two separate triangles: "a" near x=0, "b" near x=10.
+  const mesh = (dx = 0): MeshData => ({
+    vertProperties: Float32Array.from([0, 0, 0, 1, 0, 0, 0, 1, 0, 10, 0, 0, 11, 0, 0, 10, 1, 0].map((v, i) => (i % 3 === 0 ? v + dx : v))),
+    triVerts: Uint32Array.from([0, 1, 2, 3, 4, 5]),
+    numVert: 6, numTri: 2, numProp: 3,
+  });
+  const labels = new Map([['a', new Set([0])], ['b', new Set([1])]]);
+
+  it('carries by index across a rigid transform (same triangle list)', () => {
+    const moved = mesh(100); // far from the original: proximity alone would fail
+    const parts = partsFromLabels(labels, mesh(), mesh(), moved)!;
+    expect(parts.names).toEqual(['a', 'b']);
+    expect([...parts.triPart]).toEqual([0, 1]);
+  });
+
+  it('carries by proximity onto a re-tessellated mesh', () => {
+    // Each source triangle split in two, in a different order.
+    const dense: MeshData = {
+      vertProperties: Float32Array.from([10, 0, 0, 11, 0, 0, 10, 1, 0, 10.5, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.5, 0, 0]),
+      triVerts: Uint32Array.from([0, 3, 2, 3, 1, 2, 4, 7, 6, 7, 5, 6]),
+      numVert: 8, numTri: 4, numProp: 3,
+    };
+    const parts = partsFromLabels(labels, mesh(), mesh(), dense)!;
+    expect([...parts.names].sort()).toEqual(['a', 'b']);
+    const nameOf = (t: number) => parts.names[parts.triPart[t]];
+    expect([nameOf(0), nameOf(1), nameOf(2), nameOf(3)]).toEqual(['b', 'b', 'a', 'a']);
+  });
+
+  it('matches by nearest surface, so a long coarse triangle keeps its far end', () => {
+    // Source: one long sliver "a" (centroid at x≈10) and a tiny "b" at x≈32.
+    const src: MeshData = {
+      vertProperties: Float32Array.from([0, 0, 0, 30, 0, 0, 0, 1, 0, 32, 0, 0, 33, 0, 0, 32, 1, 0]),
+      triVerts: Uint32Array.from([0, 1, 2, 3, 4, 5]), numVert: 6, numTri: 2, numProp: 3,
+    };
+    // Target: a small triangle on the sliver's far end (x≈29), nearer b's centroid than a's.
+    const dense: MeshData = {
+      vertProperties: Float32Array.from([28.8, 0, 0, 29.3, 0, 0, 28.8, 0.05, 0]),
+      triVerts: Uint32Array.from([0, 1, 2]), numVert: 3, numTri: 1, numProp: 3,
+    };
+    const parts = partsFromLabels(new Map([['a', new Set([0])], ['b', new Set([1])]]), src, src, dense)!;
+    expect(parts.names).toEqual(['a']);
+  });
+
+  it('returns null when there are no labels to carry', () => {
+    expect(partsFromLabels(new Map(), mesh(), mesh(), mesh())).toBeNull();
   });
 });

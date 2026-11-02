@@ -30,8 +30,8 @@ function mesh(hexes: (string | null)[]): MeshData {
 
 const rep = (h: string, k: number) => Array<string>(k).fill(h);
 
-// The Tsubasa figure that motivated this: 11 painted colours, ~5 visible ones.
-const TSUBASA = [
+// The painted figurine that motivated this: 11 painted colours, ~5 visible ones.
+const FIGURINE = [
   ...rep('#1f1712', 30), // hair
   ...rep('#f7c095', 20), // skin
   ...rep('#f7f7f4', 9),  // shirt + socks
@@ -54,7 +54,7 @@ describe('exportColors', () => {
   });
 
   it('collects distinct colours most-used first, with shares', () => {
-    const colors = collectExportColors([mesh(TSUBASA)]);
+    const colors = collectExportColors([mesh(FIGURINE)]);
     expect(colors).toHaveLength(11);
     expect(colors[0]).toMatchObject({ hex: '#1f1712', triangles: 30 });
     expect(colors.reduce((s, c) => s + c.share, 0)).toBeCloseTo(1, 6);
@@ -84,11 +84,11 @@ describe('exportColors', () => {
   });
 
   it('tolerance 0 suggests no merges', () => {
-    expect(suggestColorMerges(collectExportColors([mesh(TSUBASA)]), { tolerance: 0 })).toEqual({});
+    expect(suggestColorMerges(collectExportColors([mesh(FIGURINE)]), { tolerance: 0 })).toEqual({});
   });
 
   it('collapses near-identical blacks and whites into the most-used shade', () => {
-    const colors = collectExportColors([mesh(TSUBASA)]);
+    const colors = collectExportColors([mesh(FIGURINE)]);
     const remap = suggestColorMerges(colors, { tolerance: 10 });
     for (const dark of ['#1b1b1b', '#2a1d15', '#0f0f0f', '#0d0d0d']) expect(remap[dark]).toBe('#1f1712');
     for (const white of ['#f2f2ef', '#f7f7f7']) expect(remap[white]).toBe('#f7f7f4');
@@ -99,7 +99,7 @@ describe('exportColors', () => {
   });
 
   it('maxColors folds the least-used colours into their nearest kept colour', () => {
-    const colors = collectExportColors([mesh(TSUBASA)]);
+    const colors = collectExportColors([mesh(FIGURINE)]);
     const remap = suggestColorMerges(colors, { tolerance: 10, maxColors: 4 });
     expect(countRemappedColors(colors, remap)).toBe(4);
     // Navy (least used after merging) is the one folded away.

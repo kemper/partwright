@@ -89,6 +89,30 @@ export interface AppConfig {
      *  rate (~10% of input) instead of full price. OpenAI and Gemini cache a
      *  repeated prefix automatically. */
     cacheConversationHistory: boolean;
+    /** Use Anthropic's 1-hour prompt cache (2× input to write, vs 1.25× for
+     *  the default 5 minutes) on turns at the High, XHigh or Max thinking
+     *  level. Those steps can think for over 5 minutes, which expires the
+     *  default cache and makes the next step re-write the whole conversation. */
+    extendedCacheForDeepThinking: boolean;
+    /** Offer the main agent the delegateTask tool: it hands a measurable
+     *  sub-task to a cheaper model of the same provider (Sonnet under Opus,
+     *  …) running its own short loop, and gets back only a report. */
+    delegateToWorker: boolean;
+    /** Most agent steps one delegated worker may take (the main agent can ask
+     *  for fewer). */
+    workerMaxSteps: number;
+    /** Most one delegated worker may spend, in USD. Also capped by what's left
+     *  of the session's $ budget. */
+    workerMaxSpendUsd: number;
+    /** Longest worker report (chars) passed back to the main agent. */
+    workerReportMaxChars: number;
+    /** A worker's model request that sends nothing for this long (ms) is
+     *  treated as stalled: the worker is stopped and its partial report
+     *  returned. Time spent running its tools doesn't count. */
+    workerStallTimeoutMs: number;
+    /** Smallest budget (USD) worth starting a worker with; below it,
+     *  delegateTask refuses rather than overshoot the session $ cap. */
+    workerMinBudgetUsd: number;
     /** Render images allowed to accumulate in the request before a trim, for
      *  providers that cache the history (Anthropic with history caching on,
      *  OpenAI, Gemini). Cached images are cheap to re-send, and trimming edits
@@ -164,6 +188,21 @@ export interface AppConfig {
      *  `[REVIEW from …]` session note the agent reads via getSessionContext.
      *  The review itself is always kept in full in the chat transcript. */
     reviewNoteMaxChars: number;
+    /** Plan mode, "Assess first" style: the most tool rounds the planning turn
+     *  may spend inspecting attachments and the model before it must report. */
+    planAssessMaxRounds: number;
+    /** Plan-mode build checkpoint: rounds a "Keep going" grants, as a fraction
+     *  of the plan's estimated maximum (never fewer than planCheckpointMinExtension). */
+    planCheckpointExtensionFraction: number;
+    /** Plan-mode build checkpoint: the fewest rounds a "Keep going" grants. */
+    planCheckpointMinExtension: number;
+    /** Recent priced rounds of this chat averaged to turn a plan's round
+     *  estimate into a cost range. */
+    planCostSampleRounds: number;
+    /** Past plan-mode builds kept to calibrate new estimates (estimate vs actual). */
+    planCalibrationMaxEntries: number;
+    /** Past builds needed before calibration is shown and sent to the planner. */
+    planCalibrationMinBuilds: number;
     /** Safety timeout (ms) for SCAD Worker operations with no cancel button —
      *  OpenSCAD validation and include-detection. (The render path has no
      *  timeout; it's bounded by the elapsed counter + Cancel button instead.)
@@ -295,6 +334,12 @@ export interface AppConfig {
      *  Caps how much IndexedDB space one save can take — a textured mesh costs
      *  roughly 18 bytes per triangle. */
     surfaceTexturePersistMaxTriangles: number;
+    /** Each object's newest saved version keeps the mesh it displayed, so the
+     *  saved model can be restored if a later release builds its code
+     *  differently. Above this triangle count no mesh is kept (the version
+     *  still saves with its fingerprint). About 18 bytes per triangle; 0 never
+     *  keeps one. */
+    versionMeshMaxTriangles: number;
     /** Typed arrays (mesh vertices, triangles, part ids…) at least this many
      *  KB in a saved version are stored in IndexedDB as Blobs. Saving or
      *  reading a plain array copies it on the main thread (~0.5 s for a
@@ -317,6 +362,10 @@ export interface AppConfig {
     paintRefineCacheTouchMinutes: number;
     /** Most pixels one `probePixels` call may cast (one ray each). */
     probePixelsMaxPixels: number;
+    /** Margin added around a `renderView`/`renderViews` `focus` box, as a
+     *  fraction of the box's largest side, so a zoomed part keeps a little
+     *  context around it. An explicit `padding` option overrides it. */
+    viewFocusPadding: number;
     /** Fast-preview coarsening factor for SDF models (figures). Before the
      *  full-quality render, the Worker meshes a throwaway coarse pass at this
      *  multiple of the model's march `edgeLength` (and skips detail regions) so
@@ -519,9 +568,21 @@ export interface AppConfig {
      *  reached. After it fades, "Recover deleted" in the Objects list still
      *  restores the item. */
     undoToastDurationMs: number;
+    /** How far splitIntoPieces' preview pulls the pieces apart from the
+     *  model's centre (the api.splitParts `explode` factor; 0 = in place).
+     *  A saved split keeps the pieces in place unless the caller sets one. */
+    splitPreviewExplode: number;
+    /** How long the collapsed model-console pill (shown when a run prints with
+     *  console.log / warn) stays in the viewport corner before fading away
+     *  (ms). 0 keeps it until dismissed. Output with errors never auto-hides;
+     *  "Show console output" in the command palette brings it back. */
+    modelConsoleAutoHideMs: number;
     /** Days a deleted object stays in the "Recover deleted" bin before it is
      *  permanently purged (checked whenever the bin is read). */
     deletedObjectRetentionDays: number;
+    /** Widest a saved annotation view's captured frame is stored at (px);
+     *  larger viewports are scaled down. Bigger = sharper views, more storage. */
+    annotationViewMaxWidth: number;
     /** Hover-tooltip show delay (ms). */
     tooltipDelayMs: number;
     /** 3MF export "Filament colors" step: the merge tolerance (CIE76 ΔE) it opens
@@ -755,6 +816,13 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     imageTokenEstimate: 1500,
     keepRecentToolImages: 3,
     cacheConversationHistory: true,
+    extendedCacheForDeepThinking: true,
+    delegateToWorker: true,
+    workerMaxSteps: 15,
+    workerMaxSpendUsd: 1,
+    workerReportMaxChars: 4000,
+    workerStallTimeoutMs: 120_000,
+    workerMinBudgetUsd: 0.05,
     cachedImageLimit: 15,
     cachedImageTrimTo: 8,
     autoCompactMaxTokens: 150_000,
@@ -775,6 +843,12 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     reviewReferenceImages: 4,
     reviewConversationMaxChars: 12_000,
     reviewNoteMaxChars: 2000,
+    planAssessMaxRounds: 10,
+    planCheckpointExtensionFraction: 0.5,
+    planCheckpointMinExtension: 4,
+    planCostSampleRounds: 20,
+    planCalibrationMaxEntries: 50,
+    planCalibrationMinBuilds: 3,
     geometryTimeoutScadMs: 180_000,
     geometryTimeoutReplicadMs: 180_000,
     localPromptBudgetMedium: 1300,
@@ -816,11 +890,13 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     enhanceWarnTriangles: 1_000_000,
     enhanceMaxTriangles: 5_000_000,
     surfaceTexturePersistMaxTriangles: 1_000_000,
+    versionMeshMaxTriangles: 1_500_000,
     storedArrayBlobMinKB: 64,
     paintRefinePersistMaxTriangles: 1_000_000,
     paintRefineCacheMaxMB: 256,
     paintRefineCacheTouchMinutes: 60,
     probePixelsMaxPixels: 4096,
+    viewFocusPadding: 0.15,
     sdfPreviewScale: 2.5,
     sdfCompile: true,
     sdfCompileChunkNodes: 120,
@@ -884,7 +960,10 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     maxAppliedNoteChars: 400,
     toastDurationMs: 2200,
     undoToastDurationMs: 8000,
+    splitPreviewExplode: 0.6,
+    modelConsoleAutoHideMs: 10_000,
     deletedObjectRetentionDays: 30,
+    annotationViewMaxWidth: 1280,
     tooltipDelayMs: 150,
     exportColorMergeTolerance: 10,
     codeEditorErrorIdleMs: 800,
@@ -1025,6 +1104,16 @@ export function applyWorkerAiConfig(ai: AppConfig['ai']): void {
   if (!isWorkerContext()) return;
   const base = loadAppConfig();
   cachedConfig = { ...base, ai: { ...base.ai, ...ai } };
+}
+
+/** Seed the engine Worker's config with the main thread's `import` overrides
+ *  that model code reads inside the Worker (e.g. `voxelSdfMaxSamples`, the
+ *  `v.sdf` sampling budget) — the same gap as applyWorkerAiConfig, closed by
+ *  the execute message. No-op outside a Worker. */
+export function applyWorkerImportConfig(overrides: Partial<AppConfig['import']>): void {
+  if (!isWorkerContext()) return;
+  const base = loadAppConfig();
+  cachedConfig = { ...base, import: { ...base.import, ...overrides } };
 }
 
 /** Subscribe to config changes (saved overrides or a reset). Returns an

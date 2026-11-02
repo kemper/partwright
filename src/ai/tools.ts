@@ -15,6 +15,7 @@
 // so the same checks apply to console/MCP callers, not just the model.
 
 import { ASK_USER_TOOL, CARD_TOOL_ACK, PROPOSE_PLAN_TOOL } from './planReply';
+import { planEstimateInputError } from './planEstimate';
 import { detectorIds, paramsJsonSchema } from '../segmentation/registry';
 import type { ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
@@ -74,6 +75,7 @@ export const SUBDOC_NAMES_LIST = [
   'fasteners', 'joints', 'gears', 'threads', 'reference-images', 'file-io', 'annotations',
   'printing', 'relief', 'textures', 'mechanisms', 'iteration-workflow', 'gotchas',
   'visual-verification', 'spending', 'manifold-api', 'reconstruction', 'deform', 'segmentation', 'ui-control',
+  'enclosure', 'knurl', 'headform', 'feasibility',
   // Deprecated: 'print-fit' split into 'fasteners' + 'joints'. Kept so an older
   // cached prompt requesting it gets the redirect stub instead of an error.
   'print-fit',
@@ -107,6 +109,33 @@ function partRefs(v: unknown): unknown[] | undefined {
   if (!Array.isArray(v)) return undefined;
   return v.map((x) => (typeof x === 'string' && /^\d+$/.test(x.trim()) ? Number(x.trim()) : x));
 }
+
+// Typed schema fragments for object params. Gemini can only fill an object
+// param whose `properties` are declared (an untyped object sanitizes to
+// `properties: {}` and arrives empty), so every structured arg spells its
+// fields out.
+const VEC3_SCHEMA = { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 };
+const boxSchema = (description: string) => ({
+  type: 'object', description,
+  properties: { min: VEC3_SCHEMA, max: VEC3_SCHEMA },
+  required: ['min', 'max'],
+});
+const normalConeSchema = (description: string) => ({
+  type: 'object', description,
+  properties: { axis: VEC3_SCHEMA, angleDeg: { type: 'number' } },
+  required: ['axis', 'angleDeg'],
+});
+const AXIS_SCHEMA = { type: 'string', enum: ['x', 'y', 'z'] };
+/** renderView/renderViews zoom keys; probePixel views repeat them to match. */
+const VIEW_FOCUS_PROPS = {
+  focus: {
+    type: 'object',
+    description: 'Zoom onto a feature: {part:"name"} (listObjectParts), {piece:i}, or a world box {min:[x,y,z], max:[x,y,z]}.',
+    properties: { part: { type: 'string' }, piece: { type: 'integer' }, min: VEC3_SCHEMA, max: VEC3_SCHEMA },
+  },
+  padding: { type: 'number', description: 'Margin around focus, as a fraction of its largest side (default 0.15).' },
+  clip: { type: 'boolean', description: 'With focus: hide everything outside the focus box, so nearer geometry cannot block the view (sockets, slots).' },
+};
 
 const ALL_TOOLS: ToolDefinition[] = [
   {
@@ -156,8 +185,8 @@ const ALL_TOOLS: ToolDefinition[] = [
           type: 'object',
           description: 'Map of parameter key → new value, e.g. { "width": 50, "rows": 3, "rounded": false }.',
         },
+        valuesJson: { type: 'string', description: 'Alternative to values: the same map as a JSON string, e.g. "{\\"width\\":50}". Use it if you cannot fill the values object. Used only when values is absent or empty.' },
       },
-      required: ['values'],
     },
   },
   {
@@ -220,11 +249,11 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: {
       type: 'object',
       properties: {
-        tolerance: { type: 'number', description: 'Coplanarity cosine in [-1, 1]. Default 0.999.' },
+        tolerance: { type: 'number', description: 'Coplanarity cosine in [-1, 1]. Default 0.9995.' },
         minTriangles: { type: 'integer', description: 'Drop groups smaller than this. Default 1.' },
-        maxGroups: { type: 'integer', description: 'Return only the N largest groups. Default unlimited — pass 8-16 for a first pass.' },
-        maxTrianglesPerGroup: { type: 'integer', description: 'Cap triangleIds per group. Pass 0 to OMIT triangleIds entirely (saves the most tokens — use this when you just need centroids/normals to plan painting).' },
-        withinBox: { type: 'object', description: 'Optional {min: [x,y,z], max: [x,y,z]} — return only groups whose bbox intersects this region. Use to focus on one feature (e.g. the eyes of a face) without pulling the whole mesh summary.' },
+        maxGroups: { type: 'integer', description: 'Return only the N largest groups. Default 256 — pass 8-16 for a first pass.' },
+        maxTrianglesPerGroup: { type: 'integer', description: 'Cap triangleIds per group (default 64). Pass 0 to OMIT triangleIds entirely (saves the most tokens — use this when you just need centroids/normals to plan painting).' },
+        withinBox: boxSchema('Optional {min: [x,y,z], max: [x,y,z]} — return only groups whose bbox intersects this region. Use to focus on one feature (e.g. the eyes of a face) without pulling the whole mesh summary.'),
       },
     },
   },
@@ -315,7 +344,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'buildCharacter',
-    description: 'Build a posed, painted figure from a Character Creator SPEC and commit it as a version — the token-cheap way to make a person/toy figure: fill in parameters instead of writing + debugging figure code. Any subset of fields; missing ones take defaults; every field is validated (bad ones are listed in the error). Style: body.proportions "realistic" | "chibi" | "funko" (vinyl-pop: huge wide head; also set headsTall 3), body.headScale {x,y,z} to resize the head. body.headSink (≈0.4 = neckless toy), body.mittens. Face: eyeStyle "bead" (glossy toy eyes + glint), browThickness/browWidth (bold brows ≈ 3/1.5), jaw/chin/cheek. Hair: "anime" (flat swoopy ribbon locks: lockShape/chunk/spike/swoop/fringe/seed), "shag" (layered spiky jet-black mop: crown/layers/raggedness/flare/notched/crownSize/backWidth/tipWidth), "captured" (the Tsubasa Funko hairdo: volume/length/capturedFringe/spikiness/smooth/tilt/windowScale/mirror) or "mop". pose.hold {kind:"ball", radius, cup, cupL?, cupR?, handScale} = both hands hold a soccer ball (colors.ball base + pose.hold.color panels). Clothing: top.trim {collar, cuffs} (colors.trim); top.print [{text, where:"chest"|"back", size, x, z, color}] = embossed letters/numbers (e.g. N on the chest, 10 on the back); pants.length "shorts" (knee-length, hem) | "briefs"; socks {on, height, stripes, stripeSpan} (colors.socks + colors.sockStripe); feet {style:"toy", size, height, cleats} = chunky vinyl sneakers with studs. Colors are "#rrggbb" per region (skin, hair, top, pants, feet, sole, eyes/iris/pupil, eyeHighlight, lips, brows, trim, socks, sockStripe, base, ball). Figure-from-a-photo loop: view the photo once → fill the spec → buildCharacter → photoMatch (text only) → adjust spec fields from worst[] → repeat; tweak with getCharacterSpec. Returns geometry stats + version (the generated code is NOT echoed — call getCode only if you must hand-edit something the spec cannot express).',
+    description: 'Build a posed, painted figure from a Character Creator SPEC and commit it as a version — the token-cheap way to make a person/toy figure: fill in parameters instead of writing + debugging figure code. Any subset of fields; missing ones take defaults; every field is validated (bad ones are listed in the error). Style: body.proportions "realistic" | "chibi" | "funko" (vinyl-pop: huge wide head; also set headsTall 3), body.headScale {x,y,z} to resize the head. body.headSink (≈0.4 = neckless toy), body.mittens. Face: eyeStyle "bead" (glossy toy eyes + glint), browThickness/browWidth (bold brows ≈ 3/1.5), jaw/chin/cheek. Hair: "anime" (flat swoopy ribbon locks: lockShape/chunk/spike/swoop/fringe/seed), "shag" (layered spiky jet-black mop: crown/layers/raggedness/flare/notched/crownSize/backWidth/tipWidth), "captured" (a captured shaggy mop: volume/length/capturedFringe/spikiness/smooth/tilt/windowScale/mirror) or "mop". pose.hold {kind:"ball", radius, cup, cupL?, cupR?, handScale} = both hands hold a soccer ball (colors.ball base + pose.hold.color panels). Clothing: top.trim {collar, cuffs} (colors.trim); top.print [{text, where:"chest"|"back", size, x, z, color}] = embossed letters/numbers (e.g. N on the chest, 10 on the back); pants.length "shorts" (knee-length, hem) | "briefs"; socks {on, height, stripes, stripeSpan} (colors.socks + colors.sockStripe); feet {style:"toy", size, height, cleats} = chunky vinyl sneakers with studs. Colors are "#rrggbb" per region (skin, hair, top, pants, feet, sole, eyes/iris/pupil, eyeHighlight, lips, brows, trim, socks, sockStripe, base, ball). Figure-from-a-photo loop: view the photo once → fill the spec → buildCharacter → photoMatch (text only) → adjust spec fields from worst[] → repeat; tweak with getCharacterSpec. Returns geometry stats + version (the generated code is NOT echoed — call getCode only if you must hand-edit something the spec cannot express).',
     input_schema: {
       type: 'object',
       properties: {
@@ -407,12 +436,13 @@ const ALL_TOOLS: ToolDefinition[] = [
         pixel: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2, description: '[x, y] pixel position. (0, 0) is top-left.' },
         view: {
           type: 'object',
-          description: 'Camera spec. MUST match the renderView call that produced the image — same elevation, azimuth, ortho, size.',
+          description: 'Camera spec. MUST match the renderView call that produced the image — same elevation, azimuth, ortho, size, and focus/padding/clip if used.',
           properties: {
             elevation: { type: 'number' },
             azimuth: { type: 'number' },
             ortho: { type: 'boolean' },
             size: { type: 'integer', description: 'Image size in px. Omit only if the renderView call omitted it too (both then use your render budget size).' },
+            ...VIEW_FOCUS_PROPS,
           },
         },
       },
@@ -428,12 +458,13 @@ const ALL_TOOLS: ToolDefinition[] = [
         pixels: { type: 'array', items: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 }, description: '[[x, y], ...] pixel positions. (0, 0) is top-left.' },
         view: {
           type: 'object',
-          description: 'Camera spec. MUST match the renderView call that produced the image — same elevation, azimuth, ortho, size.',
+          description: 'Camera spec. MUST match the renderView call that produced the image — same elevation, azimuth, ortho, size, and focus/padding/clip if used.',
           properties: {
             elevation: { type: 'number' },
             azimuth: { type: 'number' },
             ortho: { type: 'boolean' },
             size: { type: 'integer', description: 'Image size in px. Omit only if the renderView call omitted it too (both then use your render budget size).' },
+            ...VIEW_FOCUS_PROPS,
           },
         },
       },
@@ -482,7 +513,7 @@ const ALL_TOOLS: ToolDefinition[] = [
       type: 'object',
       properties: {
         maxGroups: { type: 'integer', description: 'Return the N largest groups. Default 32.' },
-        withinBox: { type: 'object', description: 'Optional {min: [x,y,z], max: [x,y,z]} — only groups whose bbox intersects.' },
+        withinBox: boxSchema('Optional {min: [x,y,z], max: [x,y,z]} — only groups whose bbox intersects.'),
       },
     },
   },
@@ -508,6 +539,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         size: { type: 'integer', description: 'Pixel size of the rendered square. Default: your render budget (256 / 384 / 512 px by spending mode); the result label states the size used — pass that same size to probePixel. Larger costs more tokens.' },
         edges: { type: 'string', enum: [...EDGE_MODES], description: 'Edge overlay style. "crease" (default for uncolored models) draws only feature edges — corners and the silhouette — so the shape reads cleanly without facet noise on curves. "none" is a plain shaded surface (best when reading painted colors; the default for painted models). "wireframe" draws every triangle edge — use only to inspect tessellation or debug a failed boolean.' },
         reference: { type: 'boolean', description: 'Draw the setReferenceGeometry ghost (translucent, depth-tested: it shows where it pokes through the model). Default true when a reference is set; false hides it.' },
+        ...VIEW_FOCUS_PROPS,
       },
     },
   },
@@ -522,6 +554,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         size: { type: 'integer', description: 'Pixel size per cell. Default: your render budget (256 / 384 / 512 px by spending mode). Raise to 512-768 for a high-resolution final check; larger costs more tokens.' },
         edges: { type: 'string', enum: [...EDGE_MODES], description: 'Edge overlay applied to every tile. "crease" (default for uncolored models) draws only feature edges — corners and silhouette — so shape reads cleanly without facet noise on curves. "none" is a plain shaded surface (best for reading painted colors; default for painted models). "wireframe" draws every triangle edge — use only to inspect tessellation or debug a failed boolean.' },
         reference: { type: 'boolean', description: 'Draw the setReferenceGeometry ghost (translucent, depth-tested: it shows where it pokes through the model). Default true when a reference is set; false hides it.' },
+        ...VIEW_FOCUS_PROPS,
       },
     },
   },
@@ -564,12 +597,27 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: {
       type: 'object',
       properties: {
-        box: { type: 'object', description: '{min: [x,y,z], max: [x,y,z]}' },
-        cylinder: { type: 'object', description: 'Radial-shell selector: {rMin, rMax, zMin, zMax, center?: [a,b], axis?: "x"|"y"|"z"}. axis (default z) picks the shell axis; radius is measured in the plane normal to it. Previews the same triangles paintInCylinder would select (unsmoothed).' },
-        slab: { type: 'object', description: 'Slab selector: {axis: "x"|"y"|"z" OR normal: [nx,ny,nz], offset, thickness}. Previews the same triangles paintSlab would select (unsmoothed).' },
+        box: boxSchema('{min: [x,y,z], max: [x,y,z]}'),
+        cylinder: {
+          type: 'object',
+          description: 'Radial-shell selector: {rMin, rMax, zMin, zMax, center?: [a,b], axis?: "x"|"y"|"z"}. axis (default z) picks the shell axis; radius is measured in the plane normal to it. Previews the same triangles paintInCylinder would select (unsmoothed).',
+          properties: {
+            rMin: { type: 'number' }, rMax: { type: 'number' }, zMin: { type: 'number' }, zMax: { type: 'number' },
+            center: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+            axis: AXIS_SCHEMA,
+          },
+          required: ['rMin', 'rMax', 'zMin', 'zMax'],
+        },
+        slab: {
+          type: 'object',
+          description: 'Slab selector: {axis: "x"|"y"|"z" OR normal: [nx,ny,nz], offset, thickness}. Previews the same triangles paintSlab would select (unsmoothed).',
+          properties: { axis: AXIS_SCHEMA, normal: VEC3_SCHEMA, offset: { type: 'number' }, thickness: { type: 'number' } },
+          required: ['offset', 'thickness'],
+        },
         point: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         radius: { type: 'number' },
-        normalCone: { type: 'object', description: 'Optional {axis: [x,y,z], angleDeg: n} to restrict to faces pointing roughly in that direction.' },
+        normalCone: normalConeSchema('Optional {axis: [x,y,z], angleDeg: n} to restrict to faces pointing roughly in that direction.'),
+        topOnly: { type: 'boolean', description: 'Preview what the same selector with topOnly would paint (upward-facing faces only; overridden by normalCone).' },
         triangleIds: { type: 'array', items: { type: 'integer' }, description: 'Explicit triangle list — mostly for verifying findFaces results.' },
         withinPart: { type: 'string', description: 'Optional part (label) name: preview the selection clipped to that part, as a withinPart paint will be.' },
         withImage: { type: 'boolean', description: 'Default false (stats-only, free). Pass true to also return the highlighted thumbnail when the count is surprising or you want a visual sanity check.' },
@@ -597,6 +645,22 @@ const ALL_TOOLS: ToolDefinition[] = [
         index: { type: 'integer', description: '1-based version index.' },
       },
       required: ['index'],
+    },
+  },
+  {
+    name: 'getModelDrift',
+    description: 'Check whether the open version\'s code now builds a different model than the one saved with it — after a Partwright update changed a builder (a figure, a texture, a default), or because the code is random. The app shows this to the user as a "Built differently than saved" notice; loadVersion also reports it as builtDifferently. Returns {changed:false} or {changed:true, version, label, savedWith, running, differences (plain words, e.g. "volume +2.1%"), canRestore, dismissed}. Resolve it with resolveModelDrift — but ask the user first: it is their model.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'resolveModelDrift',
+    description: 'Resolve a version that builds differently than saved (see getModelDrift). choice "restore" commits the version\'s SAVED mesh (colours included) as a new version — only when getModelDrift().canRestore (each object\'s newest version keeps its mesh); the model then becomes a stored mesh, no longer editable as code. choice "keep" saves the newly built model as a new version. choice "ignore" leaves everything as it is and stops the notice for this version on this device. The drifted version itself is never changed. Only do this when the user has said which they want.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        choice: { type: 'string', enum: ['restore', 'keep', 'ignore'], description: '"restore" = bring back the saved mesh; "keep" = keep the newly built model; "ignore" = stop the notice.' },
+      },
+      required: ['choice'],
     },
   },
   {
@@ -722,7 +786,7 @@ const ALL_TOOLS: ToolDefinition[] = [
       properties: {
         point: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         radius: { type: 'number' },
-        normalCone: { type: 'object', description: 'Optional {axis: [x,y,z], angleDeg: n} to restrict to faces pointing roughly in that direction.' },
+        normalCone: normalConeSchema('Optional {axis: [x,y,z], angleDeg: n} to restrict to faces pointing roughly in that direction.'),
         topOnly: { type: 'boolean', description: 'Shortcut for normalCone: {axis: [0,0,1], angleDeg: 30}. Common case: paint only upward-facing faces in the region.' },
         coverageMode: { type: 'string', enum: ['centroid', 'fully_inside', 'any_vertex_inside'], description: 'Triangle containment test. Default "centroid". "fully_inside" requires all 3 vertices within radius — defangs fan-bleed.' },
         maxTriangleArea: { type: 'number', description: 'Skip triangles larger than this. Use to filter out the long radial triangles that cylinder/revolve produce.' },
@@ -753,6 +817,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
         withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
+        depth: { type: 'number', minimum: 0, description: 'Slab depth in mesh units (surface "slab" only; 0 = auto).' },
       },
       required: ['points', 'radius', 'color'],
     },
@@ -785,8 +850,8 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: {
       type: 'object',
       properties: {
-        box: { type: 'object', description: '{min: [x,y,z], max: [x,y,z]}' },
-        normalCone: { type: 'object', description: 'Optional {axis: [x,y,z], angleDeg: n}.' },
+        box: boxSchema('{min: [x,y,z], max: [x,y,z]}'),
+        normalCone: normalConeSchema('Optional {axis: [x,y,z], angleDeg: n}.'),
         topOnly: { type: 'boolean', description: 'Shortcut for normalCone: {axis: [0,0,1], angleDeg: 30}. Common case: paint the top face of a feature without catching its sides.' },
         coverageMode: { type: 'string', enum: ['centroid', 'fully_inside', 'any_vertex_inside'], description: 'Triangle containment test. Default "centroid". "fully_inside" requires all 3 vertices inside the box — defangs fan-bleed.' },
         maxTriangleArea: { type: 'number', description: 'Skip triangles larger than this. Use to filter out the long radial triangles that cylinder/revolve produce.' },
@@ -829,7 +894,7 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: {
       type: 'object',
       properties: {
-        axis: { type: 'string', enum: ['x', 'y', 'z'], description: 'Slab axis. Or pass `normal` for an arbitrary direction.' },
+        axis: { type: 'string', enum: ['x', 'y', 'z'], description: 'Slab axis. Pass exactly one of axis or normal (one is required).' },
         normal: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Use instead of axis for an oblique slab.' },
         offset: { type: 'number', description: 'Slab center along the axis/normal.' },
         thickness: { type: 'number', description: 'Slab thickness (paint catches anything within ±thickness/2 of offset).' },
@@ -854,7 +919,17 @@ const ALL_TOOLS: ToolDefinition[] = [
         pattern: { type: 'string', enum: ['soccer', 'stripes', 'spots', 'patches', 'gradient', 'checker'] },
         colors: { type: 'array', items: { type: 'string' }, description: 'Palette as hex strings: [base, mark, third?]. Soccer: [white, black].' },
         withinPart: { type: 'string', description: 'Part (label) to paint — e.g. a detected part after detectParts → acceptParts, or an api.label region (listLabels). Soccer fits the ball to this part.' },
-        scope: { type: 'object', description: 'Optional extra narrowing: {label?, above?:{axis,at}, below?:{axis,at}, box?:{min,max}, sphere?:{center,radius}} (triangle-centroid tests, ANDed).' },
+        scope: {
+          type: 'object',
+          description: 'Optional extra narrowing: {label?, above?:{axis,at}, below?:{axis,at}, box?:{min,max}, sphere?:{center,radius}} (triangle-centroid tests, ANDed).',
+          properties: {
+            label: { type: 'string' },
+            above: { type: 'object', properties: { axis: AXIS_SCHEMA, at: { type: 'number' } }, required: ['axis', 'at'] },
+            below: { type: 'object', properties: { axis: AXIS_SCHEMA, at: { type: 'number' } }, required: ['axis', 'at'] },
+            box: boxSchema('Centroid box.'),
+            sphere: { type: 'object', properties: { center: VEC3_SCHEMA, radius: { type: 'number' } }, required: ['center', 'radius'] },
+          },
+        },
         scale: { type: 'number', description: 'Feature size (stripe period / spot spacing / checker cell). Default ~1/8 of the model diagonal. Unused by soccer.' },
         axis: { type: 'string', enum: ['x', 'y', 'z'], description: 'Stripe axis (bands run across it). Default z.' },
         warp: { type: 'number', description: 'Noise wiggle 0..1 for stripes/patches/checker edges.' },
@@ -880,6 +955,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         searchRadius: { type: 'number', description: 'How far to look for a face. Default ~1.0.' },
         name: { type: 'string' },
         withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
+        tolerance: { type: 'number', minimum: -1, maximum: 1, description: 'Coplanar-flood tolerance as a COSINE (like paintRegion\'s console tolerance). Default 0.9995 ≈ 1.8°.' },
       },
       required: ['point', 'color'],
     },
@@ -890,9 +966,9 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: {
       type: 'object',
       properties: {
-        box: { type: 'object', description: '{min: [x,y,z], max: [x,y,z]}' },
+        box: boxSchema('{min: [x,y,z], max: [x,y,z]}'),
         normal: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
-        normalTolerance: { type: 'number' },
+        normalTolerance: { type: 'number', minimum: -1, maximum: 1, description: 'A COSINE, not degrees: keep faces whose normal is within acos(normalTolerance) of `normal`. Default 0.95 (≈18°); 0.7 ≈ 45°.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         region: { type: 'integer', description: 'Region id from listRegions().' },
         withinPart: { type: 'string', description: 'Only triangles of this part (label).' },
@@ -1094,7 +1170,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'modifyAndTest',
-    description: 'Apply string substitution(s) to the current editor code, run the result, and return stats — WITHOUT saving a version or changing the editor. Use to test a tweak before committing. Provide either a single `find`/`replace` pair or a `patches` array for multiple simultaneous substitutions; each `find` must match exactly once or the call errors (no silent no-op). Returns {modifiedCode, codeDiff: {changed, added, removed, diff}, stats, passed?, failures?} — check codeDiff.changed to confirm the tweak actually altered the code.',
+    description: 'Apply string substitution(s) to the current editor code, run the result, and return stats — WITHOUT saving a version or changing the editor. Use to test a tweak before committing. Provide either a single `find`/`replace` pair or a `patches` array for multiple simultaneous substitutions; each `find` must match exactly once or the call errors (no silent no-op). Returns {modifiedCode, codeDiff: {changed, added, removed, diff}, stats, passed?, failures?, logs?} — check codeDiff.changed to confirm the tweak actually altered the code; logs is the patched code\'s console output.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1176,7 +1252,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'changeObject',
-    description: "Switch the active object — i.e. change what the USER sees in the editor/viewport. Address it by name, id (from listObjects), or 0-based index. Loads that object's latest version. You usually do NOT need this just to work on a different object: every object-scoped tool (getCode, runCode, runAndSave, paint*, getGeometryData, …) takes an optional `object` target that addresses an object directly. Use changeObject only when you want to move the user's focus, or to reset the editor to an object's latest saved version.",
+    description: "Switch the active object — i.e. change what the USER sees in the editor/viewport. Address it by name, id (from listObjects), or 0-based index. Like the user clicking it: unsaved edits on the open object are saved first, and the target opens at its latest version plus any unsaved draft. You usually do NOT need this just to work on a different object: every object-scoped tool (getCode, runCode, runAndSave, paint*, getGeometryData, …) takes an optional `object` target that addresses an object directly. Use changeObject only to move the user's focus; to go back to a saved version use loadVersion.",
     input_schema: {
       type: 'object',
       properties: {
@@ -1232,7 +1308,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'detectParts',
-    description: 'Split an IMPORTED mesh (e.g. a fused STL figurine) into named parts — hair, face, eyes, shirt, ball… — so paint can follow real part boundaries instead of boxes/slabs/normal floods. Creates a DRAFT (nothing saved), shows a coloured overlay and opens the Part Detection panel so the user can refine it by hand. "auto-merge" (Auto patches) needs no seeds: it splits the surface along its grooves into generic "patch N" parts — rename/merge them with editParts, or convert them to seeds (editParts seedsFromParts) and refine. For "crease-watershed" pass seeds: one or more {label, point} per part — get points from probePixel on a renderViews image; several seeds may share a label (add more for big or wrapped parts like a shirt front+back). Boundaries settle on the sculpted grooves between seeds and cover hidden surfaces too (inner arms behind a ball). "pieces" needs no seeds (separate bodies). Returns {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor}], quality, unassigned}. Then call renderParts to SEE the result and fix it with editParts. Read /ai/segmentation.md first.',
+    description: 'Split an IMPORTED mesh (e.g. a fused STL figurine) into named parts (hair, face, eyes, shirt…) so paint and cuts follow real part boundaries. Creates a DRAFT (nothing saved) with an overlay and opens the Part Detection panel. "auto-merge" needs no seeds (generic "patch N" parts to rename/merge with editParts); "crease-watershed" takes seeds {label, point} per part (points from probePixel; several per label for big or wrapped parts); "pieces" splits separate bodies. Then renderParts to SEE it and editParts to fix it. Read /ai/segmentation.md first.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1245,8 +1321,8 @@ const ALL_TOOLS: ToolDefinition[] = [
             properties: {
               label: { type: 'string', description: 'Part name this seed belongs to.' },
               point: { type: 'array', items: { type: 'number' }, description: '[x, y, z] on the surface (from probePixel / probeRay).' },
-              color: { type: 'string', description: 'Optional "#rrggbb": becomes the part\'s colour (kept through acceptParts). listPartDetectors labelPresets has default colours for common figure parts.' },
-              maxRadius: { type: 'number', description: 'Optional cap (model units, measured along the surface) on how far this seed may grow — stops a seed on an ungrooved area leaking. Prefer paintAlongBoundary for collars/cuffs.' },
+              color: { type: 'string', description: 'Optional "#rrggbb" part colour.' },
+              maxRadius: { type: 'number', description: 'Optional cap on how far this seed grows along the surface (stops leaks on ungrooved areas).' },
             },
             required: ['label', 'point'],
           },
@@ -1256,8 +1332,8 @@ const ALL_TOOLS: ToolDefinition[] = [
           type: 'object',
           description: 'Shared surface analysis. Usually omit.',
           properties: {
-            normalSmoothRadius: { type: 'number', minimum: 0, description: 'World-unit radius for denoising normals before measuring grooves. Omit = raw (default); try ~3× the mesh edge length only on very noisy scans.' },
-            normalSmoothEdgeLengths: { type: 'number', minimum: 0, description: 'Same denoise, as a multiple of the median edge length (3 ≈ a noisy scan). Ignored when normalSmoothRadius is set.' },
+            normalSmoothRadius: { type: 'number', minimum: 0, description: 'Normal-denoise radius (world units); only for very noisy scans.' },
+            normalSmoothEdgeLengths: { type: 'number', minimum: 0, description: 'Same, as a multiple of the median edge length.' },
           },
         },
         importIndex: { type: 'integer', minimum: 0, description: 'Which import (default 0).' },
@@ -1267,7 +1343,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'autoDetectParts',
-    description: 'Seedless first pass on an IMPORTED mesh — the same proposal an interactive STL import runs. Tries every automatic detector (listPartDetectors autoPropose:true), cheapest first, and the first that splits the mesh into 2+ parts REPLACES the current draft (e.g. "pieces" on a multi-body figure, one body per colour). Returns {proposed:true, proposedBy, tried, parts, quality} — then renderParts to check and editParts to rename — or {proposed:false, tried, reason} with the existing draft untouched (one solid piece: place named seeds and call detectParts with a seeded detector; or too many loose pieces to be colour bodies).',
+    description: 'Seedless first pass on an IMPORTED mesh, as an interactive STL import runs: tries the automatic detectors cheapest first; the first that finds 2+ parts REPLACES the draft (e.g. "pieces" on a multi-body figure). proposed:false leaves the draft untouched; for one solid piece, place named seeds and call detectParts.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1427,6 +1503,21 @@ const ALL_TOOLS: ToolDefinition[] = [
         label: { type: 'string', description: 'Version label (default "Detected parts").' },
         smoothEdges: { type: 'boolean', description: 'With edge smoothing on (the default, 3), the import is re-meshed along the smooth part boundaries. false keeps the original triangles.' },
         applyColors: { type: 'boolean', description: 'Default true: every part\'s visible colour becomes its model colour. false saves labels only (no colours).' },
+      },
+    },
+  },
+  {
+    name: 'splitIntoPieces',
+    description: 'Cut the model into printable pieces along its accepted parts; never hand-place planes across fused parts. preview (default) renders pulled-apart pieces without saving; preview:false saves. See /ai/segmentation.md.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        parts: { type: 'array', items: { type: 'string' }, description: 'Piece names; "a+b" = one piece. Default: every part.' },
+        seams: { type: 'array', description: 'Seam per piece (others auto).', items: { type: 'object', properties: { piece: { type: 'string' }, mode: { type: 'string', enum: ['auto', 'medial', 'flat', 'plug'] }, axis: { type: 'array', items: { type: 'number' } }, depth: { type: 'number' } }, required: ['piece', 'mode'] } },
+        keep: { type: 'string', description: 'Piece that keeps the rest (default largest).' },
+        clearance: { type: 'number', minimum: 0 },
+        preview: { type: 'boolean' },
+        remove: { type: 'boolean' },
       },
     },
   },
@@ -1641,7 +1732,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'getObjectPartInfo',
-    description: 'Size (bounding-box extents), surface area, triangle count and the pieces (1-based) one part or piece of the current object touches. Use it to measure a labelled feature without probing coordinates.',
+    description: 'Size (bounding-box extents), surface area, triangle count and the pieces (0-based indices, as listObjectParts and the piece tools use) one part or piece of the current object touches. Use it to measure a labelled feature without probing coordinates.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1753,7 +1844,8 @@ const ALL_TOOLS: ToolDefinition[] = [
       type: 'object',
       properties: {
         region: { description: 'Region id (integer) or name (string) from listRegions().' },
-        expectedTriangleCount: { description: 'Exact integer or {min?, max?} object.' },
+        expectedTriangleCount: { type: 'integer', minimum: 0, description: 'Exact triangle count to expect. For a range use expectedTriangleRange.' },
+        expectedTriangleRange: { type: 'object', description: 'Inclusive range {min?, max?} of triangles to expect.', properties: { min: { type: 'integer', minimum: 0 }, max: { type: 'integer', minimum: 0 } } },
         expectedBoundingBox: {
           type: 'object',
           description: 'Object with any subset of axis keys {x?, y?, z?} each [min, max].',
@@ -1821,6 +1913,9 @@ const ALL_TOOLS: ToolDefinition[] = [
           },
           required: ['axis', 'angleDeg'],
         },
+        smooth: { type: 'boolean', description: 'Smooth the painted edge along the analytic cylinder by refining boundary triangles. Default true; false = fast, follows the existing triangles.' },
+        resolution: { type: 'number', description: 'Smooth-edge density: model bbox diagonal / resolution. Default 256.' },
+        maxEdge: { type: 'number', description: 'Explicit max boundary edge length in mesh units; overrides resolution.' },
         topOnly: { type: 'boolean', description: 'Shortcut: only upward-facing triangles (normal within 30° of +Z).' },
         coverageMode: {
           type: 'string',
@@ -1834,7 +1929,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'thicknessMap',
-    description: 'Wall-thickness map of the current model: EVERY triangle\'s distance straight through the solid to the opposite wall (exact on flat walls, a close estimate on curved ones — checkPrintability only samples a few hundred). Returns the thinnest wall and where, the median, how much surface is below `threshold` (default 2 × the printer nozzle width), and the thin SPOTS — connected thin areas, thinnest first, each with { center, thinnest, thickness, area, triangleCount } — so you can thicken exactly those places. render: true adds a heatmap image (red ≤ ½·threshold, yellow at the threshold, grey ≥ 2·threshold).',
+    description: 'Wall thickness under EVERY triangle of the current model (checkPrintability only samples). Returns the thinnest wall and where, the median, the share below `threshold`, and the thin SPOTS (connected areas, thinnest first: center, thinnest, thickness, area) to thicken. render: true adds a heatmap (red ≤ ½·threshold, yellow at it, grey ≥ 2×).',
     input_schema: {
       type: 'object',
       properties: {
@@ -2021,6 +2116,7 @@ Plus preserveColor (default true — bake path only; on the code path paint re-r
           type: 'object',
           description: "That id's options (see the per-id list in the tool description) plus preserveColor. Omit for size-relative defaults.",
         },
+        optsJson: { type: 'string', description: 'Alternative to opts: the same options as a JSON string, e.g. "{\\"depth\\":0.4}". Use it if you cannot fill the opts object. Used only when opts is absent or empty.' },
         mode: {
           type: 'string',
           enum: ['auto', 'code', 'bake'],
@@ -2058,7 +2154,7 @@ Plus preserveColor (default true — bake path only; on the code path paint re-r
         cellSize: { type: 'number', description: 'Approximate spacing between cells in world units. Default ~16% of diagonal.' },
         wallThickness: { type: 'number', description: 'Shell wall thickness in world units (strut thickness through the wall). Default ~3% of diagonal.' },
         strutWidth: { type: 'number', description: 'Kept edge-network width as a fraction of cellSize [0.05–0.6]. Default 0.3. Smaller = thinner struts, larger windows.', minimum: 0.05, maximum: 0.6 },
-        resolution: { type: 'integer', description: 'Field/voxel resolution along the longest axis [16–256]. Higher = crisper struts, slower. Default 110.', minimum: 16, maximum: 256 },
+        resolution: { type: 'integer', description: 'Field/voxel resolution along the longest axis [16–256]. Higher = crisper struts, slower. Default 140.', minimum: 16, maximum: 256 },
         jitter: { type: 'number', description: 'Cell irregularity [0–1]. 1 = irregular Voronoi (default); 0 = a regular grid.', minimum: 0, maximum: 1 },
         grainAngleDeg: { type: 'number', description: 'Rotate the cell pattern in the XY plane, degrees. Default 0.' },
         seed: { type: 'integer', description: 'Deterministic seed — change to reshuffle the cell layout. Default 1.' },
@@ -2150,6 +2246,8 @@ Returns { ok, stats, metrics, version } or { error }.`,
         quality: { type: 'string', enum: ['draft', 'standard', 'fine'], description: "Speed/smoothness preset. 'draft' ≈ 4× faster, 'fine' ≈ 4× slower and smoothest. Default 'standard'." },
         step: { type: 'number', description: 'Explicit Z-section pitch (world units); overrides the preset. Smaller = more sections.' },
         edge: { type: 'number', description: 'Explicit levelSet edge length (world units); smaller = finer surface + slower build.' },
+        dpTol: { type: 'number', description: 'Explicit Douglas-Peucker tolerance (world units) for simplifying each section outline; larger = fewer points, coarser outline.' },
+        samples: { type: 'integer', minimum: 100, maximum: 200000, description: 'Surface sample count for the fit metrics (chamfer / hausdorff). Default 4000.' },
       },
     },
   },
@@ -2263,6 +2361,7 @@ Returns { ok, stats, metrics, version } or { error }.`,
         from: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Current colour [r,g,b] 0..1 (from listRegions / getModelColors).' },
         to: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'New colour [r,g,b] 0..1.' },
         tolerance: { type: 'number', minimum: 0, description: 'Max RGB distance counted as a match. Default 0.01.' },
+        withinPart: { type: 'string', description: 'Optional part (label) name: replace the colour only inside that part (adds a part-scoped colour-match region instead of recolouring whole regions).' },
       },
       required: ['from', 'to'],
     },
@@ -2316,6 +2415,7 @@ Returns { ok, stats, metrics, version } or { error }.`,
         objects: { type: 'array', items: { type: 'string' }, description: 'Optional object names or ids to bundle into one file. Default: the current object (\'3mf-objects\': every object).' },
         filename: { type: 'string', description: 'Optional download filename (the extension is added if missing).' },
         split: { type: 'object', description: 'Optional: object name or id → "pieces" | "parts" | "whole". Not for step / vox.' },
+        splitJson: { type: 'string', description: 'Alternative to split: the same map as a JSON string, e.g. "{\\"Chess set\\":\\"pieces\\"}". Use it if you cannot fill the split object. Used only when split is absent or empty.' },
         exclude: { type: 'array', items: { type: 'string' }, description: 'Optional: split items to leave out, by name ("<object> · <item>", e.g. "Chess set · Brim tab").' },
       },
       required: ['format'],
@@ -2323,7 +2423,7 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: 'renderSection',
-    description: 'Render a CROSS-SECTION image of the current model cut along any axis — see inside: wall thickness, cavities, internal supports, a press-fit gap. axis x | y | z (default z); offset = where along that axis to cut (default: the middle of the model). The image reads like the matching view: a y cut is seen from the front (+X right, +Z up), an x cut from the right (+Y right, +Z up), a z cut from above (+X right, +Y up); it is captioned, has labelled axis arrows and a scale bar, and outlines the setReferenceGeometry ghost (dashed green) when one is set. Returns the image plus { axis, offset, area, contours, view: {right, up, from}, boundingBox (in those image axes), referenceContours? } (contours > 1 = hollow or several pieces). sliceAtZVisual is the z-only shortcut.',
+    description: 'CROSS-SECTION image of the current model along any axis — see walls, cavities, a press-fit gap. offset defaults to the middle. Oriented like the matching view (y from the front, x from the right, z from above), with a caption, axis arrows, a scale bar, and the reference ghost dashed. Returns the image + { area, contours, view: {right, up, from}, boundingBox (image axes), referenceContours? }; contours > 1 = hollow or several pieces.',
     input_schema: {
       type: 'object',
       properties: {
@@ -2472,13 +2572,27 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: PROPOSE_PLAN_TOOL,
-    description: 'Present your plan as a card the user can build, revise or discard. Plan mode only. This ENDS your turn. Keep it concrete: a short summary of what you will make, the ordered steps you will take, and the assumptions you made so the user can correct them. If you need answers before you can plan well, call askUser instead.',
+    description: 'Present your plan as a card the user can build, revise or discard. Plan mode only. This ENDS your turn. Keep it concrete: a short summary of what you will make, the ordered steps you will take, and the assumptions you made so the user can correct them. Always include an honest `estimate` — the build is stopped for the user\'s go-ahead at roundsMax, so an optimistic estimate only means an earlier checkpoint. If you need answers before you can plan well, call askUser instead.',
     input_schema: {
       type: 'object',
       properties: {
         summary: { type: 'string', description: 'One short paragraph: what you will build and the overall approach.' },
         steps: { type: 'array', minItems: 1, items: { type: 'string' }, description: 'The concrete steps, in order.' },
         assumptions: { type: 'array', items: { type: 'string' }, description: 'Defaults you chose that the user may want to change.' },
+        estimate: {
+          type: 'object',
+          description: 'How likely this is to land. A round = one of your tool round-trips while building.',
+          properties: {
+            difficulty: { type: 'string', enum: ['easy', 'medium', 'hard', 'research'], description: 'For this app and its tools: research = no known reliable route.' },
+            confidence: { type: 'integer', minimum: 0, maximum: 100, description: 'Chance (%) of reaching `quality` within roundsMax.' },
+            roundsMin: { type: 'integer', minimum: 1, maximum: 200 },
+            roundsMax: { type: 'integer', minimum: 1, maximum: 200, description: 'Realistic upper bound, including verification and fixes.' },
+            quality: { type: 'string', description: 'What the result will realistically look like (e.g. "clean blockout", "close to the photo").' },
+            gaps: { type: 'array', items: { type: 'string' }, description: 'Tools missing or weak for this task.' },
+            risks: { type: 'array', items: { type: 'string' }, description: 'What is most likely to go wrong.' },
+          },
+          required: ['difficulty', 'roundsMin', 'roundsMax'],
+        },
       },
       required: ['summary', 'steps'],
     },
@@ -2487,12 +2601,24 @@ Returns { ok, stats, metrics, version } or { error }.`,
   // Kept in one contiguous block; gated in the sets below.
   {
     name: 'listAnnotations',
-    description: 'Read the marks the USER drew on the model with the Annotate tool (✏️): freehand strokes and pinned text labels, with their 3D positions. Call this when the user says "here", "this part", "where I marked", or after they annotate — it locates what they pointed at without a render. Returns { count, strokes: [{id, color, width, pointCount, bbox, centroid, points (downsampled), camera}], texts: [{id, text, color, anchor, camera}] }. Annotations are a feedback layer, not geometry: infer the feature under each point (probeRay / findFaces / listLabels) and confirm your reading with the user before editing.',
+    description: 'Read the marks the USER drew on the model with the Annotate tool (✏️): freehand strokes and pinned text labels, with their 3D positions. Call this when the user says "here", "this part", "where I marked", or after they annotate — it locates what they pointed at without a render. Returns { count, strokes: [{id, color, width, pointCount, bbox, centroid, points (downsampled), camera}], texts: [{id, text, color, anchor, camera}], views: [{id, title, summary, createdAt, attached}] }. `views` are frames the user saved with their exact camera (Snapshot style) — call viewAnnotationView to see one. Annotations are a feedback layer, not geometry: infer the feature under each point (probeRay / findFaces / listLabels) and confirm your reading with the user before editing.',
     input_schema: {
       type: 'object',
       properties: {
         maxPointsPerStroke: { type: 'integer', minimum: 0, maximum: 500, description: 'Downsample each stroke polyline to at most this many points (endpoints kept). 0 omits points entirely (bbox/centroid are still returned). Default 16.' },
       },
+    },
+  },
+  {
+    name: 'viewAnnotationView',
+    description: 'See an annotation view the USER saved with the Annotate tool (ids from listAnnotations().views, or an "[Annotation view …]" line in their message): the frame they marked up from their exact camera, plus what each mark points at — hits[] {parts (labelled parts under the mark, most-hit first), centroid, bbox in world units, hits/samples} and marks2D (normalized image positions; closed: true = a loop around something). Pass fresh: true to render the CURRENT model from that same camera with their marks on top, to check your change from the angle they flagged.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Annotation view id (av_…).' },
+        fresh: { type: 'boolean', description: 'Render the current model from the saved camera instead of returning the frame the user saw. Default false.' },
+      },
+      required: ['id'],
     },
   },
   {
@@ -2644,6 +2770,7 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   'getCode', 'setCode', 'runCode', 'runAndSave', 'runAndAssert', 'runAndExplain',
   'getParams', 'setParams', 'getGeometryData', 'getMeshSummary', 'getFeatureCentroids',
   'listVersions', 'loadVersion', 'saveVersion', 'forkVersion', 'copyColorsFromVersion',
+  'getModelDrift', 'resolveModelDrift',
   'modifyAndTest', 'query', 'findFaces', 'listComponents', 'listLabels', 'getModelColors',
   'listRegions', 'probePixel', 'probePixels', 'probeRay', 'paintPreview', 'paintExplain',
   'getPartTriangles', 'partBoundary', 'paintAlongBoundary',
@@ -2662,13 +2789,35 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   'healCurrent', 'replaceColor', 'setRegionVisibility', 'paintAirbrush', 'renderSection',
   'getObjectPartInfo', 'setObjectPartColor', 'renameObjectPart', 'bakeObjectPartColor',
   'extractObjectPiece', 'extractObjectParts', 'reassignPaint', 'partAction', 'undoPartEdit',
+  'splitIntoPieces',
 ]);
+
+/** Read-only object-targetable tools. When one targets an object other than
+ *  the open one, focus returns to the user's object (and version) afterwards,
+ *  so an agent inspecting a sibling doesn't leave the user looking at it
+ *  (#1197). Left out on purpose: tools that change an object (the user should
+ *  see the change), and reads whose answer feeds a follow-up call on the same
+ *  object — triangle ids (findFaces, getPartTriangles), region ids
+ *  (listRegions, paintExplain), piece indices (getObjectPartInfo), surface
+ *  points (probe*, partBoundary) — so an untargeted paint right after still
+ *  lands on the object those ids belong to. */
+export const FOCUS_RETURNING_TOOLS = new Set<string>([
+  'getActiveLanguage', 'getCode', 'getParams', 'getGeometryData', 'getMeshSummary', 'getFeatureCentroids',
+  'listVersions', 'getModelDrift', 'diffVersions', 'modifyAndTest', 'query', 'listComponents',
+  'listLabels', 'getModelColors', 'assertPaint', 'sliceAtZVisual', 'renderSection',
+  'checkPrintability', 'thicknessMap', 'renderView', 'renderViews',
+]);
+
+/** Bumped on every executeTool call, so a focus return that finishes late (its
+ *  read outlived the agent's tool timeout) can tell a newer call has started
+ *  and must not be switched away from under it. */
+let toolCallGeneration = 0;
 
 // The shared `object` target schema, injected into every targetable tool so the
 // description stays in one place. Typeless on purpose — it accepts a name/id
 // string OR a 0-based index number (resolvePartTarget in main.ts handles both).
 const OBJECT_TARGET_PROP = {
-  description: 'Optional. The OBJECT to act on — addressed by its name, its id (from listObjects), or its 0-based index. Defaults to the current object. Pass this to target a specific object directly instead of relying on the current selection; it also makes a separate changeObject call unnecessary. Switching focus to the object is visible to the user.',
+  description: 'Optional. The OBJECT to act on — its name, id (from listObjects), or 0-based index. Defaults to the current object. Pass it instead of relying on the current selection or a separate changeObject call. Read-only tools (renders, queries) switch back to the user\'s object afterwards; tools that change the object leave it focused.',
 };
 for (const tool of ALL_TOOLS) {
   if (OBJECT_TARGETABLE_TOOLS.has(tool.name) && !('object' in tool.input_schema.properties)) {
@@ -2688,6 +2837,7 @@ const LEGACY_SCOPE_TOOLS = new Set<string>([
 
 const ALWAYS_AVAILABLE = new Set([
   ASK_USER_TOOL,
+  'getModelDrift',
   'listPartDetectors',
   'getPartDraft',
   'getActiveLanguage',
@@ -2730,7 +2880,6 @@ const ALWAYS_AVAILABLE = new Set([
   'previewSeeds',
   'paintPreview',
   'paintExplain',
-  'forkVersion',
   'runAndAssert',
   'runAndExplain',
   'query',
@@ -2773,6 +2922,7 @@ const ALWAYS_AVAILABLE = new Set([
   'evalAgainstImport',
   // #1085: reads + metadata setters wrapping existing window.partwright methods.
   'listAnnotations',
+  'viewAnnotationView',
   'diffVersions',
   'getMeasurement',
   'getViewState',
@@ -2906,7 +3056,7 @@ const PLAN_MODE_TOOLS = new Set([
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
   'evalAgainstImport',
   // #1085 pure reads.
-  'listAnnotations', 'diffVersions', 'getMeasurement', 'getViewState',
+  'listAnnotations', 'viewAnnotationView', 'diffVersions', 'getMeasurement', 'getViewState',
   'getPalette', 'getUnits', 'listSessions',
   'getCurvatureQuality', 'getAppConfig', 'getDiagnosticLog',
   'getUiState',
@@ -2938,7 +3088,7 @@ export const RETRY_SAFE_TOOLS = new Set([
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
   'evalAgainstImport',
   // #1085 pure reads.
-  'listAnnotations', 'diffVersions', 'getMeasurement', 'getViewState',
+  'listAnnotations', 'viewAnnotationView', 'diffVersions', 'getMeasurement', 'getViewState',
   'getPalette', 'getUnits', 'listSessions',
   'getUiState', 'listCatalog',
   // Visual-only view state; re-applying it is idempotent.
@@ -2957,7 +3107,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams', 'setCurvatureQuality']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts', 'partAction', 'undoPartEdit']);
+const SAVE_GATED = new Set(['runAndSave', 'forkVersion', 'loadVersion', 'saveVersion', 'resolveModelDrift', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts', 'partAction', 'undoPartEdit', 'splitIntoPieces']);
 /** SAVE_GATED tools that touch version history WITHOUT executing new code, so
  *  they only need the saveVersions scope (not runCode). */
 const SAVE_NON_RUNNING = new Set(['loadVersion', 'saveVersion', 'renameVersion', 'deleteVersion', 'saveAllObjects']);
@@ -2979,7 +3129,8 @@ export function isModelChangingTool(name: string, input?: Record<string, unknown
   if (name === 'renameVersion') return false;
   // editPalette is paint-gated but edits the spool list, not the model.
   if (name === 'editPalette') return false;
-  return name === 'runCode' || name === 'setCode' || name === 'setParams' || SAVE_GATED.has(name) || PAINT_GATED.has(name);
+  // A delegated worker edits and saves the model on the main agent's behalf.
+  return name === 'delegateTask' || name === 'runCode' || name === 'setCode' || name === 'setParams' || SAVE_GATED.has(name) || PAINT_GATED.has(name);
 }
 
 /** Where the AI's importFromUrl lands when the model names no target: a new
@@ -3027,7 +3178,7 @@ export function describeToolConfirmation(name: string, input: Record<string, unk
  *  vision spend in one place — when off, the agent has to reason from
  *  code + stats alone. runIsolated is here because its primary value is
  *  the thumbnail; without vision it degrades to just the stats. */
-const VIEWS_GATED = new Set(['renderView', 'renderViews', 'runIsolated', 'renderSection']);
+const VIEWS_GATED = new Set(['renderView', 'renderViews', 'runIsolated', 'renderSection', 'viewAnnotationView']);
 // `finish` only exists in auto-continue mode — it's the sentinel the model
 // calls to end a turn (otherwise the loop resumes it). Off-mode never offers
 // it, so off-mode behavior is unchanged.
@@ -3260,7 +3411,10 @@ function matchObjectRow(objects: ObjectRow[], target: string | number): ObjectRo
     if (!Number.isInteger(target) || target < 0) return undefined;
     return [...objects].sort((a, b) => a.order - b.order)[target];
   }
-  return objects.find(p => p.id === target) ?? objects.find(p => p.name === target);
+  // A digit string is an index that arrived as a string (Gemini types an
+  // untyped param as string) — but only once no object carries it as a name.
+  return objects.find(p => p.id === target) ?? objects.find(p => p.name === target)
+    ?? (/^\d+$/.test(target) ? matchObjectRow(objects, Number(target)) : undefined);
 }
 
 /** Switch focus to the object an object-scoped tool named via its `object`
@@ -3268,24 +3422,25 @@ function matchObjectRow(objects: ObjectRow[], target: string | number): ObjectRo
  *  last selected in the object list. `target` is an object name, id, or 0-based
  *  index (mirrors resolvePartTarget on the API side). No-op when the target is
  *  already current — which avoids reloading the object and clobbering any
- *  in-progress editor draft on it. Returns an error string on a bad target, or
- *  null on success. */
-async function focusTargetObject(api: PartwrightAPI, target: string | number): Promise<string | null> {
+ *  in-progress editor draft on it. Returns `{ error }` on a bad target, else
+ *  where focus was before (`previous`, null when nothing switched). */
+type FocusSpot = { id: string; version: number | null };
+async function focusTargetObject(api: PartwrightAPI, target: string | number): Promise<{ error: string } | { previous: FocusSpot | null }> {
   const objects = api.listObjects() as ObjectRow[] | undefined;
   if (!Array.isArray(objects) || objects.length === 0) {
-    return `Cannot target object ${JSON.stringify(target)}: no active session with objects. Open a session first.`;
+    return { error: `Cannot target object ${JSON.stringify(target)}: no active session with objects. Open a session first.` };
   }
   if (typeof target === 'number' && (!Number.isInteger(target) || target < 0)) {
-    return `Cannot target object: index must be a non-negative integer (got ${JSON.stringify(target)}).`;
+    return { error: `Cannot target object: index must be a non-negative integer (got ${JSON.stringify(target)}).` };
   }
   const match = matchObjectRow(objects, target);
-  if (!match) return `Cannot target object ${JSON.stringify(target)}: no matching object (by name, id, or index). Call listObjects() to see what's available.`;
-  if (match.isCurrent) return null; // already focused — don't reload and clobber an in-progress edit
-  const switched = await api.changeObject(match.id) as { error?: string } | undefined;
+  if (!match) return { error: `Cannot target object ${JSON.stringify(target)}: no matching object (by name, id, or index). Call listObjects() to see what's available.` };
+  if (match.isCurrent) return { previous: null }; // already focused — don't reload and clobber an in-progress edit
+  const switched = await api.changeObject(match.id) as { error?: string; previous?: FocusSpot | null } | undefined;
   if (switched && typeof switched === 'object' && 'error' in switched && switched.error) {
-    return `Cannot target object ${JSON.stringify(target)}: ${switched.error}`;
+    return { error: `Cannot target object ${JSON.stringify(target)}: ${switched.error}` };
   }
-  return null;
+  return { previous: switched?.previous ?? null };
 }
 
 /** Dispatches a tool call to window.partwright and stringifies the result.
@@ -3318,7 +3473,7 @@ function proposePlanInputError(input: Record<string, unknown>): string | null {
   if (input.assumptions !== undefined && (!Array.isArray(input.assumptions) || input.assumptions.some(s => typeof s !== 'string'))) {
     return 'proposePlan: `assumptions` must be an array of strings.';
   }
-  return null;
+  return planEstimateInputError(input.estimate);
 }
 
 export async function executeTool(name: string, rawInput: Record<string, unknown>): Promise<ToolExecResult> {
@@ -3361,6 +3516,10 @@ export async function executeTool(name: string, rawInput: Record<string, unknown
       delete input.scope;
     }
     const api = getApi();
+    const generation = ++toolCallGeneration;
+    // Set when a read-only tool switched focus to another object: where to
+    // switch back to, and the object it switched to.
+    let returnFocus: { to: FocusSpot; from: string } | null = null;
     // Object addressing: an object-scoped tool may name an `object` target (name,
     // id, or 0-based index; `part` is the pre-rename spelling, still accepted).
     // Switch focus to it before running so the op acts on the addressed object —
@@ -3374,40 +3533,72 @@ export async function executeTool(name: string, rawInput: Record<string, unknown
       delete input.object;
       if (!ownsPart) delete input.part;
       if (target != null) {
-        const focusErr = await focusTargetObject(api, target);
-        if (focusErr) return { content: focusErr, isError: true };
+        const focus = await focusTargetObject(api, target);
+        if ('error' in focus) return { content: focus.error, isError: true };
+        const after = currentObjectId(api);
+        if (FOCUS_RETURNING_TOOLS.has(name) && focus.previous && after && after !== focus.previous.id) {
+          returnFocus = { to: focus.previous, from: after };
+        }
       }
     }
-    // Tools that ship images back to the model bypass the generic JSON
-    // dispatch — they need the data-URL → multimodal-image wrapping.
-    if (name === 'renderView') return executeRenderView(api, input);
-    if (name === 'renderViews') return await executeRenderViews(api, input);
-    if (name === 'thicknessMap') return await executeThicknessMap(api, input);
-    if (name === 'runIsolated') return await executeRunIsolated(api, input);
-    if (name === 'sliceAtZVisual') return await executeSliceAtZVisual(api, input);
-    if (name === 'getReferenceImages') return await executeGetReferenceImages(api);
-    if (name === 'getAttachments') return executeGetAttachments(api);
-
-    const result = await dispatch(api, name, input);
-    if (result === undefined) return { content: '(ok)', isError: false };
-    if (typeof result === 'string') return { content: result, isError: false };
-    // If a dispatch returned an object that already looks like our
-    // ToolExecResult shape (image-bearing), pass it through. Otherwise
-    // serialize normally.
-    if (result && typeof result === 'object' && 'content' in (result as Record<string, unknown>) && 'isError' in (result as Record<string, unknown>)) {
-      return result as ToolExecResult;
+    let result: ToolExecResult;
+    try {
+      result = await runTool(api, name, input);
+    } catch (err) {
+      result = { content: err instanceof Error ? err.message : String(err), isError: true };
     }
-    // A value-returning API method reports failure as `{ error }` instead of
-    // throwing (ai.md#argument-validation): flag it as an error result so the
-    // model and the loop (finishBatchErrored) see a failure, as they did when
-    // the same bad input threw. Auto-retry still only re-runs TRANSIENT failures.
-    const failed = typeof result === 'object' && result !== null && !Array.isArray(result)
-      && typeof (result as { error?: unknown }).error === 'string';
-    return { content: JSON.stringify(result, null, 2), isError: failed };
+    // Switch back only when nothing moved focus meanwhile (the user clicking
+    // an object) and no newer tool call has started — never yank the user,
+    // or a later call, off the object they're on.
+    if (returnFocus && generation === toolCallGeneration && currentObjectId(api) === returnFocus.from) {
+      const back = await api.changeObject(returnFocus.to.id, returnFocus.to.version != null ? { version: returnFocus.to.version } : undefined) as { error?: string; name?: string } | undefined;
+      if (back && !back.error) {
+        const fromName = (api.listObjects() as ObjectRow[]).find(o => o.id === returnFocus!.from)?.name ?? returnFocus.from;
+        result.content += `\n\n(Focus went back to the user's object "${back.name}". Pass object: ${JSON.stringify(fromName)} again on follow-up calls about ${JSON.stringify(fromName)}.)`;
+      }
+    }
+    return result;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { content: msg, isError: true };
   }
+}
+
+/** The id of the object open in the editor, or null with no session. */
+function currentObjectId(api: PartwrightAPI): string | null {
+  const objects = api.listObjects() as ObjectRow[] | undefined;
+  return Array.isArray(objects) ? objects.find(o => o.isCurrent)?.id ?? null : null;
+}
+
+/** Run one tool on the focused object (executeTool has already resolved its
+ *  object target). */
+async function runTool(api: PartwrightAPI, name: string, input: Record<string, unknown>): Promise<ToolExecResult> {
+  // Tools that ship images back to the model bypass the generic JSON
+  // dispatch — they need the data-URL → multimodal-image wrapping.
+  if (name === 'renderView') return executeRenderView(api, input);
+  if (name === 'renderViews') return await executeRenderViews(api, input);
+  if (name === 'thicknessMap') return await executeThicknessMap(api, input);
+  if (name === 'runIsolated') return await executeRunIsolated(api, input);
+  if (name === 'sliceAtZVisual') return await executeSliceAtZVisual(api, input);
+  if (name === 'getReferenceImages') return await executeGetReferenceImages(api);
+  if (name === 'getAttachments') return executeGetAttachments(api);
+
+  const result = await dispatch(api, name, input);
+  if (result === undefined) return { content: '(ok)', isError: false };
+  if (typeof result === 'string') return { content: result, isError: false };
+  // If a dispatch returned an object that already looks like our
+  // ToolExecResult shape (image-bearing), pass it through. Otherwise
+  // serialize normally.
+  if (result && typeof result === 'object' && 'content' in (result as Record<string, unknown>) && 'isError' in (result as Record<string, unknown>)) {
+    return result as ToolExecResult;
+  }
+  // A value-returning API method reports failure as `{ error }` instead of
+  // throwing (ai.md#argument-validation): flag it as an error result so the
+  // model and the loop (finishBatchErrored) see a failure, as they did when
+  // the same bad input threw. Auto-retry still only re-runs TRANSIENT failures.
+  const failed = typeof result === 'object' && result !== null && !Array.isArray(result)
+    && typeof (result as { error?: unknown }).error === 'string';
+  return { content: JSON.stringify(result, null, 2), isError: failed };
 }
 
 /** Returns an error message when the supplied code clearly doesn't match
@@ -3589,7 +3780,7 @@ function executeRenderView(api: PartwrightAPI, input: Record<string, unknown>): 
   // Mirror the budget-driven default size applied in window.partwright.renderView
   // so the label reports the size actually rendered.
   const size = (input.size as number | undefined) ?? getRenderBudget().defaultPx;
-  const label = `view: elev=${elevation}°, az=${azimuth}°${ortho ? ', ortho' : ''}, ${size}px`;
+  const label = `view: elev=${elevation}°, az=${azimuth}°${ortho ? ', ortho' : ''}, ${size}px${input.focus ? `, focus ${JSON.stringify(input.focus)}${input.clip ? ' (clipped)' : ''}` : ''}`;
   return wrapImageResult(result, 'renderView', label);
 }
 
@@ -3603,7 +3794,8 @@ async function executeRenderViews(api: PartwrightAPI, input: Record<string, unkn
   const label = angles && angles.length > 0
     ? `views: ${angles.length} custom angles (${size}px per cell)`
     : `views: ${views} composite (${size}px per cell)`;
-  return wrapImageResult(result, 'renderViews', label);
+  const focus = input.focus ? `, focus ${JSON.stringify(input.focus)}${input.clip ? ' (clipped)' : ''}` : '';
+  return wrapImageResult(result, 'renderViews', label + focus);
 }
 
 async function executeRunIsolated(api: PartwrightAPI, input: Record<string, unknown>): Promise<ToolExecResult> {
@@ -3695,6 +3887,24 @@ function parseImageDataUrl(dataUrl: string): { data: string; mediaType: ImageSou
   return { data: match[2], mediaType: safeMedia };
 }
 
+/** A free-form object param, or its `<key>Json` string fallback for providers
+ *  that can't fill an untyped object (Gemini). The object wins when non-empty. */
+function objectOrJson(obj: unknown, json: unknown, tool: string, key: string): { value: Record<string, unknown> } | { error: string } {
+  const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+  if (isObj(obj) && Object.keys(obj).length > 0) return { value: obj };
+  if (typeof json === 'string' && json.trim() !== '') {
+    let parsed: unknown;
+    try { parsed = JSON.parse(json); } catch (e) {
+      return { error: `${tool}: ${key}Json is not valid JSON (${e instanceof Error ? e.message : String(e)})` };
+    }
+    if (!isObj(parsed)) return { error: `${tool}: ${key}Json must encode a JSON object` };
+    return { value: parsed };
+  }
+  if (obj === undefined && json === undefined) return { error: `${tool}: ${key} is required (or pass ${key}Json)` };
+  if (obj !== undefined && !isObj(obj)) return { error: `${tool}: ${key} must be an object` };
+  return { value: (obj ?? {}) as Record<string, unknown> };
+}
+
 async function dispatch(api: PartwrightAPI, name: string, input: Record<string, unknown>): Promise<unknown> {
   switch (name) {
     case 'getActiveLanguage':
@@ -3713,8 +3923,11 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.runAndSave(input.code as string, input.label as string | undefined, input.assertions as Record<string, unknown> | undefined, { preserveCamera: true });
     case 'getParams':
       return api.getParams();
-    case 'setParams':
-      return api.setParams(input.values as Record<string, unknown>);
+    case 'setParams': {
+      const values = objectOrJson(input.values, input.valuesJson, 'setParams', 'values');
+      if ('error' in values) return values;
+      return api.setParams(values.value);
+    }
     case 'getGeometryData':
       return api.getGeometryData();
     case 'getMeshSummary':
@@ -3727,6 +3940,13 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.loadVersion({ index: input.index as number });
     case 'saveVersion':
       return api.saveVersion(input.label as string | undefined);
+    case 'getModelDrift':
+      return api.getModelDrift();
+    case 'resolveModelDrift':
+      if (input.choice === 'restore') return api.restoreSavedModel();
+      if (input.choice === 'keep') return api.keepRebuiltModel();
+      if (input.choice === 'ignore') return api.dismissModelDrift();
+      return { error: `resolveModelDrift: choice must be "restore", "keep" or "ignore" (got ${JSON.stringify(input.choice)})` };
     case 'addSessionNote':
       return api.addSessionNote(input.text as string);
     case 'listSessionNotes':
@@ -4030,6 +4250,27 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.setPartsOverlay(input.visible);
     case 'acceptParts':
       return api.acceptParts(input);
+    case 'splitIntoPieces': {
+      // The schema carries seams as [{piece, mode, axis?, depth?, normal?}]
+      // (every object param declares its fields); the API takes { piece: seam }.
+      const args: Record<string, unknown> = { ...input };
+      if (Array.isArray(input.seams)) {
+        const seams: Record<string, unknown> = {};
+        for (const raw of input.seams as Record<string, unknown>[]) {
+          if (!raw || typeof raw.piece !== 'string') return { error: 'splitIntoPieces: each seams entry needs a piece name and a mode.' };
+          const { piece, ...spec } = raw;
+          seams[piece as string] = Object.keys(spec).length === 1 && typeof spec.mode === 'string' ? spec.mode : spec;
+        }
+        args.seams = seams;
+      }
+      const result = await api.splitIntoPieces(args) as Record<string, unknown>;
+      if (!result || typeof result !== 'object' || 'error' in result) return result;
+      const image = result.image as string | undefined;
+      delete result.image;
+      const img = typeof image === 'string' ? parseImageDataUrl(image) : null;
+      if (!img) return result;
+      return { content: `splitIntoPieces: ${JSON.stringify(result)}`, isError: false, image: { ...img, label: 'splitIntoPieces preview' } } satisfies ToolExecResult;
+    }
     case 'discardParts':
       return api.discardParts();
     case 'listObjectParts':
@@ -4149,8 +4390,16 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.listDeleted();
     case 'restoreObject':
       return api.restoreObject(input.object);
-    case 'assertPaint':
-      return api.assertPaint(input);
+    case 'assertPaint': {
+      // The tool splits the API's `number | {min, max}` into two typed params
+      // (a union can't be typed for Gemini); fold the range back in.
+      const { expectedTriangleRange, ...rest } = input;
+      if (expectedTriangleRange !== undefined) {
+        if (rest.expectedTriangleCount !== undefined) return { error: 'assertPaint: pass expectedTriangleCount OR expectedTriangleRange, not both' };
+        rest.expectedTriangleCount = expectedTriangleRange;
+      }
+      return api.assertPaint(rest as Parameters<PartwrightAPI['assertPaint']>[0]);
+    }
     case 'paintInCylinder':
       return api.paintInCylinder(input);
     case 'checkPrintability':
@@ -4167,12 +4416,17 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.getReliefSwapGuide();
     case 'setReliefPreviewMode':
       return api.setReliefPreviewMode(input.mode);
-    case 'applySurfaceTexture':
+    case 'applySurfaceTexture': {
+      const opts = input.opts === undefined && input.optsJson === undefined
+        ? { value: undefined }
+        : objectOrJson(input.opts, input.optsJson, 'applySurfaceTexture', 'opts');
+      if ('error' in opts) return opts;
       return api.applySurfaceTexture(
         input.id as 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'knurl' | 'voronoi' | 'smooth',
-        input.opts as Record<string, number | boolean | string> | undefined,
+        opts.value as Record<string, number | boolean | string> | undefined,
         input.mode as 'auto' | 'code' | 'bake' | undefined,
       );
+    }
     case 'applyVoronoiLamp':
       return api.applyVoronoiLamp(input);
     case 'engraveModel':
@@ -4201,11 +4455,29 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
         : 16;
       const strokes = (api.listAnnotations() as AnnotationStroke[] | undefined) ?? [];
       const texts = (api.listTextAnnotations() as unknown[] | undefined) ?? [];
+      const views = (api.listAnnotationViews?.() as { id: string; title: string; summary: string; createdAt: number; attachedAt?: number }[] | undefined) ?? [];
       return {
         count: api.getAnnotationCount(),
         strokes: strokes.map(s => summarizeStroke(s, maxPts)),
         texts,
+        views: views.map(v => ({ id: v.id, title: v.title, summary: v.summary, createdAt: v.createdAt, attached: v.attachedAt !== undefined })),
       };
+    }
+    case 'viewAnnotationView': {
+      if (typeof input.id !== 'string') return { error: 'viewAnnotationView: `id` must be a string.' };
+      const v = api.getAnnotationView(input.id, { includeImage: true }) as Record<string, unknown> | null;
+      if (!v || 'error' in v) return v;
+      const { image: frame, ...meta } = v as { image?: string } & Record<string, unknown>;
+      let src = frame;
+      if (input.fresh === true) {
+        const r = api.renderAnnotationView(input.id) as { image?: string; error?: string };
+        if (r.error) return r;
+        src = r.image;
+      }
+      const img = typeof src === 'string' ? parseImageDataUrl(src) : null;
+      if (!img) return meta;
+      const label = `${String(meta.title)}${input.fresh === true ? ' (current model, same camera)' : ''}`;
+      return { content: JSON.stringify(meta), isError: false, image: { ...img, label } };
     }
     case 'diffVersions': {
       const wantGeometry = input.geometry === true || input.heatmap === true;
@@ -4413,11 +4685,21 @@ const EXPORT_FORMAT_LABEL: Record<ExportFormat, string> = {
   '3mf-objects': 'a Bambu Studio / OrcaSlicer 3MF project', step: 'a STEP file', vox: 'a MagicaVoxel .vox file',
 };
 
+/** exportModel's `split` map, or its `splitJson` string fallback (Gemini can't
+ *  fill a free-form object). undefined when neither is given; the raw value
+ *  when malformed, so exportInputError reports it. */
+function exportSplit(input: Record<string, unknown>): unknown {
+  const split = input.split;
+  const filled = split != null && typeof split === 'object' && !Array.isArray(split) && Object.keys(split).length > 0;
+  if (filled || typeof input.splitJson !== 'string' || input.splitJson.trim() === '') return split ?? undefined;
+  try { return JSON.parse(input.splitJson); } catch { return input.splitJson; }
+}
+
 /** Shape errors in an exportModel call, checked before the confirm prompt and
  *  again at dispatch. Null when the input is well-formed. */
 function exportInputError(input: Record<string, unknown>): string | null {
-  const unknown = Object.keys(input).filter(k => !['format', 'objects', 'filename', 'split', 'exclude'].includes(k));
-  if (unknown.length > 0) return `exportModel: unknown key(s) ${unknown.map(k => JSON.stringify(k)).join(', ')}. Allowed: format, objects, filename, split, exclude.`;
+  const unknown = Object.keys(input).filter(k => !['format', 'objects', 'filename', 'split', 'splitJson', 'exclude'].includes(k));
+  if (unknown.length > 0) return `exportModel: unknown key(s) ${unknown.map(k => JSON.stringify(k)).join(', ')}. Allowed: format, objects, filename, split, splitJson, exclude.`;
   if (typeof input.format !== 'string' || !(EXPORT_FORMATS as readonly string[]).includes(input.format)) {
     return `exportModel: format must be one of ${EXPORT_FORMATS.join(', ')}.`;
   }
@@ -4432,16 +4714,17 @@ function exportInputError(input: Record<string, unknown>): string | null {
       return `exportModel: ${input.format.toUpperCase()} exports only the current object — omit objects (switch objects with changeObject first).`;
     }
   }
-  if (input.split != null) {
-    if (typeof input.split !== 'object' || Array.isArray(input.split)) return 'exportModel: split must be an object of object name or id → "pieces" | "parts" | "whole".';
-    for (const [k, v] of Object.entries(input.split as Record<string, unknown>)) {
+  const split = exportSplit(input);
+  if (split != null) {
+    if (typeof split !== 'object' || Array.isArray(split)) return 'exportModel: split must be an object (or splitJson a JSON object) of object name or id → "pieces" | "parts" | "whole".';
+    for (const [k, v] of Object.entries(split as Record<string, unknown>)) {
       if (v !== 'pieces' && v !== 'parts' && v !== 'whole') return `exportModel: split["${k}"] must be "pieces", "parts" or "whole".`;
     }
   }
   if (input.exclude != null && (!Array.isArray(input.exclude) || input.exclude.some(x => typeof x !== 'string' || x === ''))) {
     return 'exportModel: exclude must be an array of item names ("<object> · <item>").';
   }
-  if ((input.split != null || input.exclude != null) && (input.format === 'step' || input.format === 'vox')) {
+  if ((split != null || input.exclude != null) && (input.format === 'step' || input.format === 'vox')) {
     return `exportModel: ${input.format.toUpperCase()} can't split objects — omit split / exclude.`;
   }
   return null;
@@ -4510,7 +4793,7 @@ async function executeExportModel(api: PartwrightAPI, input: Record<string, unkn
   }
   // Splitting goes through the multi-object exports; with no `objects` it
   // applies to the current object.
-  const split = input.split as Record<string, string> | undefined;
+  const split = exportSplit(input) as Record<string, string> | undefined;
   const exclude = input.exclude as string[] | undefined;
   const splitOpts = split || exclude ? { ...(split ? { split } : {}), ...(exclude ? { exclude } : {}) } : undefined;
   if (splitOpts && !ids && format !== '3mf-objects') {

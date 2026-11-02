@@ -126,7 +126,7 @@ a few points of it on `photoMatch`. The loop:
 2. **Fill in a CharacterSpec** — `proportions`, `headScale`, `headSink`, hair `style`
    (+ `fringe`/`spike`/`swoop` for anime; `'shag'` + `crown`/`layers`/`raggedness`/`flare`/`backWidth`
    for a shaggy layered jet-black mop; `'captured'` + `volume`/`capturedFringe` for the
-   captured Tsubasa hairdo), sleeves / knee shorts (`pants.length: 'shorts'`) /
+   captured shaggy-mop hairdo), sleeves / knee shorts (`pants.length: 'shorts'`) /
    socks / footwear (`style: 'toy'`, `cleats`), collar + cuff `trim`, chest / back
    `print` lettering, bead eyes, `colors` sampled from the photo, `pose.hold`
    (`cupL`/`cupR`, `handScale`) for a ball.
@@ -145,7 +145,7 @@ a few points of it on `photoMatch`. The loop:
    accessories, other props): `getCode()` gives the generated figure code to
    extend — it stays ordinary, editable `api.sdf.figure` code.
 
-**Worked example — the Captain Tsubasa Funko, spec only (≈1.2 k characters).**
+**Worked example — a Funko soccer figure, spec only (≈1.2 k characters).**
 Scores 0.914 front / 0.899 back silhouette IoU against the toy's photos — level
 with the ≈5.7 k-character hand-written figure (0.912 / 0.911):
 
@@ -1076,6 +1076,8 @@ const sheathed = F.hangFrom(scabbard, hip, { tilt: 15 }).label('scabbard');
 eyepatches. Returns `{ eyeL, eyeR, bridge, templeL, templeR, forward, up, lateral }`
 (all tracking head pose): build a lens ring at `eyeL`/`eyeR` pushed out along
 `forward`, a `bridge` between them, and temple arms back to `templeL`/`templeR`.
+The figure is unitless; for a wearable that must fit a real person, design
+against the metric `api.headform()` instead (`/ai/headform.md`).
 
 > **Thin accessory features (glasses temples, chains, straps, blades) FRAGMENT on
 > the coarse march, and the `detail` REFINE pass FRAYS them** (the same failure as
@@ -1569,7 +1571,7 @@ F.hair(rig, { style, hairline, length, volume, part, texture, ears })
 //     is bigger than the source's the hair is lifted (layers kept), never
 //     clipped. Much faster to build than the lock styles (one field, no locks).
 //     Pass `on: head`. Defaults reproduce the capture literally. Extra keys:
-//     { preset: 'tsubasa' (default — the Captain Tsubasa Funko's shaggy mop:
+//     { preset: 'shaggy' (default — a captured shaggy, spiky mop:
 //         a messy fringe of pointed locks, layered sides, a deep back to the nape),
 //       spikiness: 0..3 (1, amplifies the detail — spike height, point depth of
 //         the fringe + hem; < 1 calms it), smooth: 0..1 (0, softens tips and
@@ -1585,7 +1587,7 @@ F.hair(rig, { style, hairline, length, volume, part, texture, ears })
 //     Overhangs fill in (the field is star-shaped from the head centre: a lock
 //     lying over the forehead keeps no gap beneath it; under-flaring tails are
 //     solid to the head) and rounded locks resting on the hair read as ridges.
-//     F.hair(rig, { style: 'captured', preset: 'tsubasa', on: head })
+//     F.hair(rig, { style: 'captured', preset: 'shaggy', on: head })
 //     F.hair(rig, { style: 'captured', on: head, volume: 1.35, spikiness: 1.8 })   // bigger + spikier
 //     Capture another hairdo (CLI, from a segmented session export or a hair-only STL):
 //       node scripts/capture-hair.mjs model.partwright.json --out src/geometry/hairCapture/presets/<name>.ts

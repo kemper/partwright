@@ -76,6 +76,40 @@ describe('Anthropic buildApiMessages', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(asst2.content.some((b: any) => b.type === 'thinking')).toBe(false);
   });
+
+  test('never sends an assistant message that ends in a thinking block', () => {
+    // A turn that stopped after thinking (max_tokens mid-thought, empty final,
+    // abort) persists thinkingBlocks with no text/tool_use. Replaying it alone
+    // 400s with "The final block in an assistant message cannot be
+    // `thinking`" — on every retry, since it's persisted. Whitespace-only text
+    // doesn't count as content either.
+    const history = [
+      { id: 'u0', sessionId: 's', role: 'user', blocks: [{ type: 'text', text: 'make a cup' }], createdAt: 0, seq: 0 },
+      {
+        id: 'a1', sessionId: 's', role: 'assistant',
+        blocks: [{ type: 'thinking', text: 'planning…' }],
+        thinkingBlocks: [{ type: 'thinking', thinking: 'planning…', signature: 'SIG_A' }],
+        createdAt: 0, seq: 1,
+      },
+      {
+        id: 'a2', sessionId: 's', role: 'assistant',
+        blocks: [{ type: 'text', text: '\n\n' }],
+        thinkingBlocks: [{ type: 'redacted_thinking', data: 'REDACTED' }],
+        createdAt: 0, seq: 2,
+      },
+      { id: 'u1', sessionId: 's', role: 'user', blocks: [{ type: 'text', text: 'keep going' }], createdAt: 0, seq: 3 },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any;
+    const out = anthropic.buildApiMessages(history, { replayThinking: true });
+
+    for (const m of out) {
+      if (m.role !== 'assistant' || !Array.isArray(m.content)) continue;
+      const last = m.content[m.content.length - 1];
+      expect(['thinking', 'redacted_thinking']).not.toContain(last.type);
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(out.map((m: any) => m.role)).toEqual(['user', 'user']);
+  });
 });
 
 describe('Anthropic thinking config', () => {
