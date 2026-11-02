@@ -504,7 +504,8 @@ partwright.getPartDraft() / partwright.setPartsOverlay(bool) / await partwright.
 partwright.getPartSeeds() / partwright.setPartSeeds([{label, point, color?, maxRadius?}]) / partwright.openPartsPanel()  // pins (panel markers) + open the panel; maxRadius caps a seed's geodesic growth
 partwright.setPartSelection([id|name], {mode?}) / partwright.getPartSelection() / partwright.setPartsView({mode:'all'|'solo', parts?}) / partwright.partAt([x,y,z])  // highlight / solo parts for the user; which part is at a point
 await partwright.reopenParts({importIndex?})  // re-open parts saved on an import (with their seeds) as the draft
-await partwright.acceptParts({label?, smoothEdges?, applyColors?})   // commit: parts become labels via api.importWithParts(i), each in the colour it shows (applyColors:false = labels only); with edge smoothing on (default) the import is re-meshed along smooth boundaries; saves a version
+await partwright.acceptParts({label?, smoothEdges?, applyColors?})   // commit: parts become labels via api.importWithParts(i), each in the colour it shows (applyColors:false = labels only); smooth edges re-mesh the import; saves a version
+await partwright.splitIntoPieces(opts)
 partwright.listObjectParts()             // The current object's parts (api.label regions) + pieces (separate solids) -> {object, parts:[{name, triangleCount, color?, colorSource?, hidden?}], lostParts, unlabeledTriangleCount, pieces:[{index, triangleCount, part?}], unmatchedPaint, emptyPaint, renameSuggestions, selected}
 partwright.highlightObjectPart(name | {piece} | {unlabeled:true} | null) // Transient visual tint to show the user which one you mean (doesn't change the selection)
 partwright.setObjectPartHidden(name | {piece} | [..], hidden = true)  // Hide/show a part/piece (or a list) in the viewport only (code, versions, exports keep it) -> {ok, hidden}

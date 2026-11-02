@@ -101,6 +101,15 @@ parametric source and STEP export are then gone, so prefer editing the source
 for parametric models when you can. Use the Split tool when a
 model is too big to print in one piece even at scale.
 
+## Printing a figure in pieces
+
+To cut a model into separate pieces for printing (head, arms, legs, eye
+inserts), detect and accept its parts, then cut along them with
+`splitIntoPieces`. It supports flat, medial (follows a fused contact) and
+plug (insert + socket, with `clearance`) seams, plus a pulled-apart preview.
+Don't cut with hand-placed planes across fused parts. See
+[/ai/segmentation.md#split-into-printable-pieces](/ai/segmentation.md#split-into-printable-pieces).
+
 ## Automatic warning on export
 
 The same `checkPrintability` runs automatically every time the user exports to

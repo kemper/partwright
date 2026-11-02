@@ -8,7 +8,7 @@ finds those boundaries from the geometry itself, and then turns each part into
 a real **label**. After that, `paintByLabel`, part colours, the object rail and
 `listObjectParts` all work on the import.
 
-**The rule of thumb for imported meshes: detect parts first, then paint by part.**
+**The rule of thumb for imported meshes: detect parts first, then paint by part — or cut by part.** To print a fused figure in pieces, detect and accept its parts, then cut along them with [`splitIntoPieces`](#split-into-printable-pieces). Never cut a fused contact with hand-placed planes or boxes.
 
 ## How it works
 
@@ -169,7 +169,9 @@ shows the smooth boundaries. `acceptParts()` then **re-meshes the import** along
 split triangles are cut and shared cut points are reused, so the mesh stays watertight. It
 gains a few percent more triangles, and the parts are stored for the new triangles.
 `acceptParts({ smoothEdges: false })` keeps the original triangles. If the model already
-had brush paint, check it after a smooth accept, because painted edges can shift slightly.
+had brush or face paint (an imported coloured 3MF included), a smooth accept currently
+scrambles it (kemper/partwright#1222), so repaint by label afterwards (`paintByLabels`), or
+accept with `smoothEdges: false`.
 A re-opened smooth-accepted import starts with smoothing at 0, since its mesh is already cut.
 
 ## Choosing seeds
@@ -225,6 +227,82 @@ Each tile (and each result's `caption`) names the detector **and the params that
 between configs of the same detector, the keys whose values differ; for a detector that
 appears once, what it changed from its defaults (feature options included), e.g.
 `2. crease-watershed · creaseWeight=4 growth=summed`.
+
+## Split into printable pieces
+
+To print a figure in pieces (head, arms, legs, eyes as inserts), cut it along
+its **accepted parts**. `splitIntoPieces` wraps the code's final return in
+`api.splitParts(…)`. Each part, or each group of parts, becomes its own solid.
+Labels are kept, each cut face takes its piece's label, and two neighbouring
+pieces share one cut surface, so they fit back together exactly.
+
+**Don't hand-place planes or boxes across fused parts.** A plane can't follow an
+arm that lies along a belly. It either shaves the body or leaves strips of arm
+skin on it, and a guessed cylinder can't follow the groove around a sculpted
+eye. Detect the parts with a seed on each one, accept them, then split.
+
+```js
+// 1. Parts first (see Workflow above): one named seed per piece, then accept.
+await partwright.detectParts({ algorithm: 'crease-watershed', seeds: [
+  { label: 'head', point: [...] }, { label: 'torso', point: [...] },
+  { label: 'armL', point: [...] }, { label: 'eyeL', point: [...] }, /* … */ ] });
+await partwright.renderParts({ views: ['front', 'right', 'back'] });   // show the user, fix with editParts
+await partwright.acceptParts();
+
+// 2. Preview the split: pieces pulled apart, a render, a report. Nothing is saved.
+const r = await partwright.splitIntoPieces({
+  seams: { eyeL: { mode: 'plug', depth: 4 }, eyeR: 'plug' },   // others: 'auto'
+  clearance: 0.15,                                             // press-fit gap (model units)
+});
+// r.pieces: [{ name, mode, volume, triangles, planeRms?, axis?, fragmentsHandedBack? }]
+// r.warnings: a piece that came out as several solids, an empty cut, …
+
+// 3. Look at every seam, zoomed in, from the side that shows its cut faces.
+await partwright.renderView({ azimuth: 90, elevation: 10, size: 1024 });
+
+// 4. Save it (same options, pieces in place), then export one 3MF object per piece.
+await partwright.splitIntoPieces({ seams: { eyeL: { mode: 'plug', depth: 4 }, eyeR: 'plug' }, clearance: 0.15, preview: false });
+await partwright.export3MFObjects(undefined, 'figure', { split: { [obj]: 'parts' } });
+// Undo a split: splitIntoPieces({ remove: true }).
+```
+
+**Seams**, one per piece (`seams: { name: mode }`; pieces you don't list get `auto`):
+
+| Mode | Cut | Use for |
+|---|---|---|
+| `auto` | `flat` when the seam with the rest is one loop that lies close to a plane (RMS under `flatTolerance` (0.08) × its radius), else `medial` | Leave it on unless a preview looks wrong |
+| `flat` | A plane through the seam (best fit; `normal` overrides it), used only near this part | Neck, wrists, ankles, legs on a body: flat faces glue well and print without supports |
+| `medial` | The surface halfway between this part's faces and the rest's, smoothed by `smoothing` (4) blur passes | Long fused contacts: an arm along a belly, a tail along a leg |
+| `plug` | The part's outline pushed straight in along `axis` (default: the part's mean normal) to `depth` below its deepest point (default 0.35 × outline size). The neighbour gets a matching straight-walled socket, `clearance` wider | Inserts: eyes, buttons, badges, a nose |
+
+**Options:** `parts` (piece names; `'torso+tail'` or `['torso', 'tail']` keeps
+parts together as one piece; default every part), `keep` (the piece that keeps
+whatever is left, default the largest; it has no seam of its own), `clearance` (0),
+`resolution` (96; raise it for small or detailed parts), `smoothing`, `trimOverlaps` (true), `explode`
+(preview default 0.6, saved default 0), `minFragment` (0.02: loose bits smaller
+than this fraction of their piece go back across the seam), `label`.
+
+- **Order:** plugs are cut first, then the smallest pieces first. The kept piece takes whatever is left.
+- **Read the warnings.** "came out as N separate solids" means that seam is wrong. Try another mode, a higher `resolution`, or fix the part boundary with `editParts` and accept again. Every piece should be one solid.
+- **Check the result geometrically.** In the saved split, `componentCount` should equal the number of pieces, and `listObjectParts().pieces` should name one part per piece.
+- **Separate shells aren't cut.** Each physically separate shell is handled on its own. A shell that belongs to one part (fins modelled apart, a separate eyeball) comes through whole as its own piece (`mode: 'separate'`). If it's sunk into a neighbour, it's trimmed back to that surface so it can be glued on. A warning gives how far it was sunk. `trimOverlaps: false` keeps it whole. Shells holding two or more parts are cut as usual.
+- **Parts you leave out of `parts`** aren't cut off. They stay with whichever piece they're attached to and keep their own labels (a `parts: ['head', 'body']` split keeps the eyes on the head).
+- **`clearance` is a real gap on every seam type.** Medial cuts are measured along the cut, and the clearance comes off the neighbour's side, so the piece keeps its exact surface.
+- **In code** it's `api.splitParts(m, opts)` with the same options (`flatTolerance` too). It works on any labelled manifold-js shape, so you can call it on `api.label` parts too. The run's log line `[splitParts] {…}` is the report.
+- **One object per piece:** a saved split is one object of separate solids. Export it with `split: 'parts'`. To get a separate object per piece in the session, use `extractObjectParts({ parts: [...], separate: true })`.
+- **Cost:** each cut samples a lattice over its part's box (up to `resolution`³ points) and does two booleans on the remaining mesh. For scale, an 11-piece sculpted figure at about 400k triangles took about 150 s and peaked at about 1.5 GB of engine memory per split. Simplify dense scans first (`simplifyModel`, about 400k triangles keeps eye and finger detail), and settle the parts before you start re-running splits, because each run pays the full cost again.
+
+### Recipe: a fused figurine
+
+This worked on a sculpted figure with head, arms along the belly, legs, a tail, eyes and fins:
+
+1. **Simplify** the import to about 400k triangles. Check it's still manifold.
+2. **Limbs and torso first:** seeded `thickness`, with one or two seeds per piece. Add extra torso seeds where neighbours would leak in: at the crotch and under each buttock, or the legs and tail spill into the torso.
+3. **Then the grooved boundaries:** lock every part except head, torso and tail (`editParts` lock), and re-detect with `crease-watershed`. A head seed on the **chin underside** moves the neck line onto the throat groove. Without it the torso keeps a brim under the chin.
+4. **Protrusions with no groove** (a tail, a nose): cap the seed with `maxRadius` of about the protrusion's length, so the seam ring sits on the protrusion instead of flush with the body. A flush medial cut there leaves a thin lip on the body.
+5. **Accept.** If the import was coloured, repaint by label afterwards (see "Smooth edges").
+6. **Seams:** `flat` for the neck and legs, `medial` for arms lying along the body, `plug` with `clearance: 0.15` for eyes and buttons, `medial` for the capped tail. Separate shells such as fins need nothing: they pass through, trimmed to their neighbour.
+7. **Preview, then look at each seam from the side that shows its cut faces,** on both pieces, before saving.
 
 ## Editing the parts after accepting them
 
