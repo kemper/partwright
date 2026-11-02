@@ -33,7 +33,7 @@ history later, after landing the open branches.
 
 ## Assistant
 
-- **Creature example**: `examples/creature_ned.js` → `examples/creature_horned.js`,
+- **Creature example**: renamed to `examples/creature_horned.js`,
   with the creature guide's worked-example heading and the code/test comments
   made generic. It isn't in the catalog, so nothing else references it.
 - **Logs**: 28 prompt/retro files reworded ("the figurine", "the soccer figure",
