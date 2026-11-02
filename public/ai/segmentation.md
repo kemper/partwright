@@ -169,7 +169,9 @@ shows the smooth boundaries. `acceptParts()` then **re-meshes the import** along
 split triangles are cut and shared cut points are reused, so the mesh stays watertight. It
 gains a few percent more triangles, and the parts are stored for the new triangles.
 `acceptParts({ smoothEdges: false })` keeps the original triangles. If the model already
-had brush paint, check it after a smooth accept, because painted edges can shift slightly.
+had brush or face paint (an imported coloured 3MF included), a smooth accept currently
+scrambles it (kemper/partwright#1222), so repaint by label afterwards (`paintByLabels`), or
+accept with `smoothEdges: false`.
 A re-opened smooth-accepted import starts with smoothing at 0, since its mesh is already cut.
 
 ## Choosing seeds
@@ -288,7 +290,19 @@ than this fraction of their piece go back across the seam), `label`.
 - **`clearance` is a real gap on every seam type.** Medial cuts are measured along the cut, and the clearance comes off the neighbour's side, so the piece keeps its exact surface.
 - **In code** it's `api.splitParts(m, opts)` with the same options (`flatTolerance` too). It works on any labelled manifold-js shape, so you can call it on `api.label` parts too. The run's log line `[splitParts] {…}` is the report.
 - **One object per piece:** a saved split is one object of separate solids. Export it with `split: 'parts'`. To get a separate object per piece in the session, use `extractObjectParts({ parts: [...], separate: true })`.
-- **Cost:** each cut samples a lattice over its part's box (up to `resolution`³ points) and does two booleans on the remaining mesh. Very dense scans (millions of triangles) are slow, so `simplifyModel` the import first if a preview takes minutes.
+- **Cost:** each cut samples a lattice over its part's box (up to `resolution`³ points) and does two booleans on the remaining mesh. For scale, NED, an 11-piece figure at about 400k triangles, took about 150 s and peaked at about 1.5 GB of engine memory per split. Simplify dense scans first (`simplifyModel`, about 400k triangles keeps eye and finger detail), and settle the parts before you start re-running splits, because each run pays the full cost again.
+
+### Recipe: a fused figurine
+
+This worked on NED, a sculpted figure with head, arms along the belly, legs, a tail, eyes and fins:
+
+1. **Simplify** the import to about 400k triangles. Check it's still manifold.
+2. **Limbs and torso first:** seeded `thickness`, with one or two seeds per piece. Add extra torso seeds where neighbours would leak in: at the crotch and under each buttock, or the legs and tail spill into the torso.
+3. **Then the grooved boundaries:** lock every part except head, torso and tail (`editParts` lock), and re-detect with `crease-watershed`. A head seed on the **chin underside** moves the neck line onto the throat groove. Without it the torso keeps a brim under the chin.
+4. **Protrusions with no groove** (a tail, a nose): cap the seed with `maxRadius` of about the protrusion's length, so the seam ring sits on the protrusion instead of flush with the body. A flush medial cut there leaves a thin lip on the body.
+5. **Accept.** If the import was coloured, repaint by label afterwards (see "Smooth edges").
+6. **Seams:** `flat` for the neck and legs, `medial` for arms lying along the body, `plug` with `clearance: 0.15` for eyes and buttons, `medial` for the capped tail. Separate shells such as fins need nothing: they pass through, trimmed to their neighbour.
+7. **Preview, then look at each seam from the side that shows its cut faces,** on both pieces, before saving.
 
 ## Editing the parts after accepting them
 

@@ -120,3 +120,22 @@ The rerun of NED through the official `splitIntoPieces` (fins left to the new
 separate-shell path) matched the agent's manual workaround piece-for-piece and
 peaked at 1.46 GB instead of 3.1 GB. Docs now describe separate shells and
 `trimOverlaps`, and an e2e test covers a sunk fin plus a free-standing shell.
+
+## Human
+
+Do you need to improve the tools more? Did you have the agent give you
+feedback on the process?
+
+## Assistant
+
+Asked the NED agent for a process retrospective from the in-app AI's point of
+view (docs + AI tools only). Folded the cheap, confident parts into the
+instructions now: a "Recipe: a fused figurine" in segmentation.md (seeded
+thickness, then lock and crease-watershed; chin-underside head seed; extra
+torso seeds at crotch/buttocks; maxRadius-capped tail; seam per body part;
+~400k-triangle simplify), real cost numbers (~150 s / ~1.5 GB per 11-piece
+split), and a corrected warning that a smooth accept scrambles imported paint
+(#1222) instead of "edges can shift slightly". The /split prompt points at the
+recipe. Tool work it ranked (paint scramble, a per-piece seam preview with an
+undercut check, a cheaper re-run, residual memory) is tracked in #1221–#1223
+and left for the user to prioritise.
