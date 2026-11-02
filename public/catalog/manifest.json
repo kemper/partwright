@@ -1,21 +1,21 @@
 {
  "entries": [
   {
-   "id": "companion-cube",
-   "name": "Portal Companion Cube",
-   "file": "companion_cube.partwright.json",
+   "id": "heart-cube",
+   "name": "Heart Cube",
+   "file": "heart_cube.partwright.json",
    "language": "manifold-js",
-   "description": "Portal Weighted Companion Cube \u2014 light-gray cube with pink hearts on each face and steel edge bars.",
+   "description": "Light-gray cube with a pink heart on each face and steel edge bars.",
    "tags": [
     "games"
    ]
   },
   {
-   "id": "pacman-ghost",
-   "name": "Pac-Man Ghost",
-   "file": "pacman_ghost.partwright.json",
+   "id": "arcade-ghost",
+   "name": "Arcade Ghost",
+   "file": "arcade_ghost.partwright.json",
    "language": "manifold-js",
-   "description": "Blinky \u2014 the classic red Pac-Man ghost \u2014 in a small Pac-Man diorama: the ghost with a domed top, white oval eyes with blue pupils looking left, and a scalloped hem of eight round lobes all around the skirt, facing a yellow Pac-Man across three pellets on a slim rounded base.",
+   "description": "A red arcade ghost in a small diorama: the ghost with a domed top, white oval eyes with blue pupils looking left, and a scalloped hem of eight round lobes all around the skirt, facing a yellow chomper across three pellets on a slim rounded base.",
    "tags": [
     "figures",
     "games"

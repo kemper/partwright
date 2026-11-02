@@ -30,8 +30,8 @@ fix is done well.
   in-app review input. Real in-scope findings go back to the fixer.
 - **Committed per entry.** Entries are committed by explicit path as each one
   completes, so in-flight fixers' half-written files are never swept in.
-- **pacman-ghost.** The catalog description promised a "standalone figurine"
-  but the entry is deliberately a diorama (Pac-Man + ghost + pellets + base).
+- **arcade-ghost.** The catalog description promised a "standalone figurine"
+  but the entry is deliberately a diorama (the chomper + ghost + pellets + base).
   I kept the model and corrected the description, which is the less
   destructive fix; the ghost's hem "teeth" were a real defect and were rebuilt
   as a scalloped ring.
@@ -58,7 +58,7 @@ fix is done well.
   The gear plate is re-centred on the two tip circles, with about 6 mm of
   margin on each side. The manifest description now says cyl(chamfer=),
   because the collars use both chamfer ends.
-- **retro-tv, pacman-ghost round 2.** Both now rest on z=0. The TV's
+- **retro-tv, arcade-ghost round 2.** Both now rest on z=0. The TV's
   antennas are thick enough to print, its handle leaves finger room, and the
   unused `angleX` parameter is gone. The ghost's eyes are rotated tangent to
   the dome so they no longer stick out as flaps at the rim.
@@ -71,7 +71,7 @@ fix is done well.
   equal to the wall. The d20 was scaled to about 25 mm so its numeral strokes
   reach the 0.8 mm minimum. The glyphs are seated on the measured face plane so
   their relief is real, and each numeral's ink is centred on its face.
-- **pacman-ghost round 3.** Pac-Man's eye sat inside his head, and his mouth
+- **arcade-ghost round 3.** the chomper's eye sat inside his head, and his mouth
   pointed toward the camera instead of the pellets. The eye now sits on the
   head surface and the mouth faces the pellet line.
 - **d20-die round 3.** The die now rests on a face at z=0, with the "20" face
@@ -85,7 +85,7 @@ fix is done well.
   rests on z=0, and the stale vert_len comment now matches the code.
 - **voxel-castle passed** on its fifth review. Stale dimension comments were
   corrected, with the geometry unchanged.
-- **pacman-ghost round 4.** The pupils are placed in world coordinates with one
+- **arcade-ghost round 4.** The pupils are placed in world coordinates with one
   shared offset, so both look left; in the rotated eye frames they diverged.
   The pellets were enlarged so they read, and the stale comments fixed.
 - **coffee-mug, machine-knob (BREP).** The mug's `shell` grew outward, and its
