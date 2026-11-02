@@ -14,7 +14,7 @@ files_changed:
 
 I imported a large 3MF while a large STL of the same model was already open,
 and the page froze and went unresponsive. How can we prevent that bad user
-experience? (Shared the NED_V2 3MF via Google Drive — ~45 MB zipped; the STL
+experience? (Shared a figure 3MF via Google Drive — ~45 MB zipped; the STL
 is ~187 MB, ~3.7M triangles.)
 
 ## Assistant

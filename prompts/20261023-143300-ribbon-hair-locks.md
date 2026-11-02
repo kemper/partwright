@@ -17,7 +17,7 @@ smooth-welded base), use it in 'anime' with fewer, bigger locks (fringe,
 sideburns curving forward, crown flicks, layered back) and slightly longer
 hair, add `lockShape` / `chunk` and tuft `shape/width/thickness/twist`, keep
 other hair styles byte-identical, add unit tests and docs, and validate on the
-Tsubasa chibi (v5) by photo-match score with only a few image reads.
+soccer-figure chibi (v5) by photo-match score with only a few image reads.
 
 ## Assistant
 

@@ -1,4 +1,4 @@
-// Ned — the shy horned creature from twenty one pilots' "Chlorine" video, as a
+// A shy horned creature with big round eyes and lobed bat ears, as a
 // stylized-realistic figurine. The worked example for api.sdf.creature
 // (public/ai/creature.md): ellipsoid MASSES welded with smoothUnion for the
 // body and head, then the creature kit for the features that make it read as

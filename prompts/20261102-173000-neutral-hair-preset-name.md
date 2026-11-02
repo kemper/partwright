@@ -24,3 +24,21 @@ remains. The unit test iterates the alias table, so it doesn't repeat it.
 
 **Verified** headlessly: the old and new names build identical hair (same
 triangle count, manifold); unit tier and `lint:deps` pass.
+
+## Human
+
+Yes to all three: push the branch, scrub the prompt/retro logs, and treat the
+creature example (a band's character) the same way. I'll rewrite the whole git
+history later, after landing the open branches.
+
+## Assistant
+
+- **Creature example**: `examples/creature_ned.js` → `examples/creature_horned.js`,
+  with the creature guide's worked-example heading and the code/test comments
+  made generic. It isn't in the catalog, so nothing else references it.
+- **Logs**: 28 prompt/retro files reworded ("the figurine", "the soccer figure",
+  "the creature") and the 5 whose file names carried a character name renamed;
+  references to the old file names updated. The two logs about the owner's own
+  deck-shield project are left as they are (their own design, not a third-party
+  name).
+- PR/issue text on GitHub was scrubbed the same way, outside git.

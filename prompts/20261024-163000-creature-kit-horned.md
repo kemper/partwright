@@ -6,7 +6,7 @@ tools: [model-preview, playwright]
 
 ## Human
 
-Wants to be able to create Ned (the creature from twenty one pilots) as a
+Wants to be able to create a shy horned creature as a
 character, and wants a really realistic version. The in-app AI struggled with
 it: it wrote pure-SDF code (ellipsoids + smoothUnion) that the user pasted.
 Attached a zip of reference images (realistic stills, 3D prints, and angles of
@@ -18,9 +18,9 @@ Character Creator has.
 
 ## Key decisions
 
-**Model Ned first, then extract what worked.** I iterated Ned headlessly with
+**Model the creature first, then extract what worked.** I iterated the creature headlessly with
 model:preview (about 10 render passes) and kept notes on which techniques fixed
-which defect. Each fix became a helper in a new `api.sdf.creature` kit. Ned
+which defect. Each fix became a helper in a new `api.sdf.creature` kit. The creature
 was then rewritten on top of the kit and re-verified, so the helpers carry a
 recipe that has been through real use rather than a guessed API.
 
@@ -61,6 +61,6 @@ system prompt, ai.md, sdf.md and figure.md. A spec-driven Character-Creator
 equivalent for creatures was considered and deferred. The kit plus a full
 worked example is a smaller first step that already covers the failure modes.
 
-**Ned is an example, not a catalog entry.** It is a fan model of a band's
+**The creature is an example, not a catalog entry.** It is a fan model of a band's
 character, so it lives in `examples/` and the doc. Adding it to the public
 catalog is the owner's call.

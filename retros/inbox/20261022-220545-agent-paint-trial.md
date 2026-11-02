@@ -1,4 +1,4 @@
-# Retro: AI-driven Tsubasa paint trial → agent-tool fixes (#1052)
+# Retro: AI-driven figurine paint trial → agent-tool fixes (#1052)
 
 **Liked**
 - Dogfooding the agent API with a subagent on the real 460k STL surfaced real bugs fast: probePixel on side views, paintStroke beading, an acceptParts race. No synthetic test had caught them.

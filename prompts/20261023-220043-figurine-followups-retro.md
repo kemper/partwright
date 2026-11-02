@@ -6,7 +6,7 @@ tools: [subagent]
 
 ## Human
 
-Do all the open follow-ups (#1049, #1050, #1055, #1056, #1059), plus a captured hair style from the Tsubasa STL. Use subagents and multiple PRs, stacking the ones that would conflict.
+Do all the open follow-ups (#1049, #1050, #1055, #1056, #1059), plus a captured hair style from the figurine STL. Use subagents and multiple PRs, stacking the ones that would conflict.
 
 ## Assistant
 
