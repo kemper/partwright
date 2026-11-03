@@ -69,6 +69,8 @@ When an implementation looks good and working, **open a draft pull request into 
 
 Open it as a **draft** (`create_pull_request` with `draft: true`) after a fast pre-flight — re-sync `origin/main`, run `npm run build` + `npm run test:unit`, and do a quick manual browser check (run a Playwright spec that screenshots the change — see [Manual Verification](#manual-verification--checking-your-work-in-the-browser)) if not already done. **Defer the full `test:e2e` suite until after the draft is up** (see [After Opening a PR](#after-opening-a-pr)); the draft PR is what *kicks off* the CI verification phase. PR-checks runs the full suite — build + unit **and** the e2e shards — on every draft push, so you watch e2e on the draft itself. Marking the PR ready for review (`update_pull_request` with `draft: false`) is a review-readiness signal, not a CI trigger. The task is done once every PR-checks shard is green.
 
+**Stacked PRs get no CI.** `pr-checks.yml` only triggers for PRs whose base is `main`, so a PR based on another feature branch runs no shards until its base merges. Prefer independent branches off `origin/main`; if you must stack, retarget the PR to `main` with a "review only these commits" note, or run the affected specs locally and say so in the PR body. Merge the branch with the largest overlap with `main` first.
+
 Skip the PR only when the user explicitly scoped you away from it — a request to "just commit" or "push to the branch" is *not* a request for a PR — or for a pure throwaway experiment. If you genuinely can't tell whether the work is a complete, reviewable unit, ask. Follow the [commit & PR conventions](#commit--pr-conventions) below for the title, prefix, and labels.
 
 - **Build command:** `npm run build`
