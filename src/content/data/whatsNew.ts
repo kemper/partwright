@@ -59,6 +59,10 @@ export const WHATS_NEW_WEEKS: WeekEntry[] = [
             body: 'Cut an imported model into separate printable pieces along its detected parts.',
           },
           {
+            title: 'Parametric human figures (experimental)',
+            body: 'A new api.human builds a watertight, printable person from a few numbers: body and face sliders, pose, hair and beards, clothing, hats and props, plus anime, chibi, toy and comic-hero styles. A photo-fit helper can match body proportions to a photo.',
+          },
+          {
             title: 'Head form for wearable fit',
             body: 'A new api.headform provides a metric adult head so hats, masks and glasses can be fitted to real dimensions.',
           },
