@@ -548,7 +548,7 @@ partwright.paintConnected({seed, maxDeviationDeg?, color, name?, withinPart?, wi
 partwright.paintRegion({point, normal?, color, name?, withinPart?, tolerance?, smooth?, smoothness?}) // bucket: coplanar flood-fill (edge-bounded); tolerance is a COSINE (default 0.9995)
 partwright.paintNearestRegion({point, color, searchRadius?, name?})       // snap-to-nearest variant
 partwright.paintNear({point, radius, normalCone?, color, name?})          // sphere selector
-partwright.paintStroke({points, radius, resolution?, maxEdge?, shape?, surface?, depth?, wrapAngleDeg?, align?, viewDir?, frontFacesOnly?, color, name?, withinPart?}) // SMOOTH brush: subdivides mesh for a rounded painted edge (wrapAngleDeg = wrap tolerance; align/frontFacesOnly, see /ai/colors.md)
+partwright.paintStroke({points, radius, resolution?, maxEdge?, shape?, surface?, depth?, wrapAngleDeg?, align?, viewDir?, frontFacesOnly?, occlude?, color, name?, withinPart?}) // SMOOTH brush: subdivides mesh for a rounded painted edge (options: /ai/colors.md)
 partwright.paintInBox({box, normalCone?, color, name?})                   // AABB selector
 partwright.paintInOrientedBox({box: {center, size, quaternion?}, color, smooth?, resolution?, maxEdge?})  // rotated box selector (same as UI Box tool); SMOOTH edges by default
 partwright.paintFaces({triangleIds, color, name?, withinPart?})           // explicit triangle ids

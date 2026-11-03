@@ -125,10 +125,11 @@ type RegionDescriptorKind =
   // normal averaged over the brush ('area'), or the camera ray ('view', using
   // the stored `view`). `surface: 'sphere'` is a plain 3D ball (cube/octahedron
   // for square/diamond) with no depth or wrap gate. `frontFaceMaxDeg` keeps only
-  // triangles facing the stored `view` camera within that angle. All optional:
+  // triangles facing the stored `view` camera within that angle; `occlude` also
+  // skips triangles hidden from that camera behind other geometry. All optional:
   // strokes saved without them resolve exactly as before.
   | { kind: 'brushStroke'; samples: [number, number, number][]; radius: number; shape: BrushShape; maxEdge: number; surface?: BrushSurface; depth?: number; wrapAngleDeg?: number; spray?: { strength: number; softness: number; seed: number };
-      align?: BrushAlign; view?: BrushView; frontFaceMaxDeg?: number }
+      align?: BrushAlign; view?: BrushView; frontFaceMaxDeg?: number; occlude?: boolean }
   // Image projection: per-triangle colors computed at apply-time by projecting
   // an image onto the mesh from a chosen axis direction. The projected result is
   // stored as a flat [triIdx, r, g, b, …] array (r/g/b in 0–255) so the region
