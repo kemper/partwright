@@ -66,6 +66,8 @@ Branch from `origin/main` (your designated branch if the session has one):
    groups. Cover **user-facing** changes only, in plain language, leading with
    fixes users were hitting. Skip harness, eval, retro, and catalog-tooling
    work. Verify every feature name against the code before you claim it.
+   Name catalog models by their shape, never by a character, brand or real
+   person (CLAUDE.md § Copyright, licenses and trademarks).
 3. `src/content/data/help.ts`: edit only if shipped behavior made the help page
    wrong. Feature PRs usually update it themselves; diff it first.
 4. Stage a prompt log under `prompts/` in its own `git add` step (see

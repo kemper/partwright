@@ -6,7 +6,7 @@ tools: [subagent, git-worktree, vite-node, model-preview]
 
 ## Human
 
-I do also want to try to create a hair style that is nearly literally the hair from this STL (the Captain Tsubasa Funko), but obviously with some customizable options.
+I do also want to try to create a hair style that is nearly literally the hair from this STL (a Funko soccer figure), but obviously with some customizable options.
 
 ## Assistant
 
@@ -54,6 +54,6 @@ sdfFigure.ts gets only the import, the allow-list, the style enum, the key-owner
 | Back | 0.98 |
 | Top | 0.995 |
 
-The Tsubasa figure builds in about 25 s, against about 79 s for 'shag'.
+The figurine builds in about 25 s, against about 79 s for 'shag'.
 
 The v6 head had been widened to suit the thin shag cap. With the literal hair it had to be narrowed (headScale 2.05/1.9/2.3). The photo IoU is then 0.868 front and 0.872 back, against 0.887 and 0.885 for the hand-tuned shag. The photo's hair is puffier at the top than the STL's.

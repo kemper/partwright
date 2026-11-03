@@ -226,7 +226,7 @@ const PAINT_PREFILL_SCHEMA: PrefillSchema = {
     shape: { type: 'enum', values: ['circle', 'square', 'diamond'] },
     surface: { type: 'enum', values: ['slab', 'geodesic', 'sphere'], description: 'Brush volume: slab = prism with a depth limit, geodesic = connected surface, sphere = 3D ball.' },
     align: { type: 'enum', values: ['view', 'surface', 'area'], description: 'Slab prism direction: view = camera ray (default), surface = triangle normal, area = averaged normal.' },
-    frontFacesOnly: { type: 'boolean', description: 'Skip triangles facing away from the camera.' },
+    frontFacesOnly: { type: 'boolean', description: 'Visible faces only: skip triangles facing away from the camera or hidden behind other geometry.' },
     depth: { type: 'number', min: 0, description: 'Slab paint depth (0 = auto).' },
     wrapAngleDeg: { type: 'number', min: WRAP_ANGLE_MIN, max: WRAP_ANGLE_MAX },
     smooth: { type: 'boolean', description: 'Smooth (sub-triangle) edges.' },
@@ -1134,7 +1134,7 @@ function createBrushControls(): HTMLElement {
   for (const [mode, labelText, tip] of [
     ['slab', 'Slab', 'Paint a thin shell within Paint depth of the surface. Use the depth knob to control how far through a wall paint reaches. Default.'],
     ['geodesic', 'Geodesic', 'Paint follows the connected surface and never bleeds through walls \u2014 no depth needed. Best for curved/organic shapes or geometry with nearby surfaces.'],
-    ['sphere', 'Sphere', 'Paint everything inside a 3D ball around the cursor (a cube or octahedron for the square/diamond shapes), across gaps and edges. Pair with Front faces only so it doesn\u2019t reach the back of thin parts.'],
+    ['sphere', 'Sphere', 'Paint everything inside a 3D ball around the cursor (a cube or octahedron for the square/diamond shapes), across gaps and edges. Pair with Visible faces only so it doesn\u2019t reach the back of thin parts.'],
   ] as const) {
     const btn = document.createElement('button');
     btn.textContent = labelText;
@@ -1185,16 +1185,16 @@ function createBrushControls(): HTMLElement {
   alignWrap.appendChild(alignRow);
   wrap.appendChild(alignWrap);
 
-  // Front faces only \u2014 skip triangles turned away from the camera.
+  // Visible faces only \u2014 skip triangles turned away from or hidden from the camera.
   const frontToggle = document.createElement('button');
   frontToggle.id = 'brush-front-toggle';
-  frontToggle.title = 'Only paint triangles facing the camera, so a stroke never reaches the back of a thin part or the inside of an undercut.';
+  frontToggle.title = 'Only paint what the camera can see: skip triangles facing away from it or hidden behind other geometry, so a stroke never reaches the back of a thin part, an undercut, or a surface behind a nearer one.';
   const syncFrontToggle = (): void => {
     const on = isBrushFrontOnly();
     frontToggle.className = on
       ? 'w-full mt-2 px-2 py-1 rounded text-[10px] bg-blue-500/30 text-blue-200 border border-blue-500/50 transition-colors text-center'
       : 'w-full mt-2 px-2 py-1 rounded text-[10px] bg-zinc-700/40 text-zinc-300 hover:bg-zinc-600/60 border border-transparent transition-colors text-center';
-    frontToggle.textContent = on ? '\u25c9 Front faces only: On' : '\u25cb Front faces only: Off';
+    frontToggle.textContent = on ? '\u25c9 Visible faces only: On' : '\u25cb Visible faces only: Off';
   };
   frontToggle.addEventListener('click', () => { setBrushFrontOnly(!isBrushFrontOnly()); syncFrontToggle(); });
   syncFrontToggle();

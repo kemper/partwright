@@ -16,6 +16,8 @@
 // (`src/geometry/sdfFigure.ts`) — keep them in sync with the assertEnum lists
 // there. Pure data + helpers, no DOM/engine, so it unit-tests in the vitest tier.
 
+import { resolveHairPresetName } from '../geometry/hairCapture/presetNames';
+
 export const SPEC_VERSION = 2;
 
 // Enum value lists — the single source for the spec types, the validator, the
@@ -56,7 +58,7 @@ export const HOLD_CUPS = ['sides', 'under'] as const;
  *  vinyl-toy bead with a specular glint (labels 'eyes' + 'eyeHighlight'). */
 export const EYE_STYLES = ['iris', 'bead'] as const;
 /** Captured-hair presets (`F.hair({ style: 'captured', preset })`). */
-export const HAIR_PRESETS = ['tsubasa'] as const;
+export const HAIR_PRESETS = ['shaggy'] as const;
 /** 'fitted' hugs the foot; 'toy' = a chunky vinyl-toy sneaker (shoes only). */
 export const SHOE_STYLES = ['fitted', 'toy'] as const;
 /** Where a garment print sits: the chest (front) or the back. */
@@ -359,7 +361,7 @@ function lockDefaults(): Pick<HairSpec, LockKnob> {
   return {
     lockShape: 'ribbon', chunk: 1, spike: 1, swoop: 1, fringe: 1, seed: 1, crown: 'spiky', layers: 3, raggedness: 1, flare: 1,
     notched: true, crownSize: 1, backWidth: 1, tipWidth: 0.4,
-    preset: 'tsubasa', spikiness: 1, smooth: 0, mirror: false, tilt: 0, windowScale: 1, capturedFringe: 1,
+    preset: 'shaggy', spikiness: 1, smooth: 0, mirror: false, tilt: 0, windowScale: 1, capturedFringe: 1,
   };
 }
 
@@ -608,7 +610,7 @@ export const CHARACTER_PRESETS: CharacterPreset[] = [
     s.colors = { ...s.colors, skin: '#e8b48c', hair: '#101012', brows: '#101012', top: '#7a3fd6', pants: '#26262c', feet: '#f4f4f4' };
   }) },
   { id: 'soccerStar', label: 'Soccer star', description: 'Funko footballer holding a ball', patch: withSpec(s => {
-    // The Captain Tsubasa Funko spec from public/ai/figure.md.
+    // The Funko soccer-figure spec from public/ai/figure.md.
     applyStyle(s, 'funko');
     s.body = { ...s.body, height: 100, sex: 'male', headScale: { x: 2.3, y: 1.8, z: 2.1 }, headSink: 0.42 };
     s.pose = { ...s.pose, legL: { ...s.pose.legL, raiseSide: 8, twist: 26 }, legR: { ...s.pose.legR, raiseSide: 8, twist: 26 },
@@ -737,6 +739,9 @@ export function normalizeSpec(partial: unknown, fromVersion?: number): Character
     }
   };
   merge(base as unknown as Record<string, unknown>, p);
+  // Saved specs can carry a captured-hair preset's former name.
+  const preset = (base.hair as { preset?: unknown }).preset;
+  if (typeof preset === 'string') (base.hair as { preset: string }).preset = resolveHairPresetName(preset);
   // Arrays replace wholesale; fill each print item's omitted fields from the
   // defaults (non-object items are left for validateSpec to report).
   const print = (base.clothing?.top as { print?: unknown } | undefined)?.print;
@@ -950,9 +955,9 @@ const SPEC_FIELDS: Record<string, FieldSpec> = {
     cheek: u(n('Cheek fullness × the face shape 0.3–1.8 (1).', 0.3, 1.8), { label: 'Cheeks', section: 'details', slider: [0.3, 1.8, 0.05] }),
   }, 'Face.'),
   hair: o({
-    style: u(e(HAIR_STYLES, "Hair style. 'anime' = flat swoopy ribbon locks (vinyl-toy/anime spiky bob); 'shag' = shaggy layered ribbon-lock mop with a messy fringe and a spiky or tousled crown (vinyl-toy jet-black mop); 'mop' = curly shag of seeded locks; 'captured' = a hairdo captured from a real mesh (the Captain Tsubasa Funko)."), {
+    style: u(e(HAIR_STYLES, "Hair style. 'anime' = flat swoopy ribbon locks (vinyl-toy/anime spiky bob); 'shag' = shaggy layered ribbon-lock mop with a messy fringe and a spiky or tousled crown (vinyl-toy jet-black mop); 'mop' = curly shag of seeded locks; 'captured' = a hairdo captured from a real mesh (a figurine's shaggy, spiky mop)."), {
       label: 'Style', section: 'hair',
-      options: { boxBraids: 'Box braids', mop: 'Mop (shaggy locks)', anime: 'Anime (ribbon locks)', shag: 'Shag (layered mop)', captured: 'Captured (Tsubasa)' },
+      options: { boxBraids: 'Box braids', mop: 'Mop (shaggy locks)', anime: 'Anime (ribbon locks)', shag: 'Shag (layered mop)', captured: 'Captured (shaggy mop)' },
     }),
     length: u(e(HAIR_LENGTHS, 'Hair length.'), { label: 'Length', section: 'hair' }),
     volume: u(n('Hair volume 0.3–4.', 0.3, 4), { label: 'Volume', section: 'hair', slider: [0.3, 4, 0.1] }),

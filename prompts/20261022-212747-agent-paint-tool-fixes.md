@@ -6,7 +6,7 @@ tools: [subagent, playwright, cdp-profiler]
 
 ## Human
 
-Have subagents use the new part-detection tools to paint the Tsubasa soccer-boy STL at high quality and report feedback. Have another subagent review the UI. Then: export the result. The import of that export takes a really long time; the app is unresponsive and the render timed out. The ball's black shapes are jagged and should have clean edges. Do the proposed fixes (agent-tool bugs and fast stroke loading in one PR; colour chips in another).
+Have subagents use the new part-detection tools to paint the soccer-boy figurine STL at high quality and report feedback. Have another subagent review the UI. Then: export the result. The import of that export takes a really long time; the app is unresponsive and the render timed out. The ball's black shapes are jagged and should have clean edges. Do the proposed fixes (agent-tool bugs and fast stroke loading in one PR; colour chips in another).
 
 ## Assistant
 

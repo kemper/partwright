@@ -420,7 +420,7 @@ export const WHATS_NEW_WEEKS: WeekEntry[] = [
         items: [
           {
             title: 'Catalog models fixed up',
-            body: 'Many catalog models were corrected so they look right and print cleanly. Among them are the pocket watch, treasure chest, surfer, coffee mug, D20 die, retro TV, Pac-Man ghost, pipe tee, honeycomb planter, screw-top jar, and the voxel castle. Fixes include parts that now rest flat on the build plate, raised numerals and fine details that are printable, and cleaner textures and paint.',
+            body: 'Many catalog models were corrected so they look right and print cleanly. Among them are the pocket watch, treasure chest, surfer, coffee mug, D20 die, retro TV, arcade ghost, pipe tee, honeycomb planter, screw-top jar, and the voxel castle. Fixes include parts that now rest flat on the build plate, raised numerals and fine details that are printable, and cleaner textures and paint.',
           },
         ],
       },

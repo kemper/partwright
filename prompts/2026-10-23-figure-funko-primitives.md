@@ -11,7 +11,7 @@ files_changed:
 ## Human
 
 Extend the SDF figure builder with the primitives a photo-to-figure agent
-lacked when it built a Funko Pop "Captain Tsubasa" (~40 lines of rig.r/face
+lacked when it built a Funko Pop soccer figure (~40 lines of rig.r/face
 mutation for the head, hand-built capsule hair, brute-force arm probing to hold
 a ball, manual floor/rotation fixes): `rig({ headScale })` + a `proportions`
 preset, a shaggy `'mop'` hair style, a two-hand sphere hold, `rig.floorZ` +

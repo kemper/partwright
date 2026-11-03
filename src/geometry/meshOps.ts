@@ -24,6 +24,7 @@
 import { createScatter } from './scatter';
 import { createDeformOps } from './deform';
 import { createMeshSdfOps } from './meshSdfOps';
+import { buildMeshBvh, raycastAll, closestPoint as bvhClosestPoint, type MeshBvh, type RayHit, type ClosestPoint } from './meshQuery';
 
 export type Vec3 = [number, number, number];
 type Vec3Or1 = Vec3 | [number, number] | number;
@@ -220,6 +221,42 @@ export function createMeshOpsNamespace(module: any) {
     const probe = Manifold.cube([eps, eps, eps], true).translate(p);
     const inter = probe.intersect(m);
     return !inter.isEmpty();
+  }
+
+  // One tree per shape: a probe loop over the same Manifold builds it once.
+  // Keyed weakly so it goes when the shape does.
+  const bvhCache = new WeakMap<object, MeshBvh>();
+  function shapeBvh(m: any): MeshBvh {
+    let bvh = bvhCache.get(m);
+    if (!bvh) { bvh = buildMeshBvh(m.getMesh()); bvhCache.set(m, bvh); }
+    return bvh;
+  }
+
+  /** Cast a ray at `m`: the first surface hit, or null. `{ all: true }`
+   *  returns every crossing (entering and leaving), nearest first;
+   *  `maxDistance` limits the reach. */
+  function raycast(m: any, origin: unknown, direction: unknown, opts?: unknown): RayHit | RayHit[] | null {
+    need(isManifold(m), 'raycast(m, origin, direction): m must be a Manifold');
+    need(isVec3(origin), 'raycast(m, origin, direction): origin must be a [x,y,z] vector');
+    need(isVec3(direction), 'raycast(m, origin, direction): direction must be a [x,y,z] vector');
+    const d = direction as Vec3;
+    need(d[0] !== 0 || d[1] !== 0 || d[2] !== 0, 'raycast(m, origin, direction): direction must not be [0,0,0]');
+    const o = (opts ?? {}) as { all?: unknown; maxDistance?: unknown };
+    need(typeof o === 'object' && !Array.isArray(o), 'raycast(m, origin, direction, opts): opts must be an object');
+    for (const k of Object.keys(o)) need(k === 'all' || k === 'maxDistance', `raycast opts: unknown key "${k}" (allowed: all, maxDistance)`);
+    need(o.all === undefined || typeof o.all === 'boolean', 'raycast opts.all must be a boolean');
+    need(o.maxDistance === undefined || (isFiniteNum(o.maxDistance) && o.maxDistance > 0), 'raycast opts.maxDistance must be a number > 0');
+    const hits = raycastAll(shapeBvh(m), origin as Vec3, d, (o.maxDistance as number | undefined) ?? Infinity);
+    return o.all ? hits : hits[0] ?? null;
+  }
+
+  /** The nearest point on `m`'s surface to `point`, with the surface normal
+   *  there, the distance, and whether `point` is inside the solid. Null for
+   *  an empty shape. */
+  function closestPoint(m: any, point: unknown): ClosestPoint | null {
+    need(isManifold(m), 'closestPoint(m, point): m must be a Manifold');
+    need(isVec3(point), 'closestPoint(m, point): point must be a [x,y,z] vector');
+    return bvhClosestPoint(shapeBvh(m), point as Vec3);
   }
 
   function bbox(m: any): BBoxInfo {
@@ -605,6 +642,8 @@ export function createMeshOpsNamespace(module: any) {
     intersects,
     contains,
     pointInside,
+    raycast,
+    closestPoint,
     bbox,
     componentBounds,
     volumeDelta,

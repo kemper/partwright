@@ -164,6 +164,19 @@ test.describe('AI slash commands', () => {
     await expect(input).toHaveValue(/withinPart/);
   });
 
+  test('/split prefills the cut-into-printable-pieces prompt', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEditorReady(page);
+    await openAiPanel(page);
+    const input = page.locator('#ai-panel').locator('textarea');
+
+    await input.fill('/split');
+    await input.press('Enter');
+
+    await expect(input).toHaveValue(/separate pieces I can print/);
+    await expect(input).toHaveValue(/splitIntoPieces/);
+  });
+
   test('an unknown slash command warns and is not sent', async ({ page }) => {
     await page.goto('/editor');
     await waitForEditorReady(page);

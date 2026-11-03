@@ -10,6 +10,7 @@ import { CLI_PROXY_DEFAULT_BASE_URL } from './cliProxy';
 import { APP_CONFIG_DEFAULTS } from '../config/appConfig';
 import { getModelOptions, type ModelOption } from './catalog';
 import { DEFAULT_CUSTOM_CONTEXT, parseCustomContext } from './customContext';
+import { PLAN_STYLES, type PlanStyle } from './userWords';
 
 /** Desktop code-pane presentation — see `AiSettings.codeView`. */
 export type CodeViewMode = 'hidden' | 'mini' | 'full';
@@ -68,6 +69,11 @@ export interface AiSettings {
    *  The fixed output contract is always appended, so an edit can't break
    *  the automatic loop's verdict parsing. */
   reviewPromptOverride: string | null;
+  /** Plan mode: the planning style last chosen (or always used when
+   *  `askPlanStyle` is off) — quick plan, assess first, or compare approaches. */
+  planStyle: PlanStyle;
+  /** Plan mode: ask which planning style to use on each new plan request. */
+  askPlanStyle: boolean;
   /** Settings-migration marker. Each one-time default change bumps
    *  SETTINGS_REV and applies to stored settings below that rev exactly
    *  once (see mergeWithDefaults). */
@@ -246,6 +252,8 @@ const DEFAULT_SETTINGS: AiSettings = {
   aiPanelWidth: 420,
   autoReview: DEFAULT_AUTO_REVIEW,
   reviewPromptOverride: null,
+  planStyle: 'quick',
+  askPlanStyle: true,
   settingsRev: SETTINGS_REV,
 };
 
@@ -613,6 +621,8 @@ interface LegacyAiSettings {
   aiPanelWidth?: number;
   autoReview?: Partial<AutoReviewSettings>;
   reviewPromptOverride?: string | null;
+  planStyle?: unknown;
+  askPlanStyle?: unknown;
   settingsRev?: number;
 }
 
@@ -731,6 +741,8 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
     aiPanelWidth: typeof partial.aiPanelWidth === 'number' && partial.aiPanelWidth >= 280 ? partial.aiPanelWidth : DEFAULT_SETTINGS.aiPanelWidth,
     autoReview: normalizeAutoReview(partial.autoReview),
     reviewPromptOverride: nonBlankOrNull(partial.reviewPromptOverride),
+    planStyle: (PLAN_STYLES as readonly unknown[]).includes(partial.planStyle) ? partial.planStyle as PlanStyle : DEFAULT_SETTINGS.planStyle,
+    askPlanStyle: typeof partial.askPlanStyle === 'boolean' ? partial.askPlanStyle : DEFAULT_SETTINGS.askPlanStyle,
     settingsRev: SETTINGS_REV,
   };
 }
@@ -747,6 +759,15 @@ function normalizeAutoReview(raw: Partial<AutoReviewSettings> | undefined): Auto
     model: typeof r.model === 'string' ? r.model : DEFAULT_AUTO_REVIEW.model,
     fixRounds: Math.min(AUTO_REVIEW_MAX_FIX_ROUNDS, Math.max(0, rounds)),
     includeConversation: typeof r.includeConversation === 'boolean' ? r.includeConversation : DEFAULT_AUTO_REVIEW.includeConversation,
+  };
+}
+
+/** Update the plan-mode planning-style preferences. */
+export function setPlanStylePrefs(settings: AiSettings, partial: { planStyle?: PlanStyle; askPlanStyle?: boolean }): AiSettings {
+  return {
+    ...settings,
+    ...(partial.planStyle && PLAN_STYLES.includes(partial.planStyle) ? { planStyle: partial.planStyle } : {}),
+    ...(typeof partial.askPlanStyle === 'boolean' ? { askPlanStyle: partial.askPlanStyle } : {}),
   };
 }
 

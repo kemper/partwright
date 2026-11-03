@@ -111,7 +111,7 @@ planar-groups on organic shapes).
   an empty allowed set. 4- and 5-level classes get names.
 
 **random-walker merged**: bench 0.769 / 0.707 (clean / noisy) vs
-crease-watershed hybrid 0.768 / 0.652. It fixes the Tsubasa sleeve leak at
+crease-watershed hybrid 0.768 / 0.652. It fixes the figurine sleeve leak at
 the default 300 CG iterations, but costs ~17 s for 9 labels on the 460k
 scan. The default stays at 300: the user asked for detectors to compare
 quality by hand, and below ~200 iterations the sleeve fix is lost. The

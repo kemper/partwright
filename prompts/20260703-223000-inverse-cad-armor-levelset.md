@@ -20,7 +20,8 @@ what you need from those?"
 Slic3r_PE_model.config), deduped the "2x" duplicate instances, applied
 build transforms, normalized each part to print orientation (XY-centered,
 z floor 0). 16 unique armor parts → `.plans/inverse-cad/armor-stls/`
-(checked in — same treatment as the frame corpus, CC-BY-4.0).
+(checked in at the time; removed in November 2026 because their source and
+license were never recorded).
 
 **levelSet SDF-interpolation demo (issue #884's option 1) validated
 empirically on hand_grip_left**: slice the target at 0.15mm, DP-simplify,

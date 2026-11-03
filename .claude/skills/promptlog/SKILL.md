@@ -138,6 +138,11 @@ When something is ambiguous — a colleague's name, an internal project codename
 
 When in doubt, redact.
 
+**Third-party names and files.** The repo is public. Don't name a user's
+private files, scans or models, or the characters, brands or real people they
+depict: write "the user's figurine scan" or "a 3MF figure". See CLAUDE.md §
+Copyright, licenses and trademarks.
+
 ## Pre-commit content review
 
 Before staging any prompt file, re-read it and check for:
@@ -145,6 +150,7 @@ Before staging any prompt file, re-read it and check for:
 - **PII**: Real names of non-public individuals, email addresses, phone numbers, account numbers
 - **Internal URLs**: Hostnames or IPs that aren't `localhost` or `example.com`
 - **Credentials**: Passwords, tokens, API keys — even if they look fake or expired
+- **Third-party names**: a user's private file or model names, and character, brand or real-person names
 - **Unprofessional tone**: Frustrated rants, insults, or complaints about specific people or companies
 - **Confidential details**: Customer names, revenue figures, internal project codenames, business metrics
 

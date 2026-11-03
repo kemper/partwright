@@ -1,7 +1,8 @@
 # benchy — converged reconstruction (first foreign mesh)
 
-The classic [3DBenchy](https://www.3dbenchy.com/) tugboat (© Creative
-Tools, **CC BY-ND 4.0**), reverse-engineered by the inverse-CAD v2 loop as
+The classic [3DBenchy](https://www.3dbenchy.com/) tugboat (by Creative
+Tools; **CC0 / public domain since February 2025**, previously CC BY-ND 4.0),
+reverse-engineered by the inverse-CAD v2 loop as
 the Phase 5 genericity proof ([#878](https://github.com/kemper/partwright/issues/878)):
 the first target not designed by the Dummy 13 author, and the first
 watertight-but-self-touching internet mesh (502 non-manifold edges — the

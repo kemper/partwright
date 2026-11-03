@@ -24,6 +24,7 @@ import {
   type RefineRegion,
 } from './subdivide';
 import { slabRefineRegion } from './slabPaint';
+import { makeOcclusionTest } from './strokeOcclusion';
 import { shapeRefineRegion } from './boxPaint';
 import { cylinderRefineRegion } from './cylinderPaint';
 import { isSmoothFill, smoothFillFor } from './smoothFill';
@@ -106,6 +107,8 @@ export function buildBrushStrokeFromDescriptor(
     const deg = Math.max(0, Math.min(180, d.frontFaceMaxDeg));
     stroke.frontFacing = { view, cos: Math.cos((deg * Math.PI) / 180) };
   }
+  // Visible faces only: rays toward the stored camera, against the base mesh.
+  if (d.occlude === true && view) stroke.occluded = makeOcclusionTest(base, view);
   return stroke;
 }
 

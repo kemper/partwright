@@ -51,7 +51,7 @@ existing sources and filed kemper/partwright#1083 to generate the panel from
 - **Random now uses the v2 features:** chibi/funko styles, lock and captured
   hair, trim, jersey prints, shorts, socks, toy shoes with cleats, and the ball
   hold. Three new presets show them off: Anime hero, Vinyl toy, and Soccer star
-  (the docs' Tsubasa spec).
+  (the docs' soccer-figure spec).
 - **AI tools:** `listCharacterPresets` and `randomCharacter`, since
   `buildCharacter` now has one.
 

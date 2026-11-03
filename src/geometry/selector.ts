@@ -402,6 +402,11 @@ export function setSelectorLabels(lookup: LabelLookup | null): void {
   activeLabels = lookup;
 }
 
+/** This run's label lookup (null outside a run). */
+export function activeLabelLookup(): LabelLookup | null {
+  return activeLabels;
+}
+
 /** Every originalID that carries a label in the current run (null outside a
  *  run). Lets remeshing ops tell real parts from plain primitive ids. */
 export function activeLabelIds(): Set<number> | null {

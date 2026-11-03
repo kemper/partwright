@@ -59,6 +59,13 @@ Turning **off** is byte-for-byte the old behavior — no `finish` tool, no nudge
   - Auto-compaction and `/compact` wait while a plan is pending, because the plan is anchored by history index.
 - **Build** sends `planApprovalText(latestPlanReply(...).text)`, i.e. `[Plan approved — …]` plus the plan Markdown. The build turn runs with `planFirst: false`, so it gets the full tool list. **Discard** deletes the planning messages and restores the request in the input.
 
+### Planning styles, estimates and the build checkpoint (#1209)
+
+- **Styles.** A new plan request opens a picker (`renderPlanStylePicker` in `src/ui/aiPlanUi.ts`) unless `AiSettings.askPlanStyle` is off; `AiSettings.planStyle` is the remembered choice. Each style has its own request prefix (`PLAN_FIRST_PREFIX` = quick, `PLAN_ASSESS_PREFIX`, `PLAN_COMPARE_PREFIX` via `planRequestPrefix`), and `planTurn()` reports the style. "Assess first" planning turns are capped at `ai.planAssessMaxRounds` rounds.
+- **Estimate.** `proposePlan` takes an optional `estimate` (difficulty, confidence, roundsMin/roundsMax, quality, gaps, risks), validated and parsed in `src/ai/planEstimate.ts`. The model never prices itself: the card's cost range is the rounds × this chat's average priced round (`perRoundCostUsd`, last `ai.planCostSampleRounds`). `readDoc("feasibility")` (`public/ai/feasibility.md`) is the difficulty map the planner reads.
+- **Build budget.** Build starts a `BuildBudget` from the plan's estimate. While set, every build turn passes `RunTurnInput.iterationLimit = remainingRounds(budget)`, which **replaces** the ⟲ `maxIterations` cap (the $ cap still applies). Reaching it is an `iteration_cap` stop with detail `plan_checkpoint`, rendered as the checkpoint card: Keep going extends the limit by `checkpointExtension(...)` (`ai.planCheckpointExtensionFraction`, min `ai.planCheckpointMinExtension`), Accept ends the build. The budget is in-memory only, like stop notices.
+- **Calibration.** When a build ends (finished, accepted, or abandoned by a new request / session switch) `calibrationRecord` is appended to `localStorage['partwright.planCalibration']` (`src/ai/planCalibration.ts`, ring of `ai.planCalibrationMaxEntries`). Once there are `ai.planCalibrationMinBuilds`, `summarizeCalibration` is shown on plan cards and sent with each new plan request as a `[UI · app note]` line.
+
 ## OpenAI routing (Chat Completions vs Responses API)
 
 `streamTurn` routes per model (gated by `isReasoningModel`):
@@ -67,6 +74,24 @@ Turning **off** is byte-for-byte the old behavior — no `finish` tool, no nudge
 - **All other models** → Chat Completions (`/v1/chat/completions`). Uses `messages`/`tool_calls`/`tool` shape.
 
 Both share dangling-tool-call repair, image handling, and review serialization. Non-tool helpers (`validateKey`/`listModels`/`summarize`) always use Chat Completions.
+
+## Worker delegation (`delegateTask`)
+
+On hosted providers (not in plan mode, with at least one of run code / save versions / paint in scope, and `ai.delegateToWorker` on), the main agent is offered `delegateTask` (`src/ai/delegate.ts` for the schema and pure helpers; `turnToolList` in `chatLoop.ts` adds it). The call hands one self-contained, measurable sub-task (`task` + `acceptance` + optional `context`/`maxSteps`) to a **worker**.
+
+The worker is a nested `runTurn` in the same agent loop context. `executeAllWithRetry` answers the tool itself, as it does `loadTools`, because the worker needs the API key and the loop.
+
+- **Model.** The provider's cheaper default (`resolveWorkerModel`: Sonnet 5.5 / GPT-5 mini / Gemini Flash). It falls back to the main model when that is no more expensive or is unpriced.
+- **Toggles.** The main chat's, at Medium thinking (or Off/Low when the user chose that), with auto-continue, plan mode and auto-review off (`workerToggles`).
+- **History.** Empty: the worker's only user message is `buildWorkerBrief`. The main chat's loaded tool groups are preloaded.
+- **Persistence.** None: `persist: false` keeps its steps out of IndexedDB and the transcript.
+- **Tools.** Never `delegateTask`, `askUser`, `proposePlan`, or any confirm-gated tool (`WORKER_TOOL_EXCLUSIONS`): the user would be asked to approve an action from a conversation they can't see.
+- **Caps.** `iterationLimit` (≤ `ai.workerMaxSteps`) and `spendCapUsd`, which is min(`ai.workerMaxSpendUsd`, what's left of the session $ budget). No worker starts below `ai.workerMinBudgetUsd`, or on a model with no known price (its cap couldn't be enforced). The main loop re-checks the session cap right after a worker's spend lands, before its next request.
+- **Stall.** A worker model request silent for `ai.workerStallTimeoutMs` is aborted through the worker's own `AbortController` (chained to the user's Stop), and its partial report comes back as an error. Tool runs don't count; they have their own timeout. `runWorkerTask` never throws: a failure becomes an error report carrying whatever the worker already spent, which is summed per step. The last two steps get a countdown note appended to the tool-result turn via `onDrainQueuedBlocks`, so the cache-friendly history still gets a report written in time.
+- **Result.** The worker's final reply (when it was cut off, its last message is flagged "not a final report"), headed `[Worker <model> finished · N steps · M tool calls · $X]` (`formatWorkerReport`, capped at `ai.workerReportMaxChars`), plus its last render image (render tools only). Its cost is added to the turn and stored as `costUsd` on the tool-result message, so `totalCost(history)` and the $ cap include it.
+- **Progress.** Its progress is relayed as the `tool` phase (`worker · <model> · step n/N · …`), which the panel's stall watchdog ignores, so a slow worker call can't abort and re-run the whole delegation.
+- **Auto-review.** `isModelChangingTool('delegateTask')` is true, so auto-review covers delegated work.
+- **Main cache.** A main turn that offers `delegateTask` uses the 1-hour prompt cache (with `ai.extendedCacheForDeepThinking`), because a worker run can outlast the 5-minute one and make the next main request re-write the whole conversation. The tool's schema is static, so editing a worker setting never changes the cached tool prefix.
 
 ## Context size: tool groups, Custom endpoints and stale tool payloads
 
@@ -86,6 +111,12 @@ Both share dangling-tool-call repair, image handling, and review serialization. 
 - **Cache cost.** On Anthropic the cache order is tools → system → messages, and the only tool breakpoint is on the *last* tool (all four breakpoints are in use), so a group load is a full cache miss. The next request re-writes the whole prefix at the cache-write rate: tools, the ~44k system prompt, and the history. The stable core-tool prefix only helps OpenAI / Gemini automatic prefix caching, and only for the core-tool tokens. Groups stay loaded, so this happens a few times per chat at most. Anthropic's native tool search (`defer_loading`) would avoid it; that's an optional item on #1175.
 - Not used in plan mode (it has its own read-only subset), for Local, or for the Custom Medium / Slim tiers (they have their own lists).
 - `tests/unit/toolGroups.test.ts` fails if a tool is in neither core nor exactly one group. A new tool must be placed deliberately.
+
+**In-app ai.md** (`inAppAiMd` in `src/ai/systemPrompt.ts`, #1175 Phase 1). `public/ai.md` serves two audiences. External agents (Claude Code, the extension) fetch the whole file and drive the `window.partwright` console. The in-app chat gets it as its system prompt with every `<!-- external-only:start -->` … `<!-- external-only:end -->` block removed, and each single-line `<!-- in-app: … -->` comment unwrapped into plain text.
+- The fenced blocks hold console-only material: the contents list, argument-validation conventions, the method listing, the Assembly view, Arrange mode, and the iteration-workflow body (`readDoc("iteration-workflow")` has it).
+- This took the hosted system prompt from ~45k to ~27k tokens.
+- Both kinds of marker are HTML comments, so the rendered page hides them. External agents read the raw file and do see them, so each `in-app:` note starts with "(In-app chat only.)".
+- `tests/unit/aiMdInApp.test.ts` keeps the markers balanced and checks what each audience gets.
 
 **Turn-0 budget.** `tests/unit/aiContextBudget.test.ts` caps the system prompt, the first request's tool schemas, the full tool list, and any single tool schema (with an allowlist for today's oversized ones). `npm run ai:budget` prints the report: each piece, each group, the heaviest tools, and the largest `ai.md` sections. Lower a ceiling when a trim lands; don't raise one to fit a feature. The context meter counts the tool schemas actually sent for every provider except Local (`requestToolChars` in `aiPanel.ts`, #1126).
 
