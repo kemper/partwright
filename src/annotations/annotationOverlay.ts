@@ -14,7 +14,9 @@ import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import {
   getStrokes,
   getTexts,
+  getFloatingAnnotations,
   onChange,
+  type Annotation,
   type StrokeAnnotation,
   type TextAnnotation,
 } from './annotations';
@@ -96,14 +98,71 @@ function rebuildLiveOverlay(): void {
  *  offscreen renders — they are a viewport-only UX cue. */
 export function buildStrokesGroup(resolution: THREE.Vector2): THREE.Group | null {
   if (!visible) return null;
-  const strokes = getStrokes();
-  const texts = getTexts();
-  if (strokes.length === 0 && texts.length === 0) return null;
+  // Floating marks only: unsaved Snapshot drafts are not part of the version,
+  // so they stay out of agent renders and version thumbnails.
+  const list = getFloatingAnnotations();
+  if (list.length === 0) return null;
   const g = new THREE.Group();
   g.name = 'annotation-overlay-snapshot';
-  for (const s of strokes) g.add(strokeToLine2(s, resolution, false));
-  for (const t of texts) g.add(textToSprite(t, false));
+  for (const a of list) g.add(a.type === 'stroke' ? strokeToLine2(a, resolution, false) : textToSprite(a, false));
   return g;
+}
+
+/** Like {@link buildStrokesGroup}, but for an explicit annotation list (a
+ *  saved annotation view's marks) rather than the live store. Ignores the
+ *  global visibility toggle — the caller asked for these marks. */
+export function buildGroupFromAnnotations(list: readonly Annotation[], resolution: THREE.Vector2): THREE.Group | null {
+  if (list.length === 0) return null;
+  const g = new THREE.Group();
+  g.name = 'annotation-view-snapshot';
+  for (const a of list) g.add(a.type === 'stroke' ? strokeToLine2(a, resolution, false) : textToSprite(a, false));
+  return g;
+}
+
+// A saved annotation view's marks, redrawn in the live viewport by "View" so
+// the user sees the markup again from the angle it was made. Separate from
+// the store (it is not an annotation layer: nothing selects, edits or saves
+// it) and named so captures can hide it.
+const VIEW_MARKS_NAME = 'annotation-view-marks';
+let viewMarks: THREE.Group | null = null;
+let viewMarksId: string | null = null;
+const viewMarksListeners: Array<(id: string | null) => void> = [];
+
+/** Draw `list` (a saved view's marks) in the live viewport, replacing any
+ *  view marks already shown. */
+export function showViewMarks(id: string, list: readonly Annotation[]): void {
+  clearViewMarks({ silent: true });
+  if (!overlayGroup) return;
+  const g = buildGroupFromAnnotations(list, liveResolution);
+  if (g) {
+    g.name = VIEW_MARKS_NAME;
+    overlayGroup.add(g);
+    viewMarks = g;
+  }
+  viewMarksId = id;
+  requestRender();
+  for (const fn of viewMarksListeners) fn(viewMarksId);
+}
+
+export function clearViewMarks(opts: { silent?: boolean } = {}): void {
+  if (viewMarks) {
+    viewMarks.parent?.remove(viewMarks);
+    disposeAnnotationChildren(viewMarks);
+    viewMarks = null;
+  }
+  const had = viewMarksId !== null;
+  viewMarksId = null;
+  requestRender();
+  if (had && !opts.silent) for (const fn of viewMarksListeners) fn(null);
+}
+
+/** Id of the view whose marks are shown, or null. */
+export function getShownViewMarksId(): string | null {
+  return viewMarksId;
+}
+
+export function onViewMarksChange(fn: (id: string | null) => void): void {
+  viewMarksListeners.push(fn);
 }
 
 export function disposeStrokesGroup(g: THREE.Group): void {

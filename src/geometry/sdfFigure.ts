@@ -4806,7 +4806,7 @@ const SHAG_ONLY_FIELDS = ['layers', 'raggedness', 'crown', 'flare', 'tipWidth', 
 const SHAG_CROWNS = ['spiky', 'tousled'] as const;
 
 /** `F.hair(rig, { style: 'shag' })`: a shaggy, LAYERED vinyl-toy mop (the
- *  Captain-Tsubasa / jet-black spiky-mop look) — the anime cap plus many
+ *  anime / jet-black spiky-mop look) — the anime cap plus many
  *  MEDIUM ribbon locks:
  *   - an uneven, messy fringe (seeded per-lock length, lean and width) added
  *     last with a tight blend so its points stay crisp instead of melting
@@ -6968,8 +6968,8 @@ function round3(v: Vec3, p = 2): Vec3 {
  *  directions — the first-class replacement for hand-rolled
  *  `throw new Error(JSON.stringify(...))` scratch probes when authoring a pose.
  *  Returns a structured object (rounded for readability) plus a `.text`
- *  multi-line summary; `throw new Error(F.poseProbe(rig).text)` (or
- *  `console.log`) surfaces every joint + grip without forgetting one. */
+ *  multi-line summary; `console.log(F.poseProbe(rig).text)` (it comes back as
+ *  the run result's `logs`) surfaces every joint + grip without forgetting one. */
 function poseProbe(rig: Rig): {
   height: number; headsTall: number; build: string; sex: string; age: number; weight: number;
   joints: Record<string, Vec3>; grips: { L: GripFrame; R: GripFrame };

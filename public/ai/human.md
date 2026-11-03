@@ -281,7 +281,8 @@ await partwright.fitHuman({
 // → { silhouetteIoU, fitted: { gender, weight, … }, evaluations, seconds, code, …the saved version }
 ```
 
-The chat AI calls it as the `fitHumanToPhoto` tool. Each candidate is built in
+The chat AI calls it as the `fitHumanToPhoto` tool, which takes the same
+options except that `base` is passed as a JSON string, `baseJson`. Each candidate is built in
 the engine Worker without touching the viewport (~0.5–1 s each). It is scored
 against the photo with the photo-match segmentation, re-aligned sideways so one
 raised arm doesn't throw the score, and a bounded coordinate descent keeps the

@@ -33,7 +33,7 @@ hourglass cavities. All measured, not guessed:
 
 ## Construction (best/candidate.js)
 
-traced z=1.4 base outline + exact eye-lobe circle + pac-man fills (disk
+traced z=1.4 base outline + exact eye-lobe circle + wedge-cut disk fills (disk
 r=2.0 minus mouth-wedge sector) extruded 0→2.8, minus per-socket cavity
 revolve, minus chamfer cuts (masked cone-rings on the arcs [137°,270°] /
 [−90°,43°], straight (y,z) wedge along y=−4.5, hull-miter wedge on the V).
@@ -54,7 +54,7 @@ radii (pac r=2.0, not 2.4).
 
 - deterministic slice-stack bootstrap (superseded — carried socket
   mid-slices through depth, tactic 5.4 signature)
-- traced-base + pac-man refill + revolved hourglass cavity + exact 45°
+- traced-base + wedge-cut refill + revolved hourglass cavity + exact 45°
   chamfer wedges/cones/miter-hull → CONVERGED
 
 ## If reopened

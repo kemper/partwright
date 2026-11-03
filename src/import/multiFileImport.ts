@@ -12,6 +12,7 @@
 
 import type { MeshData } from '../geometry/types';
 import { triangleRange, type ImportSplitItem } from './meshImportSplit';
+import { shelfPack } from '../insert/partLayout';
 
 export interface MultiFileInput {
   /** File name, with extension. */
@@ -251,22 +252,10 @@ export function layoutMultiFileSource(source: MultiFileSource, layout: MultiFile
     const dims = list.map(({ box: b }) => [b.max[0] - b.min[0], b.max[1] - b.min[1]] as const);
     const mean = dims.length > 0 ? dims.reduce((sum, [w, d]) => sum + (w + d) / 2, 0) / dims.length : 0;
     const gap = Math.max(mean * opts.gapRatio, 0);
-    const totalArea = dims.reduce((sum, [w, d]) => sum + (w + gap) * (d + gap), 0);
-    const rowWidth = Math.max(Math.sqrt(totalArea), ...dims.map(([w]) => w));
-    const placed: { x: number; y: number }[] = [];
-    let x = 0, y = 0, rowDepth = 0, maxX = 0;
-    dims.forEach(([w, d]) => {
-      if (x > 0 && x + w > rowWidth) { x = 0; y += rowDepth + gap; rowDepth = 0; }
-      placed.push({ x: x + w / 2, y: y + d / 2 });
-      maxX = Math.max(maxX, x + w);
-      x += w + gap;
-      rowDepth = Math.max(rowDepth, d);
-    });
-    const totalDepth = y + rowDepth;
+    // Rows run from the back (+Y) toward the viewer, like reading order.
+    const { centers } = shelfPack(dims, gap);
     list.forEach(({ box: b }, k) => {
-      // Rows run from the back (+Y) toward the viewer, like reading order.
-      const cx = placed[k].x - maxX / 2, cy = totalDepth / 2 - placed[k].y;
-      offsets.push([cx - (b.min[0] + b.max[0]) / 2, cy - (b.min[1] + b.max[1]) / 2, -b.min[2]]);
+      offsets.push([centers[k][0] - (b.min[0] + b.max[0]) / 2, centers[k][1] - (b.min[1] + b.max[1]) / 2, -b.min[2]]);
     });
   }
 

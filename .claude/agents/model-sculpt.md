@@ -30,6 +30,17 @@ Read the PNGs here, in your own disposable context, and hand back only text. So:
   string — the caller decides whether to surface it), a 2–4 sentence verdict on
   likeness, and a short bullet list of remaining trade-offs / suggested tweaks.
 
+## Third-party content
+
+Reference photos and target meshes stay where the caller put them: never copy
+them into the repo. Name files, labels and parts after the shape ("ghost",
+"horned creature"), never after a character, brand or real person, and describe
+it that way in your report. If the brief asks for a model that will ship
+(catalog, `examples/`, presets) and the target is a specific copyrighted
+character, a branded product or a real person's likeness, don't build a copy:
+say so in your report so the caller can ask the owner. See CLAUDE.md §
+Copyright, licenses and trademarks.
+
 ## Pick the engine — this is the headless menu
 
 The caller names the engine. Each previews headlessly via `model:preview`:

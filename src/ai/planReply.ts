@@ -7,6 +7,7 @@
 
 import type { ChatMessage, ImageSource, PersistedToolCall } from './types';
 import { planTurn } from './userWords';
+import { parsePlanEstimate, planEstimateMarkdown, type PlanEstimate } from './planEstimate';
 
 /** Ask the user questions as a card with clickable answers (any mode). */
 export const ASK_USER_TOOL = 'askUser';
@@ -96,21 +97,23 @@ export function parseAskUser(input: Record<string, unknown>): AskUserQuestion[] 
   return out;
 }
 
-export interface ProposedPlan { summary: string; steps: string[]; assumptions: string[] }
+export interface ProposedPlan { summary: string; steps: string[]; assumptions: string[]; estimate: PlanEstimate | null }
 
-/** A proposePlan call's plan, or null when it has no summary or steps. */
+/** A proposePlan call's plan, or null when it has no summary or steps. A
+ *  missing or malformed estimate leaves `estimate` null (older calls). */
 export function parseProposedPlan(input: Record<string, unknown>): ProposedPlan | null {
   const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map(x => x.trim()) : []);
   const summary = typeof input.summary === 'string' ? input.summary.trim() : '';
   const steps = strings(input.steps);
   if (!summary || steps.length === 0) return null;
-  return { summary, steps, assumptions: strings(input.assumptions) };
+  return { summary, steps, assumptions: strings(input.assumptions), estimate: parsePlanEstimate(input.estimate) };
 }
 
 /** A plan as Markdown — what Build sends back to the model, and what Copy copies. */
 export function planMarkdown(plan: ProposedPlan): string {
   const parts = [plan.summary, '', ...plan.steps.map((s, i) => `${i + 1}. ${s}`)];
   if (plan.assumptions.length > 0) parts.push('', 'Assumptions:', ...plan.assumptions.map(a => `- ${a}`));
+  if (plan.estimate) parts.push('', ...planEstimateMarkdown(plan.estimate));
   return parts.join('\n');
 }
 
@@ -171,11 +174,15 @@ function shownCard(history: ChatMessage[], index: number, name: string): Persist
  *  otherwise all their text (a plan written, checked with a render, then
  *  signed off spans several messages) goes through the heuristic. null when
  *  they hold nothing. */
-function readReplies(history: ChatMessage[], indices: number[]): { text: string; awaitingAnswers: boolean } | null {
+/** What a planning exchange ended with. `estimate` is the plan card's
+ *  feasibility estimate, when it carried one. */
+export interface PlanReply { text: string; awaitingAnswers: boolean; estimate?: PlanEstimate | null }
+
+function readReplies(history: ChatMessage[], indices: number[]): PlanReply | null {
   for (let k = indices.length - 1; k >= 0; k--) {
     const planCall = shownCard(history, indices[k], PROPOSE_PLAN_TOOL);
     const plan = planCall ? parseProposedPlan(planCall.input) : null;
-    if (plan) return { text: planMarkdown(plan), awaitingAnswers: false };
+    if (plan) return { text: planMarkdown(plan), awaitingAnswers: false, estimate: plan.estimate };
     const askCall = shownCard(history, indices[k], ASK_USER_TOOL);
     const questions = askCall ? parseAskUser(askCall.input) : [];
     if (questions.length > 0) return { text: questions.map(q => `- ${q.question}`).join('\n'), awaitingAnswers: true };
@@ -194,7 +201,7 @@ function replyIndices(history: ChatMessage[], from: number, to: number): number[
  *  with: the replies after the last user message that got one, as text, and
  *  whether they wait on the user's answers. A turn that only errored falls
  *  back to the reply before it. */
-export function latestPlanReply(history: ChatMessage[], fromIndex: number): { text: string; awaitingAnswers: boolean } {
+export function latestPlanReply(history: ChatMessage[], fromIndex: number): PlanReply {
   const start = Math.max(0, fromIndex);
   let end = history.length;
   for (let i = history.length - 1; i >= start; i--) {

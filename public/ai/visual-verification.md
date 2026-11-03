@@ -35,6 +35,20 @@ partwright.renderView({ elevation: 90, ortho: true })             // top-down pl
 partwright.renderView({ elevation: 30, azimuth: 315 })            // isometric (default)
 ```
 
+   **Zoom onto a small feature** (a tooth, a peg, a socket) with `focus` instead of rendering
+   the whole model and squinting: `focus` takes a labelled part (`"fang_left"`, `{ part }`,
+   `{ piece: i }`) or a world box `{ min, max }`. `padding` sets the margin (fraction of the
+   feature's largest side, default 0.15). `clip: true` also hides everything outside the box, so
+   nearer geometry (a lip, a mask, a neighbouring part) can't block the view, and you can look
+   into a slot from any angle. Don't clip the model in code just to see past it.
+
+```js
+partwright.renderView({ focus: "fang_left", azimuth: 180, elevation: 10, size: 768 })
+partwright.renderViews({ focus: { min: [-4, -8, 20], max: [4, 0, 26] }, clip: true, views: "box" })
+// probePixel must repeat the same focus/padding/clip so its pixels line up:
+partwright.probePixel({ pixel: [300, 410], view: { focus: "fang_left", azimuth: 180, elevation: 10, size: 768 } })
+```
+
 4. **Use `sliceAtZVisual(z)` for cross-section thumbnails:**
 
 ```js
@@ -66,6 +80,8 @@ partwright.setEdgesVisible(true)                         // the viewport "Edges"
 `setCamera` uses the `getViewState().camera` convention: azimuth 0 = front (−Y), 90 = right
 (+X), 180 = back; elevation 0 = horizon, 90 = top-down, negative = from below. Omitted fields keep
 their current value. `frameObjectPart` keeps the current viewing direction.
+
+**Reference ghost (`reference`):** when a `setReferenceGeometry` ghost is set, `renderView` and `renderViews` draw it by default. Pass `reference: false` to hide it.
 
 ## Edge overlay (`edges`)
 

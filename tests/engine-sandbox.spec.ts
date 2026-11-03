@@ -2,10 +2,11 @@ import { test, expect, type Page } from 'playwright/test';
 
 // Engine sandbox (kemper/partwright#1090, "option 2"; docs/engine-sandbox.md).
 //
-// With the sandbox on, model code runs in a geometry Worker that lives inside a
-// hidden cross-origin iframe ('opaque' = sandboxed iframe with an opaque
-// origin; 'origin' = iframe served from VITE_SANDBOX_ORIGIN — the Playwright
-// config runs a second dev server for it). These tests prove, per mode:
+// With the sandbox on ('origin' — the default wherever the build configures a
+// sandbox host), model code runs in a geometry Worker that lives inside a
+// hidden iframe served from VITE_SANDBOX_ORIGIN (the Playwright config runs a
+// second dev server for it, and pins the e2e build default to 'off' so other
+// specs run unsandboxed; these tests opt in per page). They prove:
 //   1. model code can't reach the app's IndexedDB (a value saved through the
 //      app's own aiKeys store stays unreadable), has no localStorage, and its
 //      network is fenced by the frame CSP (cross-origin fetches are refused
@@ -19,16 +20,19 @@ const PROBE_VALUE = 'sandbox-probe-value-1090';
 
 type PW = Record<string, (...args: unknown[]) => unknown>;
 
-const MODES = ['opaque', 'origin'] as const;
+const MODES = ['origin'] as const;
 type Mode = (typeof MODES)[number];
 
-async function bootInMode(page: Page, mode: Mode | 'off'): Promise<void> {
-  // The init script also runs in the sandbox frame, where localStorage is
-  // unavailable (opaque) or another origin's — only set it in the app.
-  await page.addInitScript((m) => {
+async function bootInMode(page: Page, mode: Mode | 'off', ses: 'on' | 'off' = 'on'): Promise<void> {
+  // The init script also runs in the sandbox frame, whose localStorage is
+  // another origin's — only set it in the app.
+  await page.addInitScript(({ m, ses }) => {
     if (window !== window.top) return;
-    try { localStorage.setItem('partwright-engine-sandbox', m); } catch { /* ignore */ }
-  }, mode);
+    try {
+      localStorage.setItem('partwright-engine-sandbox', m);
+      if (ses === 'off') localStorage.setItem('partwright.sesSandbox', 'off');
+    } catch { /* ignore */ }
+  }, { m: mode, ses });
   await page.goto('/editor');
   await page.waitForFunction(
     () => !!(window as unknown as { partwright?: PW }).partwright?.run,
@@ -62,17 +66,12 @@ async function run(page: Page, code: string, lang?: string): Promise<{ error?: s
   }, { code, lang });
 }
 
-/** Skip when this dev server can't host the mode — e.g. a reused
- *  `npm run dev` started without the Playwright config's env: 'origin' needs
- *  VITE_SANDBOX_ORIGIN, 'opaque' needs the dev server's `Origin: null` CORS
- *  opt-in (PARTWRIGHT_SANDBOX_DEV_CORS=1). */
+/** Skip when this dev server can't host the sandbox — e.g. a reused
+ *  `npm run dev` started without the Playwright config's env (no
+ *  VITE_SANDBOX_ORIGIN). */
 async function requireMode(page: Page, mode: Mode): Promise<void> {
   const s = await status(page);
-  test.skip(mode === 'origin' && !s.sandboxOrigin, 'dev server has no VITE_SANDBOX_ORIGIN configured');
-  if (mode === 'opaque') {
-    const probe = await page.request.get('/src/sandbox/frameProtocol.ts', { headers: { Origin: 'null' } });
-    test.skip(probe.headers()['access-control-allow-origin'] !== '*', 'dev server does not answer Origin: null with CORS (PARTWRIGHT_SANDBOX_DEV_CORS)');
-  }
+  test.skip(!s.sandboxOrigin, 'dev server has no VITE_SANDBOX_ORIGIN configured');
   // Force the geometry Worker into existence and wait until it answers.
   const r = await run(page, 'const { Manifold } = api; return Manifold.cube([1, 1, 1]);');
   expect(r.error ?? null).toBeNull();
@@ -82,8 +81,7 @@ async function requireMode(page: Page, mode: Mode): Promise<void> {
   expect(after.state).toBe('ready');
   expect(after.frameCrossOriginIsolated).toBe(true);
   expect(after.workerCrossOriginIsolated).toBe(true);
-  if (mode === 'opaque') expect(after.frameOrigin).toBe('null');
-  else expect(after.frameOrigin).toBe(after.sandboxOrigin);
+  expect(after.frameOrigin).toBe(after.sandboxOrigin);
 }
 
 // Model code that starts async probes on its first run (stashing results on the
@@ -101,9 +99,9 @@ if (!g.__sandboxProbe) {
   } catch (e) { out.violationListenerError = String(e); }
   out.localStorage = typeof localStorage;
   out.hasIndexedDB = typeof indexedDB !== 'undefined';
-  // An opaque origin refuses IndexedDB synchronously (SecurityError). Probe
-  // that first: in that context indexedDB.databases() rejects in a way that
-  // escapes every handler and recycles the Worker, wiping this probe.
+  // Some contexts refuse IndexedDB synchronously (SecurityError). Probe that
+  // first: there indexedDB.databases() rejects in a way that escapes every
+  // handler and recycles the Worker, wiping this probe.
   let req = null;
   try { req = indexedDB.open('partwright'); } catch (e) { out.idbError = String((e && e.name) || e); }
   (async () => {
@@ -191,7 +189,11 @@ for (const mode of MODES) {
   test.describe(`engine sandbox: ${mode}`, () => {
     test('model code cannot reach app storage, keys or the network', async ({ page }) => {
       test.setTimeout(120_000);
-      await bootInMode(page, mode);
+      // This proves the ORIGIN layer, assuming model code already holds the
+      // Worker realm — so it runs with the SES kill switch on: under SES (the
+      // default) model code can't name `self`/`indexedDB`/`fetch` at all, nor
+      // stash the probe on the Worker global between runs (engine-ses.spec).
+      await bootInMode(page, mode, 'off');
       await requireMode(page, mode);
       await saveAppKey(page);
 
@@ -214,16 +216,10 @@ for (const mode of MODES) {
       expect(probe.keys ?? []).not.toContain(PROBE_VALUE);
       // Workers have no localStorage at all.
       expect(probe.localStorage).toBe('undefined');
-      if (mode === 'opaque') {
-        // Opaque origin: IndexedDB is refused outright.
-        expect(!probe.hasIndexedDB || !!probe.idbError, 'IndexedDB should be refused').toBe(true);
-        expect(probe.stores).toBeUndefined();
-      } else {
-        // Separate origin: IndexedDB works but is the sandbox origin's own,
-        // empty, partitioned store — no app databases, no aiKeys store.
-        expect(probe.stores ?? []).not.toContain('aiKeys');
-        expect(probe.dbs ?? []).not.toContain('partwright');
-      }
+      // Separate origin: IndexedDB works but is the sandbox origin's own,
+      // empty, partitioned store — no app databases, no aiKeys store.
+      expect(probe.stores ?? []).not.toContain('aiKeys');
+      expect(probe.dbs ?? []).not.toContain('partwright');
       // Every cross-origin fetch fails from model code. (With the #1109
       // Worker lockdown `fetch` is already gone from the realm; the frame CSP
       // below is the independent second layer.)
@@ -348,8 +344,8 @@ test.describe('engine sandbox: frame crash', () => {
 
   test('a crashed frame is replaced and model code stays sandboxed', async ({ page }) => {
     test.setTimeout(120_000);
-    await bootInMode(page, 'opaque');
-    await requireMode(page, 'opaque');
+    await bootInMode(page, 'origin');
+    await requireMode(page, 'origin');
     await crashFrame(page);
     await expect.poll(async () => (await status(page)).frameRestarts, { timeout: 30_000 }).toBe(1);
     expect(await page.locator('iframe[data-engine-sandbox]').count()).toBe(1);
@@ -358,7 +354,7 @@ test.describe('engine sandbox: frame crash', () => {
     expect(r.triangleCount).toBe(12);
     const s = await status(page);
     expect(s.state).toBe('ready');
-    expect(s.active).toBe('opaque');
+    expect(s.active).toBe('origin');
     expect(s.unavailableReason).toBeNull();
   });
 
@@ -371,8 +367,8 @@ test.describe('engine sandbox: frame crash', () => {
         localStorage.setItem('partwright-app-config-v1', JSON.stringify({ renderer: { engineSandboxMaxFrameRestarts: 0 } }));
       } catch { /* ignore */ }
     });
-    await bootInMode(page, 'opaque');
-    await requireMode(page, 'opaque');
+    await bootInMode(page, 'origin');
+    await requireMode(page, 'origin');
     await crashFrame(page);
     await expect.poll(async () => (await status(page)).state, { timeout: 30_000 }).toBe('unavailable');
 
@@ -400,23 +396,44 @@ test('engine sandbox: mode is captured once per tab', async ({ page }) => {
   await bootInMode(page, 'off');
   // Another tab (shared localStorage) or the Settings select changes the mode:
   // this tab keeps running as it started, and reports the pending value.
-  await page.evaluate(() => localStorage.setItem('partwright-engine-sandbox', 'opaque'));
+  await page.evaluate(() => localStorage.setItem('partwright-engine-sandbox', 'origin'));
   const s = await status(page);
   expect(s.requested).toBe('off');
   expect(s.active).toBe('off');
-  expect(s.pendingAfterReload).toBe('opaque');
+  expect(s.pendingAfterReload).toBe('origin');
   const r = await run(page, 'const { Manifold } = api; return Manifold.cube([2, 2, 2]);');
   expect(r.error ?? null).toBeNull();
   expect(await page.locator('iframe[data-engine-sandbox]').count()).toBe(0);
 });
 
-test('engine sandbox: off by default', async ({ page }) => {
+test('engine sandbox: the build default applies when nothing is saved (pinned to off for e2e)', async ({ page }) => {
+  test.skip(process.env.VITE_ENGINE_SANDBOX === 'origin', 'this run pins the default to origin');
   await page.goto('/editor');
   await page.waitForFunction(() => !!(window as unknown as { partwright?: PW }).partwright?.run, undefined, { timeout: 60_000 });
-  const s = await status(page);
+  const s = await status(page) as SandboxStatus & { defaultMode: string; modes: string[] };
+  expect(s.defaultMode).toBe('off');
   expect(s.requested).toBe('off');
   expect(s.active).toBe('off');
+  expect(s.modes).toEqual(['off', 'origin']);
   expect(await page.locator('iframe[data-engine-sandbox]').count()).toBe(0);
+});
+
+test("engine sandbox: the removed 'opaque' mode is refused, and a saved one is migrated away", async ({ page }) => {
+  await page.addInitScript(() => {
+    if (window !== window.top) return;
+    // Only before the first load: the app must clean it up itself.
+    try { if (!sessionStorage.getItem('seeded')) { localStorage.setItem('partwright-engine-sandbox', 'opaque'); sessionStorage.setItem('seeded', '1'); } } catch { /* ignore */ }
+  });
+  await page.goto('/editor');
+  await page.waitForFunction(() => !!(window as unknown as { partwright?: PW }).partwright?.run, undefined, { timeout: 60_000 });
+  const out = await page.evaluate(() => {
+    const pw = (window as unknown as { partwright: PW }).partwright;
+    const s = pw.getEngineSandboxStatus() as { requested: string; defaultMode: string };
+    return { requested: s.requested, defaultMode: s.defaultMode, stored: localStorage.getItem('partwright-engine-sandbox'), set: pw.setEngineSandboxMode('opaque') as { error?: string } };
+  });
+  expect(out.requested).toBe(out.defaultMode);
+  expect(out.stored).toBeNull();
+  expect(out.set.error).toMatch(/'opaque' mode was removed/);
 });
 
 test('engine sandbox: the sandbox host redirects the app to the app origin', async ({ page, baseURL }) => {

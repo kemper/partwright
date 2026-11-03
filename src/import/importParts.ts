@@ -4,6 +4,8 @@
 // provenance mechanism `api.label` uses, which survives booleans.
 
 import type { ImportedMeshParts } from './importedMesh';
+import type { MeshData } from '../geometry/types';
+import { nearestSurfaceTriangleMap } from '../surface/colorTransfer';
 
 /** Validate/normalize parts against the mesh's triangle count. Returns null
  *  (parts dropped, mesh still usable) when malformed. */
@@ -173,4 +175,72 @@ export function removeImportPartTriangles(
     triPart: new Int32Array(keptPart),
     openings,
   };
+}
+
+/** True when two meshes share one triangle list (a rigid transform or a
+ *  recolour of the same mesh), so triangle indices carry over directly. */
+function sameTriangles(a: MeshData, b: MeshData): boolean {
+  if (a === b) return true;
+  if (a.triVerts.length !== b.triVerts.length) return false;
+  for (let i = 0; i < a.triVerts.length; i++) if (a.triVerts[i] !== b.triVerts[i]) return false;
+  return true;
+}
+
+/** Move label triangle sets from `from` onto `to`: each triangle of `to`
+ *  takes the label of the `from` triangle whose SURFACE is nearest its
+ *  centroid (not the nearest centroid, which a coarse mesh's few large
+ *  triangles get badly wrong). */
+function remapBySurface(labels: Map<string, Set<number>>, from: MeshData, to: MeshData): Map<string, Set<number>> {
+  const owner = new Int32Array(from.triVerts.length / 3).fill(-1);
+  const names = [...labels.keys()];
+  names.forEach((name, i) => { for (const t of labels.get(name)!) if (t >= 0 && t < owner.length && owner[t] < 0) owner[t] = i; });
+  const vp = to.vertProperties, tv = to.triVerts, np = to.numProp;
+  const n = tv.length / 3;
+  const centroids = new Float64Array(n * 3);
+  for (let t = 0; t < n; t++) {
+    for (let k = 0; k < 3; k++) centroids[t * 3 + k] = (vp[tv[t * 3] * np + k] + vp[tv[t * 3 + 1] * np + k] + vp[tv[t * 3 + 2] * np + k]) / 3;
+  }
+  const nearest = nearestSurfaceTriangleMap(from, centroids);
+  const out = new Map<string, Set<number>>(names.map(name => [name, new Set<number>()]));
+  for (let t = 0; t < n; t++) {
+    const o = nearest[t] >= 0 ? owner[nearest[t]] : -1;
+    if (o >= 0) out.get(names[o])!.add(t);
+  }
+  return out;
+}
+
+/** Turn a run's labels into parts on a baked mesh, so a bake (surface
+ *  texture, scale, rotate, place) keeps them: the baked mesh is saved as an
+ *  import and `api.importWithParts` restores the labels (#1025).
+ *
+ *  `labels` index `labelMesh` (the run's own mesh); `input` is the mesh the
+ *  bake started from (the displayed mesh, which may be re-tessellated) and
+ *  `baked` its result. Triangle ids carry across a shared triangle list and
+ *  by nearest surface otherwise — a texture keeps the surface in place,
+ *  while a rigid transform keeps the triangle list. `colors` ('#rrggbb' by
+ *  name) become the parts' colours. Returns null when no label covers any
+ *  baked triangle. */
+export function partsFromLabels(
+  labels: Map<string, Set<number>>,
+  labelMesh: MeshData,
+  input: MeshData,
+  baked: MeshData,
+  colors: Map<string, string> = new Map(),
+): ImportedMeshParts | null {
+  const onInput = sameTriangles(labelMesh, input) ? labels : remapBySurface(labels, labelMesh, input);
+  const onBaked = sameTriangles(input, baked) ? onInput : remapBySurface(onInput, input, baked);
+  const numTri = baked.triVerts.length / 3;
+  const triPart = new Int32Array(numTri).fill(-1);
+  const names: string[] = [];
+  for (const [name, tris] of onBaked) {
+    let used = false;
+    for (const t of tris) {
+      if (t < 0 || t >= numTri || triPart[t] !== -1) continue;
+      triPart[t] = names.length;
+      used = true;
+    }
+    if (used) names.push(name);
+  }
+  if (names.length === 0) return null;
+  return normalizeImportParts({ names, colors: names.map(n => colors.get(n) ?? null), triPart }, numTri);
 }

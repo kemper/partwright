@@ -26,6 +26,204 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'October 29, 2026',
+    headline: 'Partwright 1.12.2 — Anthropic chat reliability fix',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.12.2',
+            body: 'A backward-compatible patch release — existing sessions and exported files all keep working.',
+          },
+        ],
+      },
+      {
+        label: 'Fixes',
+        items: [
+          {
+            title: 'Anthropic chats no longer break after a thinking-only reply',
+            body: 'When the model answered with only its reasoning and no visible text, the next message in that chat could be rejected by Anthropic. Those turns are no longer replayed, so the conversation keeps going.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    range: 'October 28, 2026',
+    headline: 'Partwright 1.12.1 — parts survive bakes, plus API fixes',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.12.1',
+            body: 'A backward-compatible patch release — existing sessions and exported files all keep working.',
+          },
+        ],
+      },
+      {
+        label: 'Fixes',
+        items: [
+          {
+            title: 'Parts are kept through bakes',
+            body: 'Applying surface textures, scaling, rotating or placing a model no longer loses its named parts.',
+          },
+          {
+            title: 'API reliability fixes',
+            body: 'A round of fixes to argument validation and edge cases in the scripting API, improving results for AI agents and console users.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    range: 'October 28, 2026',
+    headline: 'Partwright 1.12 — parts you can arrange, split on export, and import into',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.12',
+            body: 'A backward-compatible feature release — existing sessions and exported files all keep working.',
+          },
+        ],
+      },
+      {
+        label: 'Parts',
+        items: [
+          {
+            title: 'Parts panel with arrange, copies and grouping',
+            body: 'Work with the named parts inside an object from a dedicated panel: arrange them, make copies, and group them. Each change is written back as readable code lines.',
+          },
+          {
+            title: 'Select parts like a file list',
+            body: 'Pick parts from the list the way you would files, and box-select them directly in the viewport.',
+          },
+          {
+            title: 'Import into any object as named parts',
+            body: 'Imports can now go into any existing object as named parts, and the object keeps its code.',
+          },
+          {
+            title: 'Split an object when exporting',
+            body: 'Choose to export an object as separate pieces or parts instead of a single combined file.',
+          },
+        ],
+      },
+      {
+        label: 'Painting',
+        items: [
+          {
+            title: 'Smoother bucket fills',
+            body: 'Connected and region paint fills now produce clean, smooth boundaries. Also fixed: paint scope for the AI, a paint leak when opening a session, and shared links for multi-object sessions.',
+          },
+        ],
+      },
+      {
+        label: 'Security',
+        items: [
+          {
+            title: 'Model code runs in a locked-down compartment',
+            body: 'Model code now runs in an isolated compartment inside the engine Worker, and the separate-origin sandbox is the default where available, adding a further layer between model code and the app.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    range: 'October 27, 2026',
+    headline: 'Partwright 1.11 — model console logs and a safer default sandbox',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.11',
+            body: 'A backward-compatible feature release — existing sessions and exported files all keep working.',
+          },
+        ],
+      },
+      {
+        label: 'Modeling',
+        items: [
+          {
+            title: 'See your model code’s console output',
+            body: 'console.log, warn and error calls inside model code are now captured and returned as logs from each run, even when the code throws, so you and AI agents can debug without digging through DevTools.',
+          },
+        ],
+      },
+      {
+        label: 'Security',
+        items: [
+          {
+            title: 'Engine sandbox on by default where available',
+            body: 'Model code now runs in the isolated separate-origin sandbox by default on deployments that support it. You can still change this in Settings → Security.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    range: 'October 27, 2026',
+    headline: 'Partwright 1.10 — AI plan cards, multi-file import and region clean-up',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.10',
+            body: 'A backward-compatible feature release — existing sessions and exported files all keep working.',
+          },
+        ],
+      },
+      {
+        label: 'Fixes',
+        items: [
+          {
+            title: 'Big meshes no longer stall',
+            body: 'Saving, opening, simplifying and previewing very large imported meshes is much more responsive, and hollow cavities are counted correctly.',
+          },
+          {
+            title: 'Plan mode stays read-only',
+            body: 'Plan mode no longer changes your model, and the AI’s clarifying questions are handled properly.',
+          },
+          {
+            title: 'Imports ask where they go',
+            body: 'When an empty new object is open, importing a file asks whether to use it or create another.',
+          },
+        ],
+      },
+      {
+        label: 'Import & export',
+        items: [
+          {
+            title: 'Import several files at once',
+            body: 'Select multiple STL or 3MF files in one import.',
+          },
+        ],
+      },
+      {
+        label: 'Painting',
+        items: [
+          {
+            title: 'Region clean-up',
+            body: 'Grow, shrink, despeckle, and union/subtract/intersect painted regions.',
+          },
+        ],
+      },
+      {
+        label: 'AI',
+        items: [
+          {
+            title: 'Question and plan cards',
+            body: 'The AI chat shows its questions and plans as cards you can answer or approve.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'October 25, 2026',
     headline: 'Partwright 1.9 — safer model code, 3MF import and part editing',
     groups: [
@@ -222,7 +420,7 @@ export const WHATS_NEW_WEEKS: WeekEntry[] = [
         items: [
           {
             title: 'Catalog models fixed up',
-            body: 'Many catalog models were corrected so they look right and print cleanly. Among them are the pocket watch, treasure chest, surfer, coffee mug, D20 die, retro TV, Pac-Man ghost, pipe tee, honeycomb planter, screw-top jar, and the voxel castle. Fixes include parts that now rest flat on the build plate, raised numerals and fine details that are printable, and cleaner textures and paint.',
+            body: 'Many catalog models were corrected so they look right and print cleanly. Among them are the pocket watch, treasure chest, surfer, coffee mug, D20 die, retro TV, arcade ghost, pipe tee, honeycomb planter, screw-top jar, and the voxel castle. Fixes include parts that now rest flat on the build plate, raised numerals and fine details that are printable, and cleaner textures and paint.',
           },
         ],
       },

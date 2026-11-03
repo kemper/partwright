@@ -74,6 +74,18 @@ export function getShortcutDocs(): ShortcutDoc[] {
       description: 'Open the code editor’s Find / Find-and-Replace panel (replace jumps straight to the replace field).',
     },
     {
+      keys: `${combo(SHIFT_LABEL, 'click')} / ${combo(SHIFT_LABEL, 'drag')}`,
+      description: 'In the viewport: add a part to (or take it out of) the selection / box-select every part the box touches. Right- or middle-drag still pans.',
+    },
+    {
+      keys: `${combo(SHIFT_LABEL, 'click')} / ${combo(MOD_LABEL, 'click')}`,
+      description: 'In the object list’s parts: select a range of parts / add or remove one part.',
+    },
+    {
+      keys: `${combo(MOD_LABEL, 'A')} · Esc · Delete · H · ${combo(SHIFT_LABEL, 'H')}`,
+      description: 'With the viewport or object list focused: select every part, clear the selection, delete the selected parts, hide them, show every hidden part.',
+    },
+    {
       keys: 'V / P / B',
       description: 'Detect parts panel: switch between the Select, Pin and Fix tools.',
     },

@@ -49,7 +49,7 @@ export const RANDOM_EXCLUDED_VALUES: Readonly<Record<string, readonly string[]>>
   'hair.style': ['locs', 'boxBraids'],
   // Hooded and tapered lids can swallow most of the pupil; closed hides the eyes.
   'face.lids': ['hooded', 'tapered', 'closed'],
-  // An up/down gaze tucks the pupil under a lid; 'middle' is the cross-eyed preset.
+  // An up/down gaze tucks the pupil under a lid; 'middle' is an alias of 'center'.
   'face.gaze': ['up', 'down', 'middle'],
   // Thin brows can sink under the brow ridge (0 paintable triangles).
   'face.brows': ['thin'],

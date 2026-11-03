@@ -59,8 +59,10 @@ over narrating what you would do. Never paste a share or export link into
 chat: the user has a Share button (↗) and an export menu in the toolbar, and
 an encoded share URL is enormous — dropping one in just wastes their tokens.
 
-If a tool you would normally use isn't in your tool list, the user turned it
-off in the cost-control toggle bar — don't ask for it back and don't
+If a tool you would normally use isn't in your tool list, check the "Tool
+groups" line in the per-turn suffix: if its group isn't loaded yet, load it
+with loadTools first (calling a tool you don't have can fail). Otherwise the user
+turned it off in the cost-control toggle bar — don't ask for it back and don't
 apologize. The "Capabilities this turn" list in the per-turn suffix is the
 live source of truth and OVERRIDES anything said earlier in this
 conversation: if it shows a capability as ON — paint included — use it even
@@ -155,12 +157,13 @@ export function toggleSuffix(toggles: ChatToggles): string {
       '',
       '**PLAN MODE — inspect the session freely, but do NOT mutate, execute code, or start building.**',
       '',
-      'You have the read-only tool subset this turn (askUser, proposePlan, getCode, getSessionContext, listVersions, getGeometryData, getMeshSummary, listComponents, listLabels, listRegions, listSessionNotes, readDoc, findFaces, probePixel, probeRay, sliceAtZVisual, paintPreview, paintExplain, assertPaint, checkPrintability, getPrinterSettings, listObjects, getCurrentObject, listObjectParts, query, plus renderView/renderViews if vision is on). Use them to ground your plan in what actually exists — the open code, saved versions, geometry stats — instead of guessing. Skip inspection entirely when the request is a greenfield build with nothing worth reading.',
+      'You have the read-only tool subset this turn (askUser, proposePlan, getCode, getSessionContext, listVersions, getGeometryData, getMeshSummary, listComponents, listLabels, listRegions, listSessionNotes, readDoc, findFaces, probePixel, probeRay, sliceAtZVisual, paintPreview, paintExplain, assertPaint, checkPrintability, thicknessMap, getPrinterSettings, listObjects, getCurrentObject, listObjectParts, query, plus renderView/renderViews if vision is on). Use them to ground your plan in what actually exists — the open code, saved versions, geometry stats — instead of guessing. Skip inspection entirely when the request is a greenfield build with nothing worth reading.',
       '',
       'Inspect only what you need to write a useful plan; do not fan out. Setters, runners, savers, painters, and imports are hidden until the user approves.',
       '',
       'End this turn with exactly one of:',
       '- **The plan**: what you will build and its overall shape, the key design decisions and trade-offs, the concrete steps, and any assumptions you made so the user can correct them. Call `proposePlan` with it if you have that tool; otherwise write it as your final message, ending with its assumptions — not a question like "Does this look good?" (the user has a Build button for that).',
+      '  Every plan carries an honest **estimate**: difficulty (easy / medium / hard / research, for this app and its tools), your confidence, the realistic range of tool rounds the build takes including verification and fixes, the quality to expect, and the tools that are missing or weak for it (`proposePlan`\'s `estimate`; otherwise an "Estimate:" section). The build pauses for the user at your maximum, so don\'t lowball it. readDoc("feasibility") has the difficulty map.',
       '- **Questions**, only if you need answers before you can plan well: few of them, each with the option you would pick, so the user can just accept the defaults. Call `askUser` if you have that tool; otherwise end your message with them as a numbered list. Ask instead of planning — not both.',
       'The user will answer your questions, reply to revise the plan, or approve it — approval starts a new turn with your full tools. Until then, you are still planning: every reply in plan mode is a plan or questions, never the build.',
     ];
@@ -303,7 +306,31 @@ function printableGuidance(): string {
 }
 
 export function buildSystemPrompt(aiMd: string): string {
-  return PREAMBLE + aiMd;
+  return PREAMBLE + inAppAiMd(aiMd);
+}
+
+const EXTERNAL_ONLY_BLOCK = /<!-- external-only:start -->[\s\S]*?<!-- external-only:end -->\r?\n?/g;
+// Whole-line match, so a note body can't be cut short by an inner "-->".
+const IN_APP_NOTE = /^<!-- in-app: (.*) -->\r?$/gm;
+
+/** ai.md as the in-app chat sees it. The file also serves external agents
+ *  (Claude Code, the extension) that drive the `window.partwright` console,
+ *  so console-only material — the method listing, argument-validation
+ *  conventions, Arrange mode — sits between external-only markers and is
+ *  dropped here: the in-app model calls tools, each with its own schema.
+ *  `<!-- in-app: … -->` lines are the reverse: unwrapped for the in-app model.
+ *  Both are HTML comments, so the rendered page hides them; external agents
+ *  read the raw file and do see them, which is why each in-app note says
+ *  "(In-app chat only.)". Unbalanced markers are tolerated at runtime (a
+ *  throw would break chat) and caught by tests/unit/aiMdInApp.test.ts. */
+export function inAppAiMd(aiMd: string): string {
+  return aiMd
+    .replace(EXTERNAL_ONLY_BLOCK, '')
+    .replace(IN_APP_NOTE, '$1')
+    .replace(/<!-- Maintainers:[^\n]*-->\n?/g, '')
+    // Removing a block can leave a run of blank lines; this also collapses
+    // runs inside code fences, which ai.md doesn't rely on.
+    .replace(/(\r?\n){3,}/g, m => (m.includes('\r') ? '\r\n\r\n' : '\n\n'));
 }
 
 /** Slim local prompt (~700 tokens) — the default for smaller local models
@@ -363,7 +390,7 @@ Available tools you'll use most:
   gears (api.gears.* involute spur gears / meshing pairs / racks),
   threads (api.threads.* ISO-metric threaded rods / bolts / nuts),
   mechanisms (print-in-place joints, hinges, sliders, captive balls, helical threads),
-  deform (wrap text around cylinders / bend / twist / taper / scatter instances on a surface / round every edge (or only selected ones) / smoothWeld plain meshes / editPart: scale, turn, swap or delete one part as a solid / sculpt nudges / api.material viewport shading / turntable & explode video export),
+  deform (wrap text around cylinders / bend / twist / taper / scatter instances on a surface / round every edge (or only selected ones) / hollow any solid to a uniform wall (shell) or grow/shrink it (offset) / smoothWeld plain meshes / editPart: scale, turn, swap or delete one part as a solid / sculpt nudges / api.material viewport shading / turntable & explode video export),
   reference-images (when the user attaches photos),
   file-io (programmatic export/import),
   annotations (when the user has drawn on the model).

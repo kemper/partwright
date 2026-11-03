@@ -117,7 +117,7 @@ describe('captured hair — robustness', () => {
   it('rejects odd, zero and NaN grid sizes with a clear error', () => {
     for (const [a, e] of [[127, 64], [128, 63], [0, 64], [NaN, 64], [128, 0.5]] as const) {
       expect(() => assertGridSize(a, e, 'test')).toThrow(/positive even integers/);
-      expect(() => decodePreset({ ...HAIR_PRESETS.tsubasa, nAz: a, nEl: e })).toThrow(/positive even integers/);
+      expect(() => decodePreset({ ...HAIR_PRESETS.shaggy, nAz: a, nEl: e })).toThrow(/positive even integers/);
     }
     const lm: HeadLandmarks = { origin: [0, 0, 0], forward: [1, 0, 0], left: [0, 1, 0], up: [0, 0, 1], W: 1, H: 1 };
     const tris = sphereSoup(1.5, [0, 0, 0], (p) => p[2] > 0, 12, 6);
@@ -147,7 +147,7 @@ describe('captured hair — robustness', () => {
 });
 
 describe('captured hair — knob math', () => {
-  const src = decodePreset(HAIR_PRESETS.tsubasa);
+  const src = decodePreset(HAIR_PRESETS.shaggy);
 
   it('default knobs are the identity', () => {
     for (const [az, el] of [[0, 0], [120, -40], [-75, 60]]) expect(sourceDir(az, el, DEFAULT_KNOBS)).toEqual([az, el]);
@@ -322,5 +322,21 @@ describe("captured hair — F.hair(rig, { style: 'captured' }) SDF", () => {
     expect(fieldValue(g, [0, 0, 1.2]).d).toBeLessThan(0);
     expect(fieldValue(g, [0, 0, 1.8]).d).toBeGreaterThan(0);
     expect(fieldValue(g, [1.2, 0, -0.5]).d).toBeGreaterThan(0);   // below the 10° coverage edge
+  });
+});
+
+describe('captured hair — renamed presets', () => {
+  it('maps every former preset name to a current preset, in specs and in hair()', async () => {
+    const { RENAMED_HAIR_PRESETS, DEFAULT_HAIR_PRESET, resolveHairPresetName } = await import('../../src/geometry/hairCapture/presetNames');
+    const { normalizeSpec } = await import('../../src/figure/characterSpec');
+    expect(Object.keys(HAIR_PRESETS)).toContain(DEFAULT_HAIR_PRESET);
+    for (const [former, current] of Object.entries(RENAMED_HAIR_PRESETS)) {
+      expect(Object.keys(HAIR_PRESETS)).toContain(current);
+      expect(resolveHairPresetName(former)).toBe(current);
+      // A saved Character Creator spec carrying the former name still loads.
+      expect(normalizeSpec({ hair: { style: 'captured', preset: former } }).hair.preset).toBe(current);
+    }
+    expect(resolveHairPresetName(DEFAULT_HAIR_PRESET)).toBe(DEFAULT_HAIR_PRESET);
+    expect(resolveHairPresetName('constructor')).toBe('constructor');
   });
 });

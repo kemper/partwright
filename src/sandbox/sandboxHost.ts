@@ -25,8 +25,8 @@
 //     restarts the iframe and re-spawns the waiting façades in the new frame
 //     (bounded by renderer.engineSandboxMaxFrameRestarts);
 //   - anything else — the frame or Worker isn't cross-origin isolated, the
-//     frame doesn't load, the restart budget is spent, 'origin' mode isn't
-//     configured — marks the sandbox UNAVAILABLE for the tab: every queued and
+//     frame doesn't load, the restart budget is spent, 'origin' mode was
+//     chosen but isn't configured — marks the sandbox UNAVAILABLE for the tab: every queued and
 //     future engine call fails with "engine sandbox unavailable", and a
 //     persistent status pill (src/ui/engineSandboxPill.ts) offers an explicit
 //     per-tab "Run without sandbox" action. Nothing falls back on its own.
@@ -75,7 +75,7 @@ export interface EngineSandboxStatus {
   frameCrossOriginIsolated: boolean | null;
   /** `crossOriginIsolated` reported by the most recent sandboxed Worker. */
   workerCrossOriginIsolated: boolean | null;
-  /** The frame's origin ('null' for opaque mode), or null when off. */
+  /** The frame's origin (the sandbox host), or null when off. */
   frameOrigin: string | null;
   /** Why the sandbox is unavailable (also kept after a bypass), else null. */
   unavailableReason: string | null;
@@ -127,7 +127,7 @@ export function getEngineSandboxStatus(): EngineSandboxStatus {
     pendingAfterReload: getEngineSandboxMode(),
     frameCrossOriginIsolated: lastFrameCoi,
     workerCrossOriginIsolated: lastWorkerCoi,
-    frameOrigin: TAB_MODE === 'off' || bypassed ? null : host?.expectedOrigin ?? null,
+    frameOrigin: TAB_MODE === 'off' || bypassed ? null : host?.origin ?? null,
     unavailableReason,
     frameRestarts,
   };
@@ -167,22 +167,19 @@ export function runWithoutEngineSandbox(): boolean {
   return true;
 }
 
-function frameSrc(mode: 'opaque' | 'origin', origin: string | null): string {
+function frameSrc(origin: string): string {
   // Dev (Vite) serves the page at /sandbox.html; Cloudflare Pages serves the
   // built page at its clean URL (and 308s /sandbox.html → /sandbox), so use
   // the clean URL in production builds to skip that redirect.
   const file = import.meta.env.DEV ? 'sandbox.html' : 'sandbox';
-  const path = `${BASE}${file}`;
-  return mode === 'origin' ? `${origin}${path}` : new URL(path, location.href).href;
+  return `${origin}${BASE}${file}`;
 }
 
 class SandboxHost {
   readonly frame: HTMLIFrameElement;
-  /** Origin the frame's messages must carry: 'null' (opaque) or the sandbox origin. */
-  readonly expectedOrigin: string;
-  readonly mode: 'opaque' | 'origin';
-  readonly origin: string | null;
-  private readonly targetOrigin: string;
+  /** The sandbox origin: every frame message must carry it, and every message
+   *  to the frame is addressed to it. */
+  readonly origin: string;
   ready = false;
   private destroyed = false;
   private readonly handles = new Map<string, SandboxedEngineWorker>();
@@ -195,25 +192,21 @@ class SandboxHost {
   /** `replacement`: created by restartFrame after an earlier frame died. Its
    *  boot timeout is one more failed restart (bounded by the restart budget);
    *  only the tab's FIRST frame failing to load fails closed immediately. */
-  constructor(mode: 'opaque' | 'origin', origin: string | null, replacement = false) {
-    this.mode = mode;
+  constructor(origin: string, replacement = false) {
     this.origin = origin;
-    this.expectedOrigin = mode === 'origin' ? origin! : 'null';
-    this.targetOrigin = mode === 'origin' ? origin! : '*';
     const frame = document.createElement('iframe');
-    // 'opaque': no allow-same-origin ⇒ the frame gets an opaque origin even
-    // though its URL is the app's. 'origin': the frame keeps its (different)
-    // real origin so its Worker can load same-origin modules; the sandbox
-    // flags still strip navigation, popups, forms and downloads.
-    frame.setAttribute('sandbox', mode === 'origin' ? 'allow-scripts allow-same-origin' : 'allow-scripts');
+    // The frame keeps its (different) real origin so its Worker can load
+    // same-origin modules; the sandbox flags still strip navigation, popups,
+    // forms and downloads.
+    frame.setAttribute('sandbox', 'allow-scripts allow-same-origin');
     // Delegate cross-origin isolation (SharedArrayBuffer) into the frame.
     frame.setAttribute('allow', 'cross-origin-isolated');
     frame.setAttribute('aria-hidden', 'true');
     frame.setAttribute('tabindex', '-1');
     frame.title = 'Partwright engine sandbox';
-    frame.dataset.engineSandbox = mode;
+    frame.dataset.engineSandbox = 'origin';
     frame.style.cssText = 'position:fixed;width:0;height:0;border:0;opacity:0;pointer-events:none;left:-10px;top:-10px;';
-    frame.src = frameSrc(mode, origin);
+    frame.src = frameSrc(origin);
     this.frame = frame;
     window.addEventListener('message', this.onWindowMessage);
     document.body.appendChild(frame);
@@ -227,7 +220,7 @@ class SandboxHost {
   private onWindowMessage = (event: MessageEvent): void => {
     if (this.destroyed) return;
     if (event.source !== this.frame.contentWindow) return;
-    if (event.origin !== this.expectedOrigin) return;
+    if (event.origin !== this.origin) return;
     const msg = parseFrameMessage(event.data);
     if (!msg) return;
     if (msg.type === 'frame_ready') {
@@ -280,13 +273,13 @@ class SandboxHost {
       }
       if (this.pingSentAt === null) {
         this.pingSentAt = now;
-        win.postMessage({ type: 'ping', id: 'hb' }, this.targetOrigin);
+        win.postMessage({ type: 'ping', id: 'hb' }, this.origin);
       }
     }, interval);
   }
 
   private postSpawn(id: string, port: MessagePort): void {
-    this.frame.contentWindow?.postMessage({ type: 'spawn', id }, this.targetOrigin, [port]);
+    this.frame.contentWindow?.postMessage({ type: 'spawn', id }, this.origin, [port]);
   }
 
   spawn(handle: SandboxedEngineWorker, port: MessagePort): void {
@@ -304,7 +297,7 @@ class SandboxHost {
       this.pendingSpawns.splice(i, 1);
       return;
     }
-    if (this.ready) this.frame.contentWindow?.postMessage({ type: 'terminate', id }, this.targetOrigin);
+    if (this.ready) this.frame.contentWindow?.postMessage({ type: 'terminate', id }, this.origin);
   }
 
   /** Tear the frame down. Every façade still attached errors out with
@@ -324,9 +317,8 @@ class SandboxHost {
   }
 }
 
-function hostOrigin(): { ok: true; mode: 'opaque' | 'origin'; origin: string | null } | { ok: false } {
+function hostOrigin(): { ok: true; origin: string } | { ok: false } {
   if (TAB_MODE === 'off') return { ok: false };
-  if (TAB_MODE === 'opaque') return { ok: true, mode: 'opaque', origin: null };
   const origin = configuredSandboxOrigin();
   if (!origin) {
     failClosed("'origin' mode needs VITE_SANDBOX_ORIGIN set at build time");
@@ -336,7 +328,7 @@ function hostOrigin(): { ok: true; mode: 'opaque' | 'origin'; origin: string | n
     failClosed('VITE_SANDBOX_ORIGIN is the app origin itself, which would not isolate anything');
     return { ok: false };
   }
-  return { ok: true, mode: 'origin', origin };
+  return { ok: true, origin };
 }
 
 /** The live sandbox host, creating its iframe on first use; null when the
@@ -346,7 +338,7 @@ function activeHost(): SandboxHost | null {
   if (host) return host;
   const o = hostOrigin();
   if (!o.ok) return null;
-  host = new SandboxHost(o.mode, o.origin);
+  host = new SandboxHost(o.origin);
   notify();
   return host;
 }
@@ -364,7 +356,7 @@ function restartFrame(reason: string): void {
   restartsSinceConnect++;
   frameRestarts++;
   errorLog.capture({ level: 'warn', source: 'engine', message: `Restarting the engine sandbox frame: ${reason}` });
-  host = new SandboxHost(old.mode, old.origin, true);
+  host = new SandboxHost(old.origin, true);
   const waiting = old.destroy(`sandbox frame restarted: ${reason}`);
   // detach() above already errored connected façades; re-home the waiting ones.
   for (const h of waiting) h.rehome(host);

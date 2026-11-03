@@ -91,6 +91,11 @@ export interface MeshResult {
    *  and tells callers which knobs (and value ranges) the model exposes. Absent
    *  when the model declared no parameters. */
   paramsSchema?: ParamSpec[];
+  /** What the model code printed with `console.log` / `warn` / `error` this
+   *  run (warn/error lines prefixed), capped per run (modelConsole.ts). Rides
+   *  on error results too, so output before a throw isn't lost. Absent when
+   *  nothing was printed. */
+  logs?: string[];
   /** Size (bytes) of the manifold-3d WASM heap after this run — its grown
    *  high-water mark (WASM memory never shrinks). Surfaced in the diagnostics so
    *  users can see how close a run came to the ~4 GB ceiling, and on an OOM

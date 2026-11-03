@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { assignBambuPlates, packPlates, isBambuPlateLayout, BAMBU_PLATE_LAYOUTS, isPackStrategy, PACK_STRATEGIES } from '../../src/export/threemfProject';
+import { assignBambuPlates, packPlates, isBambuPlateLayout, BAMBU_PLATE_LAYOUTS, isPackStrategy, PACK_STRATEGIES, layoutBambuPlates, plateGroupKey } from '../../src/export/threemfProject';
 
 // Pure plate-distribution logic for the Bambu multi-part export. `assignBambuPlates`
 // turns a per-part group list + a layout mode into a list of plates (each a list of
@@ -171,5 +171,36 @@ describe('packPlates', () => {
       expect(isPackStrategy('nope')).toBe(false);
       expect(isPackStrategy('')).toBe(false);
     });
+  });
+});
+
+describe("assignBambuPlates 'custom' + layoutBambuPlates", () => {
+  test("'custom' bins by plate number in ascending order; gaps close up", () => {
+    const g = [undefined, undefined, undefined, undefined];
+    expect(assignBambuPlates(g, 'custom', [3, 1, 3, 1])).toEqual([[1, 3], [0, 2]]);
+  });
+
+  test("'custom' gives a part with no plate number its own plate, after the numbered ones", () => {
+    expect(assignBambuPlates([undefined, undefined, undefined], 'custom', [undefined, 2, 2])).toEqual([[1, 2], [0]]);
+  });
+
+  test("'group' keeps a split object's items together (and never mixes them with a same-named group)", () => {
+    const parts = [
+      { splitOf: 'obj1', w: 10, d: 10 },
+      { splitOf: 'obj1', w: 10, d: 10 },
+      { group: 'obj1', w: 10, d: 10 },
+      { w: 10, d: 10 },
+    ];
+    const plates = layoutBambuPlates(parts, 'group', [256, 256]);
+    expect(plates.map(p => [...p.members].sort())).toEqual([[0, 1], [2], [3]]);
+    expect(plateGroupKey({ group: 'A', splitOf: 'x' })).toBe('g:A');
+    expect(plateGroupKey({ splitOf: 'x' })).toBe('s:x');
+    expect(plateGroupKey({})).toBeUndefined();
+  });
+
+  test('a custom plate that overflows the bed spills onto another plate', () => {
+    const parts = Array.from({ length: 4 }, () => ({ plate: 1, w: 150, d: 150 }));
+    const plates = layoutBambuPlates(parts, 'custom', [256, 256]);
+    expect(plates.length).toBe(4);
   });
 });

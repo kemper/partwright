@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import type { MeshData } from '../geometry/types';
 import { requestRender } from './viewport';
 import { meshDataToGeometry } from './meshGeometry';
+import { setReferenceMesh } from './referenceMesh';
 
 let phantomGroup: THREE.Group | null = null;
 
@@ -24,6 +25,8 @@ export function setPhantom(meshData: MeshData, options?: PhantomOptions): void {
   if (!phantomGroup) return;
 
   clearPhantom();
+  // Offscreen renders (renderViews / renderView) draw the same ghost.
+  setReferenceMesh(meshData, options);
 
   const geometry = meshDataToGeometry(meshData);
 
@@ -57,6 +60,7 @@ export function setPhantom(meshData: MeshData, options?: PhantomOptions): void {
 }
 
 export function clearPhantom(): void {
+  setReferenceMesh(null);
   if (!phantomGroup) return;
 
   while (phantomGroup.children.length > 0) {

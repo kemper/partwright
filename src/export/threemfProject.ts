@@ -167,6 +167,13 @@ export interface PartExport {
   /** Group name (from `Part.group`). Only consulted by the Bambu `'group'` plate
    *  layout, which puts each group's parts on a shared plate. Absent ⇒ ungrouped. */
   group?: string;
+  /** Set on the items one object was SPLIT into (by piece or by part): an id
+   *  of that source object. The Bambu `'group'` layout keeps an ungrouped
+   *  object's items together on one plate (spilling as needed). */
+  splitOf?: string;
+  /** 1-based plate number for the Bambu `'custom'` layout. Items sharing a
+   *  number share a plate; plates come out in ascending number order. */
+  plate?: number;
 }
 
 /**
@@ -175,11 +182,14 @@ export interface PartExport {
  *   - `'grid'` — every part on a SINGLE plate, arranged in a sub-grid.
  *   - `'group'` — parts sharing a `group` share a plate (sub-grid arranged); each
  *     ungrouped part gets its own plate. Handy once a collection has 30+ parts and
- *     one-plate-per-part becomes unwieldy.
+ *     one-plate-per-part becomes unwieldy. The items one object was split into
+ *     count as a group of their own when the object has no group.
+ *   - `'custom'` — each part names its plate (`PartExport.plate`); parts sharing
+ *     a number share a plate. A part without a number gets its own plate.
  * Ignored in generic mode (which always grids into one inline model).
  */
-export type BambuPlateLayout = 'separate' | 'grid' | 'group';
-export const BAMBU_PLATE_LAYOUTS: BambuPlateLayout[] = ['separate', 'grid', 'group'];
+export type BambuPlateLayout = 'separate' | 'grid' | 'group' | 'custom';
+export const BAMBU_PLATE_LAYOUTS: BambuPlateLayout[] = ['separate', 'grid', 'group', 'custom'];
 /** True when `v` is a valid {@link BambuPlateLayout} (for API-boundary validation). */
 export function isBambuPlateLayout(v: string): v is BambuPlateLayout {
   return (BAMBU_PLATE_LAYOUTS as string[]).includes(v);
@@ -216,10 +226,24 @@ export function isPackStrategy(v: string): v is PackStrategy {
  * extra plates rather than off the bed). Pure + exported so the grouping decision
  * is unit-testable without the builder.
  */
-export function assignBambuPlates(groups: (string | undefined)[], layout: BambuPlateLayout): number[][] {
+export function assignBambuPlates(groups: (string | undefined)[], layout: BambuPlateLayout, plates?: (number | undefined)[]): number[][] {
   const n = groups.length;
   if (n === 0) return [];
   if (layout === 'grid') return [Array.from({ length: n }, (_, i) => i)];
+  if (layout === 'custom') {
+    // One bin per distinct plate number, in ascending number order (gaps
+    // close up); parts without a number each get their own bin at the end.
+    const byPlate = new Map<number, number[]>();
+    const loose: number[][] = [];
+    for (let i = 0; i < n; i++) {
+      const p = plates?.[i];
+      if (p === undefined || !Number.isFinite(p)) { loose.push([i]); continue; }
+      let arr = byPlate.get(p);
+      if (!arr) { arr = []; byPlate.set(p, arr); }
+      arr.push(i);
+    }
+    return [...[...byPlate.entries()].sort((a, b) => a[0] - b[0]).map(e => e[1]), ...loose];
+  }
   if (layout === 'group') {
     // Parts sharing a (trimmed, non-empty) group name land in one bin at the
     // group's first appearance; ungrouped parts each get their own bin. The
@@ -363,6 +387,37 @@ export function packPlates(
   return arrangePages(members, footprint, bedW, bedH, gap, strategy).map(page => centerOnBed(page, bedW, bedH));
 }
 
+/** Gap (mm) left between parts that share a plate, unless overridden. */
+export const DEFAULT_GRID_GAP_MM = 10;
+
+/** The bin key the Bambu `'group'` layout reads for one part: its group, else
+ *  (for a split object's items) its source object, else none. Prefixed so a
+ *  group name can never collide with an object id. */
+export function plateGroupKey(part: { group?: string; splitOf?: string }): string | undefined {
+  const g = part.group?.trim();
+  if (g) return `g:${g}`;
+  return part.splitOf ? `s:${part.splitOf}` : undefined;
+}
+
+/**
+ * The physical plates a Bambu export will hold: bins per {@link assignBambuPlates},
+ * each shelf-packed per {@link packPlates}. Shared by the builder and the export
+ * picker's plate preview, so the preview shows exactly what gets written.
+ */
+export function layoutBambuPlates(
+  parts: { group?: string; splitOf?: string; plate?: number; w: number; d: number }[],
+  layout: BambuPlateLayout,
+  bed: [number, number],
+  gap: number = DEFAULT_GRID_GAP_MM,
+  strategy: PackStrategy = DEFAULT_PACK_STRATEGY,
+): PackedPlate[] {
+  const bins = assignBambuPlates(parts.map(plateGroupKey), layout, parts.map(p => p.plate));
+  const footprint = (k: number) => ({ w: parts[k].w, d: parts[k].d });
+  const out: PackedPlate[] = [];
+  for (const bin of bins) out.push(...packPlates(bin, footprint, bed[0], bed[1], gap, strategy));
+  return out;
+}
+
 export interface Build3MFProjectOptions {
   /** Override the download filename stem. */
   customName?: string;
@@ -492,7 +547,7 @@ interface PreparedPart {
 export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOptions = {}): BuiltExport {
   if (parts.length === 0) throw new Error('Cannot export: no parts selected.');
   const bambu = opts.bambu ?? true;
-  const gridGap = opts.gridGapMm ?? 10;
+  const gridGap = opts.gridGapMm ?? DEFAULT_GRID_GAP_MM;
 
   // ── Shared filament/material list across ALL parts ──────────────────────
   const cleaned = parts.map(p => {
@@ -612,9 +667,8 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
     : '';
 
   const packStrategy = opts.packStrategy ?? DEFAULT_PACK_STRATEGY;
-  const plates = assignBambuPlates(parts.map(p => p.group), opts.plateLayout ?? 'separate');
   const built = bambu
-    ? buildBambuPackage(prepared, bambuFilamentColors, resolvePrinter(opts.printer), opts.nozzle ?? '0.4', resolveFilament(opts.filament), plates, gridGap, packStrategy)
+    ? buildBambuPackage(prepared, bambuFilamentColors, resolvePrinter(opts.printer), opts.nozzle ?? '0.4', resolveFilament(opts.filament), parts, opts.plateLayout ?? 'separate', gridGap, packStrategy)
     : buildGenericPackage(prepared, colorgroupXml, anyColour, colorGroupId, gridGap, packStrategy);
 
   const mimeType = 'application/vnd.ms-package.3dmanufacturing';
@@ -709,7 +763,7 @@ ${buildItems}
 //   - identify_id in each <model_instance>
 //   - filament_map_mode / filament_maps / filament_volume_maps / thumbnail* in <plate>
 //   - <assemble> block at the end
-function buildBambuPackage(prepared: PreparedPart[], filamentColors: string[], printer: BambuPrinterSpec, nozzle: string, filament: BambuFilamentType, bins: number[][], gap: number, packStrategy: PackStrategy = DEFAULT_PACK_STRATEGY): Uint8Array {
+function buildBambuPackage(prepared: PreparedPart[], filamentColors: string[], printer: BambuPrinterSpec, nozzle: string, filament: BambuFilamentType, parts: PartExport[], plateLayout: BambuPlateLayout, gap: number, packStrategy: PackStrategy = DEFAULT_PACK_STRATEGY): Uint8Array {
   const unit = get3MFUnitString();
   const [bedW, bedH] = printer.bed;                  // selected printer's bed footprint
   const filamentCount = filamentColors.length;       // AMS slots = distinct colours
@@ -722,9 +776,10 @@ function buildBambuPackage(prepared: PreparedPart[], filamentColors: string[], p
   // bed (the old uniform-pitch grid ballooned when one part was large). A
   // one-part bin (the default 'separate' layout) centres it on the plate exactly as
   // before, so that path is unchanged.
-  const footprint = (k: number) => ({ w: prepared[k].width, d: prepared[k].depth });
-  const physicalPlates: PackedPlate[] = [];
-  for (const bin of bins) physicalPlates.push(...packPlates(bin, footprint, bedW, bedH, gap, packStrategy));
+  const physicalPlates = layoutBambuPlates(
+    parts.map((p, k) => ({ group: p.group, splitOf: p.splitOf, plate: p.plate, w: prepared[k].width, d: prepared[k].depth })),
+    plateLayout, [bedW, bedH], gap, packStrategy,
+  );
 
   const gridCols = plateGridCols(physicalPlates.length);  // ⌈√(#plates)⌉ to match Bambu's plate grid
 

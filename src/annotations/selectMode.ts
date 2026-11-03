@@ -2,9 +2,10 @@
 // translate it on its own plane (the plane captured at its creation);
 // Delete/Backspace removes it; Esc deselects.
 //
-// Like pen/text, select locks the user orbit so a click-drag on an
-// annotation doesn't compete with OrbitControls. The lock-toggle button
-// in the toolbar reflects the change via onUserOrbitLockChange.
+// Select is Annotate's resting mode, so the view behaves as it does without
+// Annotate: orbit/pan/zoom work. A pointerdown that lands on an annotation is
+// claimed through a capture-phase pointer suppressor (before OrbitControls
+// sees it) and starts the drag; anything else falls through to orbit.
 
 import * as THREE from 'three';
 import { Line2 } from 'three/addons/lines/Line2.js';
@@ -29,8 +30,7 @@ import {
 import {
   getCamera,
   getRenderer,
-  setUserOrbitLock,
-  isUserOrbitLocked,
+  addPointerSuppressor,
 } from '../renderer/viewport';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
 import { registerExclusiveMode, deactivateMode } from '../ui/modeExclusion';
@@ -42,7 +42,7 @@ import { getSelectedId, setSelectedId, onSelectionChange } from './selectionStat
 export { getSelectedId, onSelectionChange };
 
 let active = false;
-let priorOrbitLock = false;
+let removeSuppressor: (() => void) | null = null;
 
 // Drag state
 let dragging = false;
@@ -86,13 +86,9 @@ export function activate(): void {
   endSession();
 
   active = true;
-  // Lock orbit so a click-drag on an annotation doesn't fight OrbitControls.
-  // The lock-toggle button reflects this via onUserOrbitLockChange.
-  priorOrbitLock = isUserOrbitLocked();
-  setUserOrbitLock(true);
+  removeSuppressor = addPointerSuppressor(claimPointerDown);
 
   const canvas = getRenderer().domElement;
-  canvas.addEventListener('pointerdown', onPointerDown);
   canvas.addEventListener('pointermove', onPointerMove);
   canvas.addEventListener('pointerup', onPointerUp);
   canvas.addEventListener('pointercancel', onPointerUp);
@@ -108,10 +104,10 @@ export function deactivate(): void {
   dragging = false;
   dragLiveObject = null;
   setSelectedId(null);
-  if (!priorOrbitLock) setUserOrbitLock(false);
+  removeSuppressor?.();
+  removeSuppressor = null;
 
   const canvas = getRenderer().domElement;
-  canvas.removeEventListener('pointerdown', onPointerDown);
   canvas.removeEventListener('pointermove', onPointerMove);
   canvas.removeEventListener('pointerup', onPointerUp);
   canvas.removeEventListener('pointercancel', onPointerUp);
@@ -176,13 +172,21 @@ function findLiveObject(id: string): Line2 | THREE.Sprite | null {
   return null;
 }
 
-function onPointerDown(event: PointerEvent): void {
-  if (event.button !== 0) return;
+/** Capture-phase pointerdown: on an annotation, select it, start the drag and
+ *  return true so OrbitControls never sees the event; otherwise clear the
+ *  selection and let the click orbit as usual. */
+function claimPointerDown(event: PointerEvent): boolean {
+  if (!active || event.button !== 0) return false;
   const ann = pickAnnotationAt(event);
   if (!ann) {
     setSelection(null);
-    return;
+    return false;
   }
+  startDrag(ann, event);
+  return true;
+}
+
+function startDrag(ann: Annotation, event: PointerEvent): void {
   setSelection(ann.id);
 
   // Begin drag against the annotation's stored plane.

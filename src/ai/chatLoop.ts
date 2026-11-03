@@ -15,18 +15,22 @@ import { streamLocalTurn, resolveLocalModel, type StreamCallbacks as LocalStream
 import { streamTurn as streamTurnOpenai, type StreamCallbacks as OpenaiStreamCallbacks } from './openai';
 import { streamTurn as streamTurnGemini, type StreamCallbacks as GeminiStreamCallbacks } from './gemini';
 import { streamTurn as streamTurnCustom } from './custom';
-import { getKey, recordUsage, putMessages } from './db';
+import { getKey, recordUsage, putMessages as persistMessages } from './db';
 import { resolveCustomApiKey } from './customEndpoints';
-import { recordEvent } from './diagnostics';
-import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, RETRY_SAFE_TOOLS, declinedToolMessage, preConfirmToolResult, unofferedToolMessage, LEGACY_TOOL_ALIASES, TURN_ENDING_TOOLS, type ToolExecResult } from './tools';
+import { recordEvent, usageEventFields } from './diagnostics';
+import { redactSecrets } from '../diagnostics/logQuery';
+import { buildToolList, executeTool, type ToolDefinition, CONFIRM_REQUIRED_TOOLS, CONFIRM_UNAVAILABLE_MESSAGE, RETRY_SAFE_TOOLS, declinedToolMessage, preConfirmToolResult, unofferedToolMessage, LEGACY_TOOL_ALIASES, TURN_ENDING_TOOLS, type ToolExecResult } from './tools';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { loadSettings } from './settings';
-import { turnCostUsd } from './cost';
-import { activeModel, ITERATION_CAP, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type Provider, type TurnOutcomeReason } from './types';
+import { hasKnownPricing, turnCostUsd } from './cost';
+import { cacheTtlForThinking } from './anthropicCache';
+import { activeModel, ITERATION_CAP, MAX_TOKENS_WHILE_THINKING, SPEND_CAP_USD, type ApiCallTrace, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type Provider, type TurnOutcomeReason } from './types';
 import { getConfig } from '../config/appConfig';
 import { isTransientError, isTransientToolFailure } from './transientError';
 import { elideStaleToolImages, providerCachesHistory, pruneStaleToolPayloads } from './historyElision';
 import { REDUCED_TOOLS_NOTE, resolveCustomPromptTier, toolsForCustomTier } from './customContext';
+import { LOAD_TOOLS_TOOL, loadToolsDefinition, loadToolsResult, loadedToolGroups, selectOfferedTools, toolGroupsSuffix } from './toolGroups';
+import { DELEGATE_TASK_TOOL, WORKER_EXCLUDED_TOOLS, WORKER_RENDER_TOOLS, buildWorkerBrief, delegateToolDefinition, delegationAvailable, formatWorkerReport, parseDelegateInput, resolveWorkerModel, workerToggles } from './delegate';
 
 /** Look up the stored API key for a hosted provider. Returns null when
  *  no key is stored; chatLoop turns that into an "open AI Settings to
@@ -87,6 +91,13 @@ const AUTO_RESUME_PROMPT =
   + 'call the `finish` tool now (optionally pass a one-line `summary`). That is the only way to end the turn. '
   + 'Otherwise, keep working: take the next concrete step toward completing the request.';
 
+/** Synthetic user prompt after a malformed tool call while tool groups are
+ *  active: the usual cause is calling a tool whose group isn't loaded. */
+const TOOL_GROUP_NUDGE =
+  'Your last tool call could not be made. Most likely that tool is not in your current tool list because its group is not loaded: '
+  + 'call `loadTools` with the group (the loadTools description lists which group holds each tool), then retry the call. '
+  + 'If the tool is already loaded, check that its arguments are valid JSON and retry.';
+
 /** Hard ceiling on CONSECUTIVE auto-resume nudges that make no progress (no
  *  tool call, no `finish`). Resets to 0 whenever the model calls a tool. This
  *  bounds the degenerate "model keeps ending its turn but never calls finish or
@@ -144,6 +155,70 @@ export interface RunTurnInput {
    *  agent Worker has no tool registry, so the Worker client snapshots it on
    *  the main thread and passes it here; omitted = read the live registry. */
   uiTools?: import('./tools').UiToolCatalogEntry[];
+  /** Tool groups implied by the session state (paint regions, an imported
+   *  mesh — see sessionToolGroups in aiPanel), loaded from the first request
+   *  so the model doesn't spend a step on loadTools. Main-thread state, so the
+   *  caller computes it; the agent Worker can't. */
+  preloadToolGroups?: string[];
+  /** false = keep this run's messages in memory only (a delegated worker's
+   *  loop: its steps must not land in the main chat). Default true. */
+  persist?: boolean;
+  /** USD budget for this run instead of the toggles' session $ cap. */
+  spendCapUsd?: number;
+  /** Tools this run is never offered (a worker can't delegate or ask). */
+  excludeTools?: ReadonlySet<string>;
+  /** Round limit for this turn that replaces the ⟲ iteration cap — set while
+   *  building an approved plan, so the build stops at the plan's estimate
+   *  (a checkpoint) instead of the toolbar cap, and for a delegated worker's
+   *  step budget. */
+  iterationLimit?: number;
+}
+
+/** Whether this turn sends the core tool set plus loaded groups
+ *  (toolGroups.ts) instead of every tool. Hosted providers and Full-tier
+ *  Custom endpoints only: plan mode keeps its own read-only subset, and Local
+ *  and the Custom Medium / Slim tiers have their own trimmed lists. */
+function toolGroupsActive(toggles: ChatToggles): boolean {
+  if (!getConfig().ai.onDemandToolGroups || toggles.planFirst) return false;
+  if (toggles.provider === 'local') return false;
+  if (toggles.provider === 'custom' && resolveCustomPromptTier(toggles) !== 'full') return false;
+  return true;
+}
+
+const LOAD_TOOLS_DEF: ToolDefinition = loadToolsDefinition();
+
+/** The tools a turn's gates allow, plus delegateTask when delegation is on,
+ *  minus any the caller excludes. Shared with the panel's context meter. */
+export function turnToolList(
+  toggles: ChatToggles,
+  uiTools?: import('./tools').UiToolCatalogEntry[],
+  exclude?: ReadonlySet<string>,
+): ToolDefinition[] {
+  const cfg = getConfig().ai;
+  const tools = buildToolList(toggles, uiTools);
+  if (delegationAvailable(toggles, cfg.delegateToWorker)) tools.push(delegateToolDefinition());
+  return exclude ? tools.filter(t => !exclude.has(t.name)) : tools;
+}
+
+/** The schemas one request sends, and the matching per-turn suffix line.
+ *  Recomputed every iteration: a loadTools call (or a readDoc, or a grouped
+ *  tool the model called anyway) widens the list for the next step. Shared
+ *  with the panel's context meter so it counts what is really sent. */
+export function toolsForRequest(
+  toggles: ChatToggles,
+  gatedTools: ToolDefinition[],
+  history: readonly ChatMessage[],
+  preloadToolGroups: readonly string[] = [],
+): { tools: ToolDefinition[]; suffixLine: string } {
+  if (toolGroupsActive(toggles)) {
+    const loaded = loadedToolGroups(history, preloadToolGroups);
+    return {
+      tools: selectOfferedTools(gatedTools, loaded, LOAD_TOOLS_DEF),
+      suffixLine: toolGroupsSuffix(loaded, new Set(gatedTools.map(t => t.name))),
+    };
+  }
+  if (toggles.provider === 'custom') return { tools: toolsForCustomTier(gatedTools, resolveCustomPromptTier(toggles)), suffixLine: '' };
+  return { tools: gatedTools, suffixLine: '' };
 }
 
 export interface RunTurnCallbacks {
@@ -241,16 +316,18 @@ export async function buildActiveSystemPrompt(toggles: ChatToggles): Promise<str
 /** Run one user turn through the agent loop. Returns the final history. */
 export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks = {}): Promise<ChatMessage[]> {
   const { apiKey, toggles, sessionId, history, userBlocks, signal } = input;
-  const gatedTools = buildToolList(toggles, input.uiTools);
-  const tools = toggles.provider === 'custom' ? toolsForCustomTier(gatedTools, resolveCustomPromptTier(toggles)) : gatedTools;
+  const gatedTools = turnToolList(toggles, input.uiTools, input.excludeTools);
+  const putMessages = input.persist === false ? persistNothing : persistMessages;
   // Only the tools this turn's gates allow may run. Hiding a tool is how plan
   // mode and the scope toggles gate it, but a model can still call one it saw
   // earlier in the history (a second plan after a build is the classic case).
   // Checked against the gated list, not the custom-tier trim: that trim saves
   // context, it doesn't withhold permission.
   const offeredTools = new Set(gatedTools.map(t => t.name));
+  const groupsActive = toolGroupsActive(toggles);
+  if (groupsActive) offeredTools.add(LOAD_TOOLS_TOOL);
 
-  // The preamble + full ai.md is ~22K tokens — fine for hosted Claude with
+  // The preamble + in-app ai.md is ~27K tokens — fine for hosted Claude with
   // prompt caching. Most local models have 32K context so it technically fits
   // there too, but smaller models do better with the hand-tuned
   // slim/medium prompts (which leave more room for tool docs +
@@ -284,8 +361,10 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
   let totalCostUsd = 0;
   let totalToolCalls = 0;
   let turnApiTimeMs = 0;
-  const maxIter = ITERATION_CAP[toggles.maxIterations];
-  const maxSpend = SPEND_CAP_USD[toggles.maxSpend];
+  const maxIter = typeof input.iterationLimit === 'number' && input.iterationLimit >= 1
+    ? Math.floor(input.iterationLimit)
+    : ITERATION_CAP[toggles.maxIterations];
+  const maxSpend = input.spendCapUsd ?? SPEND_CAP_USD[toggles.maxSpend];
   // Auto-continue mode: the model only stops cleanly by calling `finish`; a
   // plain end_turn is auto-resumed (bounded by maxIter + maxSpend, plus the
   // no-progress ceiling below).
@@ -304,6 +383,10 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     callbacks.onTurnComplete?.({ totalCostUsd: 0, toolCalls: 0, reason: 'error', iterations: 0 });
     return workingHistory;
   }
+
+  // Last tool list recorded on an ApiCallTrace this turn — the next call only
+  // stores its list when it differs (see ApiCallTrace.request.tools).
+  const lastToolList = { key: '' };
 
   let iter = 0;
   for (; Number.isFinite(maxIter) ? iter < maxIter : true; iter++) {
@@ -338,6 +421,9 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       },
     };
 
+    const { tools, suffixLine } = toolsForRequest(toggles, gatedTools, workingHistory, input.preloadToolGroups);
+    const baseSuffix = toggleSuffix(toggles);
+    const systemSuffix = suffixLine ? `${baseSuffix}\n\n${suffixLine}` : baseSuffix;
     const requestSummary = `${workingHistory.length} msg(s), ${tools.length} tool def(s), vision=${toggles.vision.views ? 'on' : 'off'}, thinking=${toggles.thinking}`;
     // Transient provider failures (HTTP 429/5xx, dropped stream, network blip)
     // are retried in place with exponential backoff so an auto-continue run
@@ -361,6 +447,9 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     // Likewise drop text payloads a later step made dead weight: superseded
     // code bodies, repeated readDoc results, old failed-call inputs.
     const sentHistory = aiCfg.pruneStaleToolPayloads ? pruneStaleToolPayloads(imageTrimmed, aiCfg) : imageTrimmed;
+    // Transient failures retried before this call succeeded — persisted on
+    // the assistant message (ApiCallTrace.retries) for the session trace.
+    const retries: { error: string; durationMs: number }[] = [];
     for (;;) { // transient-retry loop — see maxTransientRetries below
     apiCallStart = Date.now();
     try {
@@ -375,11 +464,16 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           apiKey,
           model: toggles.anthropicModel,
           systemPrompt,
-          systemSuffix: toggleSuffix(toggles),
+          systemSuffix,
           apiMessages,
           tools,
           thinking: toggles.thinking,
           cacheHistory: aiCfg.cacheConversationHistory,
+          // A turn that can delegate may sit through a long worker run before
+          // its next request, so its cache gets the 1-hour lifetime too.
+          cacheTtl: offeredTools.has(DELEGATE_TASK_TOOL) && aiCfg.extendedCacheForDeepThinking
+            ? '1h'
+            : cacheTtlForThinking(toggles.thinking, aiCfg.extendedCacheForDeepThinking),
         }, streamCallbacks, signal);
       } else if (toggles.provider === 'openai') {
         // sendMessage passes the active provider's key as `apiKey`; fall
@@ -390,7 +484,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           apiKey: openaiKey,
           model: toggles.openaiModel,
           systemPrompt,
-          systemSuffix: toggleSuffix(toggles),
+          systemSuffix,
           history: sentHistory,
           tools,
           thinking: toggles.thinking,
@@ -402,7 +496,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           apiKey: geminiKey,
           model: toggles.geminiModel,
           systemPrompt,
-          systemSuffix: toggleSuffix(toggles),
+          systemSuffix,
           history: sentHistory,
           tools,
           thinking: toggles.thinking,
@@ -420,7 +514,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           baseUrl: toggles.customBaseUrl,
           model: toggles.customModel,
           systemPrompt,
-          systemSuffix: toggleSuffix(toggles),
+          systemSuffix,
           history: sentHistory,
           tools,
           thinking: toggles.thinking,
@@ -433,7 +527,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
         result = await streamLocalTurn({
           modelId: toggles.localModel,
           systemPrompt,
-          systemSuffix: toggleSuffix(toggles),
+          systemSuffix,
           history: sentHistory,
           tools,
         }, streamCallbacks, signal);
@@ -447,6 +541,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       if (!signal?.aborted && transientAttempt < maxTransientRetries && isTransientError(err)) {
         transientAttempt++;
         const waitMs = transientBackoffMs(transientAttempt);
+        retries.push({ error: redactSecrets(message), durationMs: Date.now() - apiCallStart });
         recordEvent({
           provider: toggles.provider,
           model: model ?? '(no model)',
@@ -481,6 +576,12 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     const durationMs = Date.now() - apiCallStart;
     turnApiTimeMs += durationMs;
 
+    // null = the model has no known pricing (the user authorized it anyway
+    // in the panel's preflight) — recorded as "cost unknown", never $0.
+    const pricedCost = turnCostUsd(toggles.provider, model ?? '', result.usage);
+    const turnCost = pricedCost ?? 0;
+    totalCostUsd += turnCost;
+
     recordEvent({
       provider: toggles.provider,
       model: model ?? '(no model)',
@@ -488,19 +589,11 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       durationMs,
       status: result.stopReason === 'aborted' ? 'aborted' : 'ok',
       stopReason: result.stopReason,
-      inputTokens: result.usage.inputTokens,
-      outputTokens: result.usage.outputTokens,
-      cachedTokens: result.usage.cacheReadInputTokens,
+      ...usageEventFields(result.usage, pricedCost),
       toolCallCount: result.toolCalls.length,
       textPreview: result.text.slice(0, 200),
       requestSummary,
     });
-
-    // null = the model has no known pricing (the user authorized it anyway
-    // in the panel's preflight) — recorded as "cost unknown", never $0.
-    const pricedCost = turnCostUsd(toggles.provider, model ?? '', result.usage);
-    const turnCost = pricedCost ?? 0;
-    totalCostUsd += turnCost;
 
     const aborted = result.stopReason === 'aborted' || signal?.aborted === true;
 
@@ -536,6 +629,15 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       durationMs,
       turnElapsedMs: turnApiTimeMs,
       ...(aborted ? { aborted: true } : {}),
+      call: {
+        provider: toggles.provider,
+        model: model ?? '(no model)',
+        stopReason: result.stopReason,
+        thinking: toggles.thinking,
+        iteration: iter,
+        request: requestShape(workingHistory, sentHistory, tools, systemPrompt, systemSuffix, lastToolList),
+        ...(retries.length > 0 ? { retries } : {}),
+      },
     };
     await putMessages([assistantMsg]);
     workingHistory = [...workingHistory, assistantMsg];
@@ -584,7 +686,12 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       // (checked above), and the no-progress ceiling, so it can't run away.
       // Only end_turn is auto-resumed; max_tokens / refusal keep their own
       // handling + Keep-going notice.
-      if (autoResume && result.stopReason === 'end_turn' && consecutiveNudges < getMaxConsecutiveAutoResumes()) {
+      // A call to a tool that isn't in this request's list (its group isn't
+      // loaded) comes back as malformed_function_call on Gemini and similar
+      // backends, with no call to run. Nudge the model to load the group and
+      // retry, under the same no-progress ceiling.
+      const groupNudge = groupsActive && result.stopReason === 'malformed_function_call';
+      if (((autoResume && result.stopReason === 'end_turn') || groupNudge) && consecutiveNudges < getMaxConsecutiveAutoResumes()) {
         // Preserve user/assistant alternation: an empty assistant turn
         // (empty_final — the model said nothing) is dropped by every provider's
         // request builder, which would leave the prior tool-result user turn
@@ -603,7 +710,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           id: generateId(),
           sessionId,
           role: 'user',
-          blocks: useHuman ? queued : [{ type: 'text', text: AUTO_RESUME_PROMPT }],
+          blocks: useHuman ? queued : [{ type: 'text', text: groupNudge ? TOOL_GROUP_NUDGE : AUTO_RESUME_PROMPT }],
           createdAt: Date.now(),
           seq: seqStart + 2 + iter * 2,
           ...(useHuman ? {} : { autoResumeNudge: true }),
@@ -635,7 +742,17 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       if (effectiveStopReason === 'end_turn') reason = hasText ? 'end_turn' : 'empty_final';
       else if (effectiveStopReason === 'max_tokens') reason = 'max_tokens';
       else if (effectiveStopReason === 'refusal') reason = 'refusal';
-      callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason, detail: effectiveStopReason, iterations: iter + 1 });
+      // A max_tokens stop that thought but produced no text and no tool call
+      // ran out of room while still thinking. That reasoning is dropped from
+      // history (the API won't accept a turn that ends in thinking), so "keep
+      // going" restarts the step rather than continuing it — the panel says
+      // so. A Local tool call cut off mid-way also lands here with no text,
+      // but that's not a thinking problem, so it keeps its own hint.
+      const thought = !!result.thinking?.trim() || (result.thinkingBlocks?.length ?? 0) > 0;
+      const detail = reason === 'max_tokens' && !hasText && result.toolCalls.length === 0 && thought && !localTruncated
+        ? MAX_TOKENS_WHILE_THINKING
+        : effectiveStopReason;
+      callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason, detail, iterations: iter + 1 });
       return workingHistory;
     }
 
@@ -678,6 +795,15 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     };
     await putMessages([toolResultMsg]);
 
+    let workerCostUsd = 0;
+    let workerCostUnknown = false;
+    const delegate = async (raw: Record<string, unknown>): Promise<Omit<PersistedToolResult, 'toolUseId'>> => {
+      const remaining = maxSpend - (priorSessionCost + totalCostUsd + workerCostUsd);
+      const run = await runWorkerTask(raw, { input, model, workingHistory, remainingBudgetUsd: remaining, callbacks });
+      workerCostUsd += run.costUsd;
+      workerCostUnknown ||= run.costUnknown;
+      return run.result;
+    };
     const toolResults = await executeAllWithRetry(
       result.toolCalls, toggles, offeredTools, callbacks, signal,
       (eachResult, i) => {
@@ -685,8 +811,16 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
         void putMessages([toolResultMsg]);
       },
       input.executeToolFn,
+      delegate,
     );
     totalToolCalls += result.toolCalls.length;
+    // A delegated worker's spend counts toward this turn and the session cap;
+    // it rides on the tool-result message so totalCost(history) sees it.
+    if (workerCostUsd > 0) {
+      totalCostUsd += workerCostUsd;
+      toolResultMsg.costUsd = (toolResultMsg.costUsd ?? 0) + workerCostUsd;
+    }
+    if (workerCostUnknown) toolResultMsg.costUnknown = true;
 
     // Final authoritative persist: same id, complete result set.
     toolResultMsg.toolResults = toolResults;
@@ -710,6 +844,13 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     if (signal?.aborted) {
       callbacks.onAborted?.();
       callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason: 'aborted', iterations: iter + 1 });
+      return workingHistory;
+    }
+
+    // A worker's spend lands between model calls, so check the cap now —
+    // before the main model sends another full-price request.
+    if (workerCostUsd > 0 && Number.isFinite(maxSpend) && (priorSessionCost + totalCostUsd) > maxSpend) {
+      callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason: 'spend_cap', detail: `$${maxSpend.toFixed(2)}`, iterations: iter + 1 });
       return workingHistory;
     }
 
@@ -753,6 +894,7 @@ async function executeAllWithRetry(
   signal?: AbortSignal,
   onEachResult?: (result: PersistedToolResult, index: number) => void,
   executeToolFn?: RunTurnInput['executeToolFn'],
+  delegate?: (input: Record<string, unknown>) => Promise<Omit<PersistedToolResult, 'toolUseId'>>,
 ): Promise<PersistedToolResult[]> {
   const results: PersistedToolResult[] = [];
   for (let i = 0; i < toolCalls.length; i++) {
@@ -811,7 +953,26 @@ async function executeAllWithRetry(
         continue;
       }
     }
+    // loadTools only widens the next request's tool list (toolsForRequest
+    // reads the call back out of the history), so it is answered here.
+    if (tc.name === LOAD_TOOLS_TOOL) {
+      const loaded: PersistedToolResult = { toolUseId: tc.id, ...loadToolsResult(tc.input, offeredTools) };
+      results.push(loaded);
+      callbacks.onToolResult?.(tc.id, tc.name, loaded);
+      onEachResult?.(loaded, i);
+      continue;
+    }
+    // delegateTask runs a whole worker loop here in the agent loop's own
+    // context (it needs the API key and the loop itself), not via executeTool.
+    if (tc.name === DELEGATE_TASK_TOOL && delegate) {
+      const delegated: PersistedToolResult = { toolUseId: tc.id, ...(await delegate(tc.input)) };
+      results.push(delegated);
+      callbacks.onToolResult?.(tc.id, tc.name, delegated);
+      onEachResult?.(delegated, i);
+      continue;
+    }
     let attempt = 0;
+    const toolStart = performance.now();
     let result = await timedExecuteTool(tc.name, tc.input, executeToolFn);
     // Only auto-retry idempotent tools. Re-running a mutation (save a version,
     // paint a region, append a note, confirm an import) that partially
@@ -829,6 +990,8 @@ async function executeAllWithRetry(
       content: result.content,
       isError: result.isError,
       ...(result.image ? { image: result.image } : {}),
+      durationMs: Math.round(performance.now() - toolStart),
+      ...(attempt > 0 ? { attempts: attempt + 1 } : {}),
     };
     results.push(persisted);
     callbacks.onToolResult?.(tc.id, tc.name, persisted);
@@ -877,6 +1040,146 @@ async function timedExecuteTool(
   return result;
 }
 
+/** Tools a delegated worker is never offered: no delegating, no talking to
+ *  the user, and nothing confirm-gated — the user would be asked to approve
+ *  an action from a conversation they can't see. */
+export const WORKER_TOOL_EXCLUSIONS: ReadonlySet<string> = new Set([...WORKER_EXCLUDED_TOOLS, ...CONFIRM_REQUIRED_TOOLS]);
+
+async function persistNothing(_msgs: ChatMessage[]): Promise<void> { /* in-memory run */ }
+
+/** Run one delegated worker: a fresh, in-memory agent loop on the worker
+ *  model, same session and tools (minus WORKER_EXCLUDED_TOOLS and anything
+ *  that needs the user's confirmation), capped in steps, dollars and stall
+ *  time. Never throws: any failure comes back as an error report, with
+ *  whatever the worker had already spent. */
+async function runWorkerTask(
+  raw: Record<string, unknown>,
+  parent: {
+    input: RunTurnInput;
+    model: string;
+    workingHistory: readonly ChatMessage[];
+    remainingBudgetUsd: number;
+    callbacks: RunTurnCallbacks;
+  },
+): Promise<{ result: Omit<PersistedToolResult, 'toolUseId'>; costUsd: number; costUnknown: boolean }> {
+  const cfg = getConfig().ai;
+  const { input, callbacks } = parent;
+  const fail = (content: string) => ({ result: { content, isError: true }, costUsd: 0, costUnknown: false });
+  const req = parseDelegateInput(raw, cfg.workerMaxSteps);
+  if ('error' in req) return fail(req.error);
+  const provider = input.toggles.provider;
+  const workerModel = resolveWorkerModel(provider, parent.model);
+  if (!workerModel) return fail(`delegateTask isn't available for the ${provider} provider. Do the work yourself.`);
+  const budget = Math.min(cfg.workerMaxSpendUsd, parent.remainingBudgetUsd);
+  if (!(budget > 0) || budget < cfg.workerMinBudgetUsd) {
+    return fail('delegateTask: too little of the session $ budget is left to run a worker. Finish the work yourself, or tell the user to raise the $ cap.');
+  }
+  if (!hasKnownPricing(provider, workerModel) && Number.isFinite(budget)) {
+    return fail(`delegateTask: ${workerModel} has no known price, so a worker's $ cap couldn't be enforced. Do the work yourself.`);
+  }
+
+  // The worker's own abort: the user's Stop, or a stalled model request.
+  const ctrl = new AbortController();
+  const onParentAbort = () => ctrl.abort();
+  input.signal?.addEventListener('abort', onParentAbort, { once: true });
+  if (input.signal?.aborted) ctrl.abort();
+  let stalled = false;
+  let stallTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearStall = () => { if (stallTimer !== null) { clearTimeout(stallTimer); stallTimer = null; } };
+  // Only model requests can stall: tool runs have their own timeout.
+  const armStall = () => {
+    clearStall();
+    stallTimer = setTimeout(() => { stalled = true; ctrl.abort(); }, cfg.workerStallTimeoutMs);
+  };
+
+  let steps = 0;
+  let spent = 0;
+  let costUnknown = false;
+  let lastImage: PersistedToolResult['image'];
+  let errorMessage: string | undefined;
+  let reason = 'other';
+  let toolCalls = 0;
+  const label = `worker · ${workerModel}`;
+  const workerCallbacks: RunTurnCallbacks = {
+    onAssistantStart: () => { steps++; },
+    // Always the 'tool' phase from the main loop's point of view: the panel
+    // shows its detail line, and its stall watchdog (thinking/streaming only)
+    // must not abort — and re-run — the whole delegation over one slow call.
+    // The worker's own stall timer covers its model requests instead.
+    onProgress: info => {
+      if (info.phase === 'tool' || info.phase === 'idle') clearStall();
+      else armStall();
+      callbacks.onProgress?.({
+        phase: 'tool',
+        detail: `${label} · step ${Math.max(steps, 1)}/${req.maxSteps} · ${info.phase === 'tool' && info.detail ? info.detail : info.phase}`,
+      });
+    },
+    // Counted per step, so a worker that fails part-way still bills the turn.
+    onAssistantPersisted: msg => {
+      spent += msg.costUsd ?? 0;
+      if (msg.costUnknown) costUnknown = true;
+    },
+    onToolResult: (_id, name, r) => { if (r.image && WORKER_RENDER_TOOLS.has(name)) lastImage = r.image; },
+    onError: err => { errorMessage = err.message; },
+    onTurnComplete: info => { reason = info.reason; toolCalls = info.toolCalls; },
+    confirmTool: callbacks.confirmTool,
+  };
+
+  let history: ChatMessage[] = [];
+  try {
+    history = await runTurn({
+      apiKey: input.apiKey,
+      toggles: workerToggles(input.toggles, workerModel),
+      sessionId: input.sessionId,
+      history: [],
+      userBlocks: [{ type: 'text', text: buildWorkerBrief(req) }],
+      signal: ctrl.signal,
+      executeToolFn: input.executeToolFn,
+      uiTools: input.uiTools,
+      preloadToolGroups: [...loadedToolGroups(parent.workingHistory, input.preloadToolGroups)],
+      persist: false,
+      iterationLimit: req.maxSteps,
+      spendCapUsd: budget,
+      excludeTools: WORKER_TOOL_EXCLUSIONS,
+      // Count down the last steps in the tool-result turn (append-only, so the
+      // worker's cached history survives), so it writes its report in time.
+      onDrainQueuedBlocks: () => {
+        const left = req.maxSteps - steps;
+        if (left === 1) return [{ type: 'text', text: '[Worker budget] Your next reply is your LAST step: write your report now and call no tools.' }];
+        if (left === 2) return [{ type: 'text', text: '[Worker budget] 2 steps left. Wrap up: save your best version, then report.' }];
+        return [];
+      },
+    }, workerCallbacks);
+  } catch (err) {
+    reason = 'error';
+    errorMessage = err instanceof Error ? err.message : String(err);
+  } finally {
+    clearStall();
+    input.signal?.removeEventListener('abort', onParentAbort);
+  }
+  if (stalled && !input.signal?.aborted) {
+    reason = 'error';
+    errorMessage = `The worker's model request went silent for ${Math.round(cfg.workerStallTimeoutMs / 1000)}s and was stopped.`;
+  }
+
+  // Its report is the final message's text. When it was cut off, that's
+  // whatever its last step said (often nothing) — flagged as not final.
+  const final = [...history].reverse().find(m => m.role === 'assistant');
+  const report = final ? final.blocks.map(b => (b.type === 'text' ? b.text : '')).join('').trim() : '';
+  const formatted = formatWorkerReport({
+    model: workerModel,
+    steps,
+    toolCalls,
+    costUsd: spent,
+    reason,
+    report,
+    reportIsFinal: reason === 'end_turn',
+    errorMessage,
+    lastImage,
+  }, cfg.workerReportMaxChars);
+  return { result: { ...formatted, ...(lastImage ? { image: lastImage } : {}) }, costUsd: spent, costUnknown };
+}
+
 function nextSeq(history: ChatMessage[]): number {
   if (history.length === 0) return 0;
   return Math.max(...history.map(m => m.seq)) + 1;
@@ -888,6 +1191,53 @@ function nextSeq(history: ChatMessage[]): number {
  *  plus output. */
 export function estimateCachedPrefixTokens(systemPromptChars: number): number {
   return Math.round(systemPromptChars / getConfig().ai.charsPerToken);
+}
+
+function countImages(history: ChatMessage[]): number {
+  let n = 0;
+  for (const m of history) {
+    for (const b of m.blocks) if (b.type === 'image') n++;
+    for (const tr of m.toolResults ?? []) if (tr.image) n++;
+  }
+  return n;
+}
+
+function historyChars(history: ChatMessage[]): number {
+  let n = 0;
+  for (const m of history) n += messageChars(m);
+  return n;
+}
+
+/** The request-shape half of ApiCallTrace: what this API call carried, and
+ *  how much image elision / payload pruning took out of the full history. */
+function requestShape(
+  fullHistory: ChatMessage[],
+  sentHistory: ChatMessage[],
+  tools: { name: string }[],
+  systemPrompt: string,
+  systemSuffix: string,
+  lastToolList: { key: string },
+): ApiCallTrace['request'] {
+  const names = tools.map(t => t.name);
+  const key = names.join(',');
+  const toolsChanged = key !== lastToolList.key;
+  lastToolList.key = key;
+  const sentChars = historyChars(sentHistory);
+  const sentImages = countImages(sentHistory);
+  let toolSchemaChars = 0;
+  try { toolSchemaChars = JSON.stringify(tools).length; } catch { /* unserializable schema — leave 0 */ }
+  return {
+    messages: sentHistory.length,
+    ...(toolsChanged ? { tools: names } : {}),
+    toolCount: names.length,
+    toolSchemaChars,
+    systemPromptChars: systemPrompt.length,
+    systemSuffixChars: systemSuffix.length,
+    historyChars: sentChars,
+    prunedChars: Math.max(0, historyChars(fullHistory) - sentChars),
+    imagesSent: sentImages,
+    imagesElided: Math.max(0, countImages(fullHistory) - sentImages),
+  };
 }
 
 /** Sum the total chars in a chat message's blocks for rough token estimation. */

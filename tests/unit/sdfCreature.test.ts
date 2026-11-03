@@ -2,7 +2,7 @@
 // kit. Pure field evaluation (no WASM): eyes cut an aperture and clip the
 // eyeball, creases seat on the real outer face, features mirror with their
 // detail spheres, and build() attaches/clips/collects before meshing. Meshing
-// itself is exercised headlessly via model:preview on examples/creature_ned.js.
+// itself is exercised headlessly via model:preview on examples/creature_horned.js.
 
 import { describe, it, expect } from 'vitest';
 import { createCreatureNamespace, type CreatureSdfApi } from '../../src/geometry/sdfCreature';
