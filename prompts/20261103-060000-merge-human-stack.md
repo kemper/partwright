@@ -38,3 +38,8 @@ Instead:
   already hold (`textures.md`, `reference-images.md#photo-match`), and
   buildCharacter's photo-loop sentence got shorter. Parameter names all stay.
 - The tool joins the `characters` group, so it isn't in the first request.
+
+**CI didn't start after the retarget.** PR-checks runs on opened, synchronize
+and reopened only, and the merge was pushed while the PR's base was still a
+feature branch. No empty commit or close/reopen: the retro for this merge is
+the real next commit, and it records the trap.
