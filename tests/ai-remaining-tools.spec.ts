@@ -88,7 +88,7 @@ test.describe('AI remaining tools (#1085 PR5)', () => {
       const ghostAfter = pw.hasReferenceGeometry();
 
       const saveAll = await call('saveAllObjects');
-      const catalog = await call('listCatalog', { query: 'companion', limit: 5 });
+      const catalog = await call('listCatalog', { query: 'heart', limit: 5 });
       const exportStl = await call('exportModel', { format: 'stl', filename: 'pr5-cube' });
       const exportStep = await call('exportModel', { format: 'step' });
 
@@ -130,7 +130,7 @@ test.describe('AI remaining tools (#1085 PR5)', () => {
     expect(out.ghostAfter).toBe(false);
 
     expect(out.saveAll.data).toMatchObject({ saved: expect.any(Number) });
-    expect(out.catalog.data.entries.some((e: { id: string }) => e.id === 'companion-cube')).toBe(true);
+    expect(out.catalog.data.entries.some((e: { id: string }) => e.id === 'heart-cube')).toBe(true);
     expect(out.catalog.data.total).toBeGreaterThan(out.catalog.data.count);
 
     expect(out.exportStl.data).toMatchObject({ ok: true, format: 'stl' });

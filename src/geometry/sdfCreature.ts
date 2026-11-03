@@ -5,8 +5,8 @@
 // from ellipsoid masses + smoothUnion. That part goes fine; what reliably goes
 // wrong is the DETAIL, the features that make a creature read as "sculpted"
 // instead of "primitive soup". Each helper here encodes one recipe that took
-// several render passes to get right (distilled from the Ned figurine,
-// examples/creature_ned.js):
+// several render passes to get right (distilled from the horned-creature figurine,
+// examples/creature_horned.js):
 //
 //   eyes   — round eyes: an eyelid shell hugging the eyeball, a steep-walled
 //            round opening cut through it, and an eyeball CLIPPED to the

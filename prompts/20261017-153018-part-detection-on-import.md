@@ -41,7 +41,7 @@ the part-detection UI register the Labels-section button, so the paint layer
 never imports segmentation. Shown only when the model is an import. The
 palette entry and viewport Parts button already existed.
 
-**Measured on the 460k-triangle Tsubasa scan** (figure + base disc = 2
+**Measured on the 460k-triangle figurine scan** (figure + base disc = 2
 pieces): auto-detect adds ~1.2 s to import (18.5 s vs 19.7 s to the next
 prompt), and the feature analysis it computes is cached for the seeded run
 that follows. Kept the scope to the deliverable; the owner's follow-up plan

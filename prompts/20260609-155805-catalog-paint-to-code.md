@@ -49,7 +49,7 @@ inversions.
 
 **Verification.** (1) A deterministic full-catalog verifier confirmed colours/
 params verbatim, retained regions byte-identical to originals, and no order
-inversions. (2) Browser render checks on companion_cube (byLabel), retro_rocket
+inversions. (2) Browser render checks on heart_cube (byLabel), retro_rocket
 (8 slabs + retained coplanar window), and toadstool_mushroom (byLabel +
 retained brushStrokes) — all render correctly. (3) Five parallel read-only
 audit subagents independently re-verified the 50 entries (no browser, to avoid

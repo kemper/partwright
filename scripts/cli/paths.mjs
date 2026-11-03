@@ -35,8 +35,12 @@ export function detectChromiumExecutable() {
     .filter((d) => /^chromium-\d+$/.test(d))
     .sort((a, b) => Number(b.split('-')[1]) - Number(a.split('-')[1]));
   for (const d of dirs) {
-    const candidate = join(sandboxRoot, d, 'chrome-linux', 'chrome');
-    if (existsSync(candidate)) return candidate;
+    // Older images ship `chrome-linux/`, newer ones `chrome-linux64/` (the same
+    // pair playwright.config.ts checks).
+    for (const sub of ['chrome-linux', 'chrome-linux64']) {
+      const candidate = join(sandboxRoot, d, sub, 'chrome');
+      if (existsSync(candidate)) return candidate;
+    }
   }
   return undefined;
 }

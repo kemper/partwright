@@ -70,7 +70,8 @@ async function setUpAnthropic(page: Page, planFirst: boolean): Promise<void> {
       open.onerror = () => reject(open.error);
     });
     const s = await import('/src/ai/settings.ts');
-    s.saveSettings(s.setToggles(s.loadSettings(), { provider: 'anthropic', anthropicModel: 'claude-haiku-4-5', thinking: 'off', autoReview: false, autoResume: false, planFirst: plan }));
+    // Quick plan without the planning-style picker (ai-plan-estimate.spec covers it).
+    s.saveSettings(s.setPlanStylePrefs(s.setToggles(s.loadSettings(), { provider: 'anthropic', anthropicModel: 'claude-haiku-4-5', thinking: 'off', autoReview: false, autoResume: false, planFirst: plan }), { planStyle: 'quick', askPlanStyle: false }));
   }, planFirst);
   await page.reload();
   await waitForEditorReady(page);

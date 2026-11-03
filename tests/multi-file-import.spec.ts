@@ -113,7 +113,7 @@ test.describe('Multi-file mesh import', () => {
     // Converting and adding to the current object exclude each other.
     await modal.locator('[data-mode="none"]').click();
     await modal.getByRole('radio', { name: /Convert to editable code/ }).check();
-    await expect(modal.getByRole('radio', { name: /The current object/ })).toBeDisabled();
+    await expect(modal.getByRole('radio', { name: /The current object|An existing object/ })).toBeDisabled();
     await modal.getByRole('radio', { name: /Mesh only/ }).check();
     await modal.locator('[data-mode="object"]').click();
     await modal.getByRole('button', { name: 'Import 3 objects' }).click();

@@ -16,7 +16,7 @@
     "src/tools/previewModel.ts",
     "src/tools/segmentMesh.ts"
   ],
-  "project": ["src/**/*.{ts,tsx}"],
+  "project": ["src/**/*.{ts,tsx}", "src/geometry/sesLoader.js"],
   "paths": {
     "/src/*": ["src/*"]
   },

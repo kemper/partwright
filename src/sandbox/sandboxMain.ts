@@ -1,8 +1,8 @@
 // Engine-sandbox frame (sandbox.html). Loaded into a hidden iframe on a
-// different origin from the app — an opaque origin ('opaque' mode) or a
-// separate hostname ('origin' mode) — so model code running in the Workers it
-// spawns can't reach the app's IndexedDB / localStorage, and its network is
-// fenced by this document's own CSP (connect-src 'self' only).
+// separate hostname from the app ('origin' mode, VITE_SANDBOX_ORIGIN) — so
+// model code running in the Workers it spawns can't reach the app's IndexedDB /
+// localStorage, and its network is fenced by this document's own CSP
+// (connect-src 'self' only).
 //
 // The frame is a thin spawner: for each `spawn` request it creates one engine
 // Worker and transfers the app-supplied MessagePort into it. All geometry
@@ -20,26 +20,26 @@ import {
 } from './frameProtocol';
 
 const parentWin = window.parent;
-// Only the app may drive this frame. In 'origin' mode anyone can embed the
-// sandbox host (frame-ancestors limits that too); check the sender as well.
-const PARENT_ORIGINS = allowedParentOrigins(location.origin, import.meta.env.VITE_APP_ORIGIN);
+// Only the app may drive this frame. frame-ancestors limits who can embed the
+// sandbox host; check the sender as well.
+const PARENT_ORIGINS = allowedParentOrigins(import.meta.env.VITE_APP_ORIGIN);
 const workers = new Map<string, Worker>();
 
 function post(msg: FrameToParent): void {
-  // targetOrigin '*': in 'opaque' mode the frame can't know the embedder's
-  // origin, and these lifecycle messages carry nothing sensitive. The app
-  // checks `event.source` + `event.origin` on receipt.
+  // targetOrigin '*': frame_ready goes out before the app has said anything
+  // (so before the frame knows which of the app origins embeds it), and these
+  // lifecycle messages carry nothing sensitive. The app checks `event.source`
+  // + `event.origin` on receipt.
   parentWin.postMessage(msg, '*');
 }
 
 // One blob: bootstrap for every Worker. A blob Worker inherits this document's
 // origin + CSP (an http-URL Worker would take its CSP from its own response
-// headers instead), and it is the only way an opaque-origin document can start
-// a Worker on this server's scripts at all.
+// headers instead), so the frame's tight connect-src applies to model code.
 //
-// It's a CLASSIC Worker that dynamic-imports the (module) shim: Chromium
-// refuses a `{type:'module'}` blob Worker from an opaque-origin document, but a
-// classic one may `import()` cross-origin modules over CORS. Messages that
+// It's a CLASSIC Worker that dynamic-imports the (module) shim. (That shape was
+// required by the removed 'opaque' mode — Chromium refuses a module blob Worker
+// from an opaque-origin document — and works unchanged here.) Messages that
 // arrive before the shim has loaded are queued on a global the shim drains.
 // Kept for the page lifetime — revoking it while a spawn's fetch is still
 // pending would break that spawn.

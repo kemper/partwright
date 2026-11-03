@@ -17,12 +17,19 @@ sdf: sphere, ellipsoid, box, roundedBox, cylinder, roundedCylinder,
      .translate/.rotate/.scale/.mirror, .shell/.round/.twist/.bend/.taper,
      .polarArray/.polarRepeat/.mirrorPair/.repeat/.repeatN,
      .label(name), .build({edgeLength?, bounds?})        (see /ai/sdf.md)
-meshOps (flat on api): intersects, contains, pointInside, bbox,
+meshOps (flat on api): intersects, contains, pointInside, raycast, closestPoint, bbox,
                        componentBounds, volumeDelta,
                        alignTo, placeOn, mirrorAcross, mirrorCopy,
                        linearPattern, circularPattern, spiralPattern,
                        expectUnion, expectDifference, expectComponents,
                        heal
+                       raycast(m, origin, dir, {all?, maxDistance?}) -> first
+                         surface hit {point, normal, distance, triangle,
+                         entering} | null; all: every crossing, nearest first
+                       closestPoint(m, [x,y,z]) -> nearest surface point
+                         {point, normal, distance, triangle, inside}
+                       Read the surface directly (a slanted socket, the gap
+                       between two parts) instead of inferring it from slices.
 params (flat on api):  api.params(schema) -> resolved values. NATIVE
                        manifold-js feature for parametric / customizable
                        models (also works in voxel + replicad sessions; NOT

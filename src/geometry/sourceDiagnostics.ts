@@ -6,6 +6,9 @@ const MAX_SYNTAX_DIAGNOSTICS = 5;
 interface ErrorWithLocation extends Error {
   lineNumber?: number;
   columnNumber?: number;
+  /** The user's own line, set by the SES model compiler (sesSandbox.ts), whose
+   *  wrapper doesn't shift lines — preferred over `lineNumber`. */
+  modelLineNumber?: number;
 }
 
 function clampOffset(source: string, offset: number): number {
@@ -109,11 +112,14 @@ export function javaScriptSyntaxDiagnostics(source: string, message: string, err
   if (diagnostics.length > 0) return diagnostics;
 
   const locatedError = error instanceof Error ? error as ErrorWithLocation : null;
-  if (locatedError?.lineNumber) {
-    // The Function constructor prepends `"use strict";\n`, so browser-provided
-    // line numbers for that generated body are one line higher than user code.
-    const line = Math.max(1, locatedError.lineNumber - 1);
-    const column = Math.max(1, locatedError.columnNumber ?? 1);
+  if (locatedError?.modelLineNumber || locatedError?.lineNumber) {
+    // The legacy Function constructor prepends `"use strict";\n`, so
+    // browser-provided line numbers for that generated body are one line
+    // higher than user code. The SES compiler reports the user's line as-is.
+    const line = locatedError.modelLineNumber
+      ? Math.max(1, locatedError.modelLineNumber)
+      : Math.max(1, (locatedError.lineNumber ?? 1) - 1);
+    const column = locatedError.modelLineNumber ? 1 : Math.max(1, locatedError.columnNumber ?? 1);
     const { from, to } = lineRange(source, line, column);
     const loc = offsetToLocation(source, from);
     return [{
@@ -175,4 +181,19 @@ export function runtimeDiagnostic(message: string, hint?: string, source = 'Runt
     source,
     hint,
   }];
+}
+
+/** Diagnostics for an error thrown while compiling or running JS model code:
+ *  syntax errors located by the parser; a runtime error that carries the
+ *  user's line (`modelLineNumber`, e.g. the SES sandbox's ReferenceError for an
+ *  undeclared name) underlines that line; anything else is unlocated. */
+export function modelCodeDiagnostics(code: string, message: string, error: unknown, hint?: string): SourceDiagnostic[] {
+  if (error instanceof SyntaxError) return javaScriptSyntaxDiagnostics(code, message, error);
+  const line = error instanceof Error ? (error as ErrorWithLocation).modelLineNumber : undefined;
+  if (typeof line === 'number' && line >= 1) {
+    const { from, to } = lineRange(code, line, 1);
+    const loc = offsetToLocation(code, from);
+    return [{ message, severity: 'error', source: 'JavaScript', hint, from, to, line: loc.line, column: loc.column }];
+  }
+  return runtimeDiagnostic(message, hint, 'JavaScript');
 }

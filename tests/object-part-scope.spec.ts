@@ -74,9 +74,10 @@ test.describe('part colour and scope from the Objects list (#1003)', () => {
     expect(regions).toHaveLength(1);
     expect(regions[0].color.map(c => Math.round(c * 255))).toEqual([0, 0, 255]);
 
-    // Select the part → its drawer offers ↺ Reset, which drops the fill.
+    // Select the part → the Parts panel offers ↺ Reset, which drops the fill.
     await page.locator('#parts-rail [data-object-part="part:eye"]').click();
-    await page.locator('#object-part-drawer [data-part-action="reset-color"]').click();
+    await page.locator('#parts-rail [data-open-parts-panel="part:eye"]').click();
+    await page.locator('#parts-panel [data-part-action="reset-color"]').click();
     await expect.poll(async () => (await eyeRegions()).length).toBe(0);
   });
 

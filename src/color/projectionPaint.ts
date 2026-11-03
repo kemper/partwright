@@ -22,6 +22,9 @@ import * as THREE from 'three';
 import type { MeshData } from '../geometry/types';
 import type { BrushShape } from './subdivide';
 import { getCamera, getRenderer, getMeshGroup } from '../renderer/viewport';
+import { getConfig } from '../config/appConfig';
+import type { AdjacencyGraph } from './adjacency';
+import { absorbSubPixelSlivers } from './thinTriangles';
 
 const ID_VERTEX = /* glsl */ `
 precision highp float;
@@ -235,8 +238,11 @@ export function projectBrushFootprint(opts: {
   radius: number;
   shape: BrushShape;
   hitPoint: [number, number, number];
+  /** When given, sub-pixel slivers under the brush that no pixel sampled are
+   *  added too (see `thinTriangles.ts`). Must be built for `mesh`. */
+  adjacency?: AdjacencyGraph | null;
 }): Set<number> | null {
-  const { event, mesh, radius, shape, hitPoint } = opts;
+  const { event, mesh, radius, shape, hitPoint, adjacency } = opts;
   if (radius <= 0 || mesh.numTri === 0) return null;
 
   const renderer = getRenderer();
@@ -275,6 +281,20 @@ export function projectBrushFootprint(opts: {
       if (buf[o + 3] < 128) continue; // background, no triangle
       out.add(buf[o] + buf[o + 1] * 256 + buf[o + 2] * 65536);
     }
+  }
+
+  // Slivers thinner than a pixel can fall between pixel centres and never be
+  // sampled, leaving an unpaintable hairline of the old colour along a seam.
+  const sliverPx = getConfig().ui.paintBrushSliverPx;
+  if (adjacency && sliverPx > 0 && out.size > 0) {
+    const toScreen = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    const solid = getMeshGroup().children[0];
+    if (solid) toScreen.multiply(solid.matrixWorld);
+    const v = new THREE.Vector3();
+    absorbSubPixelSlivers(out, mesh, adjacency, sliverPx * radius / pr, (x, y, z) => {
+      v.set(x, y, z).applyMatrix4(toScreen);
+      return insideShape((v.x + 1) * 0.5 * rtW - cx, (v.y + 1) * 0.5 * rtH - cy, pr, shape);
+    });
   }
   return out;
 }

@@ -412,4 +412,32 @@ test.describe('Character Creator', () => {
     expect(out.presets.length).toBeGreaterThan(10);
     expect(out.presets.map(p => p.id)).toContain('chibi');
   });
+
+  test('controls are generated from SPEC_FIELDS: a field with only ui metadata gets a working control', async ({ page }) => {
+    // pants.leg had no hand-written control; its SPEC_FIELDS `ui` entry alone
+    // ("Leg cut", clothing section) now renders a select that edits the spec.
+    await page.goto('/editor');
+    await waitForEngine(page);
+    await page.evaluate(async () => (window as unknown as { partwright: PW }).partwright.createSession('character-generated'));
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur?.());
+    await page.keyboard.press('ControlOrMeta+k');
+    await page.locator('input[aria-label="Search commands"]').fill('Character Creator');
+    await page.keyboard.press('Enter');
+    const panel = page.getByRole('dialog', { name: 'Character Creator' });
+
+    const leg = panel.getByRole('combobox', { name: 'Leg cut', exact: true });
+    await expect(leg).toHaveValue('slim');
+    await leg.selectOption('cargo');
+    await page.getByRole('dialog', { name: 'Start a character' })
+      .getByRole('button', { name: 'Replace', exact: true }).click();
+    await page.waitForFunction(
+      () => (window as unknown as { partwright: PW }).partwright.getCode().includes("leg: 'cargo'"),
+      { timeout: 60_000 },
+    );
+
+    // A visibility rule re-renders the panel on its own: shorts reveal the hem.
+    await expect(panel.getByText('Shorts hem', { exact: true })).toHaveCount(0);
+    await panel.getByRole('combobox', { name: 'Pants length', exact: true }).selectOption('shorts');
+    await expect(panel.getByText('Shorts hem', { exact: true })).toBeVisible();
+  });
 });

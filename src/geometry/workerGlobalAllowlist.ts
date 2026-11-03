@@ -158,6 +158,11 @@ export const GLOBAL_ALLOWLIST: Readonly<Record<string, AllowlistGroup>> = Object
     why: 'console.* — diagnostics only; output goes to DevTools, never off the device.',
     names: ['console'],
   },
+  ses: {
+    why: 'Hardened JavaScript globals the SES shim installs before lockdown (#1127; sesSandbox.ts captures what it needs privately). Capability-free: `harden` only freezes, `lockdown`/`repairIntrinsics`/`hardenIntrinsics` are one-shot (they throw once the realm is locked), `Compartment` builds confined evaluators holding only what they are endowed with, `assert` is pure. The registry symbol is SES\'s causal-console factory hook for its own test harness (builds a console wrapper from a logger function). Absent with the SES kill switch on. Model code never sees the Worker global.',
+    names: ['lockdown', 'repairIntrinsics', 'hardenIntrinsics', 'harden', 'Compartment', 'assert'],
+    symbols: ['@@for(MAKE_CAUSAL_CONSOLE_FROM_LOGGER_KEY_FOR_SES_AVA)'],
+  },
 });
 
 /** Allowlist for `navigator` (WorkerNavigator) and its prototype chain. */

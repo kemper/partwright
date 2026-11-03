@@ -260,3 +260,17 @@ export function geminiThinkingConfig(level: ThinkingLevel, budgets: GeminiThinki
   const budget = level === 'low' ? budgets.low : level === 'medium' ? budgets.medium : budgets.high;
   return { includeThoughts: true, thinkingBudget: budget };
 }
+
+/** One Thinking level below `level`, for retrying a step that ran out of
+ *  output room while thinking. `default` (the model's own default — Medium
+ *  on Opus 5.5) steps to Low; null when there's nothing lower worth offering. */
+export function lowerThinkingLevel(level: ThinkingLevel): ThinkingLevel | null {
+  switch (level) {
+    case 'max': return 'xhigh';
+    case 'xhigh': return 'high';
+    case 'high': return 'medium';
+    case 'medium': return 'low';
+    case 'default': return 'low';
+    default: return null;
+  }
+}

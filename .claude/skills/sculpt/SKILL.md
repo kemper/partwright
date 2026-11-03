@@ -41,6 +41,13 @@ ever brings back text + file paths.
    `@front` / `@back`) plus the `--match-*` flags it needs (`--match-pixel-aspect`
    for stretched video frames, `--match-exclude base`, a `--match-mask` for a
    busy backdrop).
+   **Before building anything that will ship** (catalog, `examples/`, presets,
+   ideas), check the subject against CLAUDE.md § Copyright, licenses and
+   trademarks. An original design in a genre is fine. A specific copyrighted
+   character, a branded product or a real person's likeness (unless it's the
+   owner) is not, even under a generic name: ask the owner first. Reference
+   photos stay local; if one must be committed, record its source and license
+   when you download it.
 3. **Pick output paths** under `.plans/` (e.g. `.plans/<slug>.js` +
    `.plans/<slug>.png`; `.scad` for the scad engine), plus
    `.plans/<slug>.checklist.md` for the feature checklist.

@@ -36,6 +36,7 @@ import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt } from '../../ai/s
 import { buildToolList } from '../../ai/tools';
 import type { CustomPromptTier } from '../../ai/types';
 import { getConfig } from '../../config/appConfig';
+import { loadToolsDefinition, selectOfferedTools } from '../../ai/toolGroups';
 import {
   addKeyCommand,
   classifyBridgeError,
@@ -662,21 +663,27 @@ const TIER_OPTIONS: { id: CustomPromptTier; label: string }[] = [
   { id: 'slim', label: 'Slim' },
 ];
 
-const TIER_HINT: Record<ResolvedCustomTier, string> = {
-  full: 'all of ai.md + every tool — for big hosted models',
-  medium: 'compact prompt + everyday tools, docs read on demand',
-  slim: 'smallest prompt + core tools, docs read on demand',
-};
+function tierHint(tier: ResolvedCustomTier): string {
+  if (tier === 'medium') return 'compact prompt + everyday tools, docs read on demand';
+  if (tier === 'slim') return 'smallest prompt + core tools, docs read on demand';
+  return getConfig().ai.onDemandToolGroups
+    ? 'all of ai.md + the core tools, more loaded on demand — for big hosted models'
+    : 'all of ai.md + every tool — for big hosted models';
+}
 
 /** Rough tokens each tier sends before the conversation starts (Full's
- *  ai.md isn't loaded here, so its figure covers the tool schemas only). */
+ *  ai.md isn't loaded here, so its figure covers the tool schemas only).
+ *  Full sends the core tools + loadTools when on-demand tool groups are on
+ *  (chatLoop's toolsForRequest), every gated tool otherwise. */
 function tierTokenEstimates(): Record<ResolvedCustomTier, number> {
   const tools = buildToolList(loadSettings().toggles);
-  const cpt = getConfig().ai.charsPerToken;
+  const cfg = getConfig().ai;
+  const cpt = cfg.charsPerToken;
   const est = (tier: ResolvedCustomTier, promptChars: number) =>
     Math.round((promptChars + JSON.stringify(toolsForCustomTier(tools, tier)).length) / cpt);
+  const fullTools = cfg.onDemandToolGroups ? selectOfferedTools(tools, new Set(), loadToolsDefinition()) : tools;
   return {
-    full: est('full', 0),
+    full: Math.round(JSON.stringify(fullTools).length / cpt),
     medium: est('medium', buildMediumLocalSystemPrompt().length + REDUCED_TOOLS_NOTE.length),
     slim: est('slim', buildLocalSystemPrompt().length + REDUCED_TOOLS_NOTE.length),
   };
@@ -738,7 +745,7 @@ function ContextField(props: { d: SavedEndpoint; commit: (patch?: Partial<SavedE
         ))}
       </div>
       <span class="text-[10px] text-zinc-500 leading-snug">
-        Sent with every request: <strong class="text-zinc-300">{resolved}</strong> — {TIER_HINT[resolved]}{resolved === 'full' ? `, ${kTokens(estimates.full)} tokens of tool schemas plus the full ai.md prompt.` : ` (${kTokens(estimates[resolved])} tokens).`}
+        Sent with every request: <strong class="text-zinc-300">{resolved}</strong> — {tierHint(resolved)}{resolved === 'full' ? `, ${kTokens(estimates.full)} tokens of tool schemas plus the full ai.md prompt.` : ` (${kTokens(estimates[resolved])} tokens).`}
         {d.context.promptTier === 'auto' && ` Auto uses Slim below ${getConfig().ai.customSlimMaxContext.toLocaleString()} tokens, Medium below ${getConfig().ai.customMediumMaxContext.toLocaleString()}, and Full above that or when the window is unknown.`}
       </span>
       {overflow && (

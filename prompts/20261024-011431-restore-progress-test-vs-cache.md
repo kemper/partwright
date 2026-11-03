@@ -6,7 +6,7 @@ tools: [playwright]
 
 ## Human
 
-Merge the seven Tsubasa follow-up PRs in order.
+Merge the seven figurine follow-up PRs in order.
 
 ## Assistant
 

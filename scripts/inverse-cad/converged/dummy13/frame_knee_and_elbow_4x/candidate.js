@@ -1,6 +1,6 @@
 // frame_knee_and_elbow_4x — structured rebuild
 // base: traced z=1.4 outline (channels, ears, V-notch), eye lobe as exact
-// circle r=1.5 @ (3,3.6), socket disks refilled (pac-man: disk r=2.4 minus
+// circle r=1.5 @ (3,3.6), socket disks refilled (wedge-cut: disk r=2.4 minus
 // 110° mouth wedge), extruded 0→2.8; minus revolved hourglass cavity per
 // socket: counterbore r=2.4 depth 0.4 both faces, 45° cones, waist r=1.5407.
 // All numbers probed (rays from socket centers; section traces).

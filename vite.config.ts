@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { buildSitemapXml } from './src/seo/sitemap';
 import { prerenderContentPages } from './src/content/build/prerenderPlugin';
 import { rebaseHtmlPaths, basePrefix } from './src/content/rebasePaths';
+import { isSesGlueModule, rewriteOverrideMistakes } from './src/geometry/sesGlueFix';
 
 // Set charset=utf-8 on .md and .txt files served from public/ during dev.
 // Prevents em-dashes and other UTF-8 chars from rendering as mojibake.
@@ -189,6 +190,26 @@ function injectAnalyticsBeacon(): Plugin {
   };
 }
 
+// SES (#1127): the engine Worker freezes every shared intrinsic with
+// `lockdown()` BEFORE the engines initialise, and Emscripten/embind glue
+// assigns `X.prototype.constructor` / `.toString` / `this.message` on objects
+// that inherit those (now frozen) properties — the "override mistake", which
+// throws. Rewrite just those assignments in the manifold-3d and
+// replicad-opencascadejs glue into equivalent own-property defines (see
+// src/geometry/sesGlueFix.ts; the unit test pins the rewrite counts).
+// Registered for the main bundle and the Worker bundle.
+function sesOverrideMistakeFix(): Plugin {
+  return {
+    name: 'partwright-ses-override-mistake-fix',
+    enforce: 'pre',
+    transform(code, id) {
+      if (!isSesGlueModule(id)) return null;
+      const out = rewriteOverrideMistakes(code);
+      return out.count > 0 ? { code: out.code, map: null } : null;
+    },
+  };
+}
+
 // Emit `editor.html` as a copy of the SPA shell `index.html` so the editor's
 // no-file route is served as a REAL static file at its clean URL (Cloudflare
 // maps `/editor` → `/editor.html`, exactly like `/catalog` → `/catalog.html`).
@@ -246,8 +267,7 @@ function originsOf(raw: string | undefined): string[] {
 }
 
 /** The sandbox document's CSP. `frame-ancestors` limits who may embed it:
- *  'self' (opaque mode — same URL origin as the app) plus the configured app
- *  origin(s) for 'origin' mode (VITE_APP_ORIGIN). */
+ *  the configured app origin(s) (VITE_APP_ORIGIN), plus 'self'. */
 function sandboxCsp(appOrigins: string[], dev: boolean): string {
   // Dev keeps Vite's HMR websocket reachable from the frame.
   const base = dev ? SANDBOX_CSP_BASE.replace("connect-src 'self'", "connect-src 'self' ws://localhost:*") : SANDBOX_CSP_BASE;
@@ -270,14 +290,9 @@ function isSandboxDocPath(p: string | undefined): boolean {
   return /^(?:\/v\d+)?\/sandbox(?:\.html)?$/.test(p.split(/[?#]/)[0]);
 }
 
-// In 'opaque' mode the frame has an opaque origin, so every module/wasm/font it
-// (or its Worker) loads from this server is a cross-origin request from
-// `Origin: null` and needs `Access-Control-Allow-Origin`. Production sets it
-// statically for /assets + /openscad-libs (public/_headers); `vite preview`
-// mirrors that here. The DEV server only does it when
-// PARTWRIGHT_SANDBOX_DEV_CORS=1 (the Playwright config sets it): Vite restricts
-// dev-server CORS on purpose — a page on any site can send `Origin: null` from
-// a sandboxed iframe — so opaque mode against `npm run dev` is opt-in.
+// Serves sandbox.html with its own CSP + CORP (dev and `vite preview`). The
+// frame and its Worker load everything from their own origin (the sandbox
+// host), so no CORS is needed.
 function engineSandboxHeaders(): Plugin {
   // VITE_* from the environment or .env files (resolved config.env).
   let appOrigins: string[] = [];
@@ -294,10 +309,6 @@ function engineSandboxHeaders(): Plugin {
       };
       res.setHeader('Content-Security-Policy', csp);
       res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-    }
-    const corsAllowed = kind === 'preview' || process.env.PARTWRIGHT_SANDBOX_DEV_CORS === '1';
-    if (corsAllowed && req.headers.origin === 'null') {
-      res.setHeader('Access-Control-Allow-Origin', '*');
     }
     next();
   };
@@ -376,7 +387,7 @@ return {
   define: {
     __BUILD_INFO__: JSON.stringify(resolveBuildInfo()),
   },
-  plugins: [tailwindcss(), prerenderContentPages(), absoluteUrls(), basePaths(), markdownCharset(), engineSandboxHeaders(), dynamicSitemap(), baseAwareManifest(), injectAnalyticsBeacon(), editorHtmlAlias()],
+  plugins: [sesOverrideMistakeFix(), tailwindcss(), prerenderContentPages(), absoluteUrls(), basePaths(), markdownCharset(), engineSandboxHeaders(), dynamicSitemap(), baseAwareManifest(), injectAnalyticsBeacon(), editorHtmlAlias()],
   esbuild: {
     // .tsx files compile JSX via preact/jsx-runtime — keeps the bundle on
     // Preact without pulling in React. Vanilla .ts files in the rest of
@@ -388,9 +399,16 @@ return {
     // ES module Workers support code-splitting and are required when
     // Worker files import other modules (agentWorker, engineWorker).
     format: 'es',
+    plugins: () => [sesOverrideMistakeFix()],
   },
   optimizeDeps: {
-    exclude: ['manifold-3d']
+    exclude: ['manifold-3d'],
+    // The engine Worker imports `ses` (src/geometry/sesLoader.js) on its first
+    // init — after the dev server's start-up dependency scan, which doesn't
+    // follow `new Worker(new URL(…))`. Pre-bundle it up front so its runtime
+    // discovery doesn't trigger a full page reload in the middle of a session
+    // (or an e2e test).
+    include: ['ses'],
   },
   // A second dev server of the same checkout (the engine-sandbox origin in
   // playwright.config.ts) points this elsewhere so the two don't race on

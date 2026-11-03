@@ -43,7 +43,9 @@ test.describe('Objects list — editing parts', () => {
     await openMug(page);
     const rail = page.locator('#parts-rail');
     await rail.locator('[data-object-part="part:handle"]').click();
-    const drawer = page.locator('#object-part-drawer');
+    // Selecting a part opens the Parts panel (its ⋯ re-opens it).
+    await rail.locator('[data-open-parts-panel="part:handle"]').click();
+    const drawer = page.locator('#parts-panel');
     await expect(drawer).toBeVisible();
     await expect(drawer.locator('[data-part-info]')).toContainText('area');
     expect(await pw(page, 'getSelectedObjectPart')).toMatchObject({ part: 'handle' });
@@ -62,20 +64,20 @@ test.describe('Objects list — editing parts', () => {
 
     // Isolate ghosts the rest of the object.
     await drawer.locator('[data-part-action="isolate"]').click();
-    await expect(page.locator('#object-part-drawer [data-part-action="isolate"]')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('#parts-panel [data-part-action="isolate"]')).toHaveAttribute('aria-pressed', 'true');
     await page.mouse.move(1200, 1000);
     await page.waitForTimeout(400);
     await page.screenshot({ path: 'test-results/part-edit-isolate.png' });
     expect(await pw(page, 'getSelectedObjectPart')).toMatchObject({ isolated: true });
 
     // Go to code selects the label literal in the editor.
-    await page.locator('#object-part-drawer [data-part-action="go-to-code"]').click();
+    await page.locator('#parts-panel [data-part-action="go-to-code"]').click();
     const sel = await page.evaluate(() => window.getSelection()?.toString() ?? '');
     expect(sel).toContain('handle');
 
     // The selection rides along as AI context.
     await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.isolateObjectPart(null));
-    await page.locator('#object-part-drawer [data-part-action="edit-with-ai"]').click();
+    await page.locator('#parts-panel [data-part-action="edit-with-ai"]').click();
     await expect(page.locator('#ai-part-context')).toContainText('part "handle"');
   });
 
@@ -102,7 +104,8 @@ test.describe('Objects list — editing parts', () => {
     await openMug(page);
     await pw(page, 'setObjectPartColor', 'handle', '#22c55e');
     await page.locator('#parts-rail [data-object-part="part:handle"]').click();
-    await page.locator('#object-part-drawer [data-part-action="rename"]').click();
+    await page.locator('#parts-rail [data-open-parts-panel="part:handle"]').click();
+    await page.locator('#parts-panel [data-part-action="rename"]').click();
     const input = page.locator('input[type="text"]').last();
     await input.fill('grip');
     await page.getByRole('button', { name: 'Rename', exact: true }).click();
@@ -115,7 +118,7 @@ test.describe('Objects list — editing parts', () => {
     expect(parts.unmatchedPaint).toEqual([]);
 
     // Bake writes the colour into the code and drops the overlay.
-    await page.locator('#object-part-drawer [data-part-action="bake-color"]').click();
+    await page.locator('#parts-panel [data-part-action="bake-color"]').click();
     await expect.poll(async () => (await pw<string>(page, 'getCode')).includes("api.paint.label('grip', '#22c55e')")).toBe(true);
     code = await pw<string>(page, 'getCode');
     const regions = await pw<{ name: string }[]>(page, 'listRegions');
@@ -130,7 +133,8 @@ test.describe('Objects list — editing parts', () => {
     await page.mouse.move(1200, 1000);
     await page.waitForTimeout(300);
     await page.locator('#parts-rail').screenshot({ path: 'test-results/part-edit-piece.png' });
-    await page.locator('#object-part-drawer [data-part-action="extract-piece"]').click();
+    await page.locator('#parts-rail [data-open-parts-panel="piece:1"]').click();
+    await page.locator('#parts-panel [data-part-action="extract-piece"]').click();
     await page.getByRole('button', { name: 'Extract', exact: true }).click();
     await expect(page.locator('#parts-rail [data-part-id]')).toHaveCount(2, { timeout: 15_000 });
     const objects = await pw<{ name: string; isCurrent: boolean }[]>(page, 'listObjects');
@@ -175,21 +179,22 @@ return api.label(block(0), 'a', { color: '#ef4444' })
     const rail = page.locator('#parts-rail');
     await rail.locator('[data-object-part="part:a"]').click();
     await rail.locator('[data-object-part="part:b"]').click({ modifiers: ['Shift'] });
-    const drawer = page.locator('#object-part-drawer');
-    await expect(drawer.locator('[data-selection-count]')).toHaveText('2 parts selected');
+    await rail.locator('[data-open-parts-panel="part:b"]').click();
+    const drawer = page.locator('#parts-panel');
+    await expect(drawer.locator('[data-parts-target]')).toHaveText('2 parts selected');
     expect(await pw(page, 'getSelectedObjectPart')).toMatchObject({ keys: ['part:a', 'part:b'] });
     // A multi-selection never scopes paint.
     expect(await page.evaluate(() => import('/src/color/paintScope.ts').then(m => m.getPaintScope()))).toBeNull();
     await page.mouse.move(1200, 1000);
     await page.waitForTimeout(300);
     await page.screenshot({ path: 'test-results/part-multiselect.png' });
-    // Shift-clicking a selected row takes it out again.
-    await rail.locator('[data-object-part="part:b"]').click({ modifiers: ['Shift'] });
+    // Ctrl/⌘-clicking a selected row takes it out again.
+    await rail.locator('[data-object-part="part:b"]').click({ modifiers: ['ControlOrMeta'] });
     expect(await pw(page, 'getSelectedObjectPart')).toMatchObject({ key: 'part:a' });
     // The touch path: "Select more", then a plain click adds.
     await drawer.locator('[data-part-action="select-more"]').click();
     await rail.locator('[data-object-part="part:b"]').click();
-    await expect(drawer.locator('[data-selection-count]')).toHaveText('2 parts selected');
+    await expect(drawer.locator('[data-parts-target]')).toHaveText('2 parts selected');
     // A colour fill on a moved part goes with it.
     await pw(page, 'setObjectPartColor', 'a', '#ffff00');
 

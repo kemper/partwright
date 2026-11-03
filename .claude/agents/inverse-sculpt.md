@@ -38,6 +38,10 @@ file for the candidate you are editing.
    converged, what didn't, which strategies you tried (also update
    `strategiesTried` in state.json), and what you'd try next.
 
+Your part's target STL is someone else's file unless its README says
+otherwise: don't copy it anywhere outside the part directory, and don't name
+the model after a character, brand or person in notes, labels or your report.
+
 ## Return format (text only — no images)
 
 - part name; final phase; gates summary (e.g. "6/6 MUST, 2/2 SHOULD")

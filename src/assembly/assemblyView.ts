@@ -15,6 +15,7 @@
 // (renderer layer); the grid math and param union are pure sibling modules.
 
 import { getState } from '../storage/sessionManager';
+import { effectiveVersionLanguage } from '../storage/languageFallback';
 import { getLatestVersion, updateVersionParamValues, type Version } from '../storage/db';
 import type { Language } from '../geometry/engines/types';
 import type { MeshData } from '../geometry/types';
@@ -186,7 +187,9 @@ async function buildPart(rec: PartRecord): Promise<void> {
 }
 
 function languageOf(v: Version): Language {
-  return (v.language as Language | undefined) ?? 'manifold-js';
+  // Same fallback chain as every other read path: legacy (pre-1.8) versions
+  // carry no language and inherit the session's.
+  return effectiveVersionLanguage(v as { language?: Language }, getState().session);
 }
 
 /** Place a freshly-built part into the grid and reflow the layout. */

@@ -17,8 +17,8 @@ import {
 import { showUninstallModal } from './uninstallModal';
 import {
   ENGINE_SANDBOX_MODES,
-  configuredSandboxOrigin,
   defaultEngineSandboxMode,
+  engineSandboxOriginAvailable,
   getEngineSandboxMode,
   isEngineSandboxMode,
   setEngineSandboxMode,
@@ -173,13 +173,12 @@ function Section({ title, children }: SectionProps) {
 
 const SANDBOX_MODE_LABELS: Record<EngineSandboxMode, string> = {
   off: 'Off — run model code in a plain Worker',
-  opaque: 'Opaque origin — sandboxed iframe on this site',
-  origin: 'Separate origin — iframe on the configured sandbox host (default when configured)',
+  origin: 'Separate origin — iframe on the sandbox host',
 };
 
 function SandboxModeField() {
   const mode = useSignal<EngineSandboxMode>(getEngineSandboxMode());
-  const origin = configuredSandboxOrigin();
+  const originAvailable = engineSandboxOriginAvailable();
   const status = getEngineSandboxStatus();
   const def = defaultEngineSandboxMode();
   return (
@@ -204,14 +203,15 @@ function SandboxModeField() {
         }}
       >
         {ENGINE_SANDBOX_MODES.map(m => (
-          <option value={m} disabled={m === 'origin' && !origin}>
-            {SANDBOX_MODE_LABELS[m]}{m === 'origin' && !origin ? ' (not configured in this build)' : ''}
+          <option value={m} disabled={m === 'origin' && !originAvailable}>
+            {SANDBOX_MODE_LABELS[m]}{m === def ? ' (default)' : ''}{m === 'origin' && !originAvailable ? ' (not configured for this site)' : ''}
           </option>
         ))}
       </select>
       <p class="text-[10px] text-zinc-500 leading-snug">
-        Runs model code (yours, the AI's, or an imported session's) in a hidden iframe on a different origin, so it
-        can't read this site's saved sessions or AI keys, and its network access is blocked. Reload to apply.
+        Runs model code (yours, the AI's, or an imported session's) in a hidden iframe on a separate origin, so it
+        can't read this site's saved sessions or AI keys, and its network access is blocked. On by default where this
+        site has a sandbox host; "Off" is the kill switch. Reload to apply.
         This tab: <span class="text-zinc-300" data-engine-sandbox-status="">{status.active}
           {status.state === 'unavailable' ? ` — unavailable (${status.unavailableReason})` : ''}
           {status.state === 'bypassed' ? ' — bypassed for this tab' : ''}</span>
@@ -352,6 +352,65 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ai.cacheConversationHistory}
           onChange={v => set('ai', 'cacheConversationHistory', v)}
         />
+        <ToggleField cfgKey="ai.extendedCacheForDeepThinking"
+          label="1-hour cache for long steps (Anthropic)"
+          hint="At High, XHigh or Max thinking a single step can think for more than 5 minutes — and a delegated worker can run longer — which expires Anthropic's default cache, so the next step re-writes the whole conversation at 1.25× input. With this on, those turns (and any turn that can delegate) use the 1-hour cache: 2× input to write, but it survives long steps and pauses between messages."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.extendedCacheForDeepThinking}
+          value={c.ai.extendedCacheForDeepThinking}
+          onChange={v => set('ai', 'extendedCacheForDeepThinking', v)}
+        />
+        <ToggleField cfgKey="ai.delegateToWorker"
+          label="Delegate sub-tasks to a cheaper worker"
+          hint="Lets the agent hand a measurable sub-task (tune until a score or gate passes) to a cheaper model of the same provider — Sonnet under Opus, GPT-5 mini, Gemini Flash. The worker runs in its own fresh context and only its report comes back, so the main conversation stays small."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.delegateToWorker}
+          value={c.ai.delegateToWorker}
+          onChange={v => set('ai', 'delegateToWorker', v)}
+        />
+        <Field cfgKey="ai.workerMaxSteps"
+          label="Worker step limit"
+          unit="steps"
+          hint="Most agent steps one delegated worker may take."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.workerMaxSteps}
+          value={c.ai.workerMaxSteps}
+          min={1} max={60} integer
+          onChange={v => set('ai', 'workerMaxSteps', v)}
+        />
+        <Field cfgKey="ai.workerMaxSpendUsd"
+          label="Worker spend limit"
+          unit="USD"
+          hint="Most one delegated worker may spend. Also capped by what's left of the session's $ budget."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.workerMaxSpendUsd}
+          value={c.ai.workerMaxSpendUsd}
+          min={0.05} max={20} step={0.05}
+          onChange={v => set('ai', 'workerMaxSpendUsd', v)}
+        />
+        <Field cfgKey="ai.workerReportMaxChars"
+          label="Worker report length"
+          unit="chars"
+          hint="Longest worker report passed back to the main agent."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.workerReportMaxChars}
+          value={c.ai.workerReportMaxChars}
+          min={500} max={20000} integer
+          onChange={v => set('ai', 'workerReportMaxChars', v)}
+        />
+        <Field cfgKey="ai.workerStallTimeoutMs"
+          label="Worker stall timeout"
+          unit="ms"
+          hint="A worker request silent this long is stopped and its partial report returned. Time running its tools doesn't count."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.workerStallTimeoutMs}
+          value={c.ai.workerStallTimeoutMs}
+          min={10000} max={900000} integer
+          onChange={v => set('ai', 'workerStallTimeoutMs', v)}
+        />
+        <Field cfgKey="ai.workerMinBudgetUsd"
+          label="Worker minimum budget"
+          unit="USD"
+          hint="With less than this left in the session's $ budget, the agent can't start a worker."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.workerMinBudgetUsd}
+          value={c.ai.workerMinBudgetUsd}
+          min={0} max={5} step={0.01}
+          onChange={v => set('ai', 'workerMinBudgetUsd', v)}
+        />
         <Field cfgKey="ai.cachedImageLimit"
           label="Render images before a trim (cached providers)"
           unit="images"
@@ -398,6 +457,13 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           defaultValue={APP_CONFIG_DEFAULTS.ai.pruneStaleToolPayloads}
           value={c.ai.pruneStaleToolPayloads}
           onChange={v => set('ai', 'pruneStaleToolPayloads', v)}
+        />
+        <ToggleField cfgKey="ai.onDemandToolGroups"
+          label="Load AI tools on demand"
+          hint="Start the agent with a core tool set (about a quarter of the full list) and let it load the rest in groups such as paint or part detection when the task needs them. Off sends every tool from the first message, which costs about 50K more tokens of context."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.onDemandToolGroups}
+          value={c.ai.onDemandToolGroups}
+          onChange={v => set('ai', 'onDemandToolGroups', v)}
         />
         <Field cfgKey="ai.keepRecentCodeBodies"
           label="Recent code bodies kept in context"
@@ -527,6 +593,60 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ai.reviewNoteMaxChars}
           min={200} max={8000} integer
           onChange={v => set('ai', 'reviewNoteMaxChars', v)}
+        />
+        <Field cfgKey="ai.planAssessMaxRounds"
+          label="Plan: assessment rounds"
+          hint='Most tool rounds an "Assess first" plan may spend inspecting before it reports.'
+          tooltip="In plan mode, the Assess-first style looks at your attachments and the current model with read-only tools before planning. This caps how many tool rounds that look may take, so the assessment itself stays cheap."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.planAssessMaxRounds}
+          value={c.ai.planAssessMaxRounds}
+          min={2} max={40} integer
+          onChange={v => set('ai', 'planAssessMaxRounds', v)}
+        />
+        <Field cfgKey="ai.planCheckpointExtensionFraction"
+          label="Plan: rounds per Keep going (fraction)"
+          hint="At a plan checkpoint, Keep going grants this fraction of the plan's estimated maximum rounds."
+          tooltip="Building an approved plan stops at the plan's estimated maximum rounds (a checkpoint). Keep going grants another batch: this fraction of that maximum, but never fewer than the minimum below."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.planCheckpointExtensionFraction}
+          value={c.ai.planCheckpointExtensionFraction}
+          min={0.1} max={2}
+          onChange={v => set('ai', 'planCheckpointExtensionFraction', v)}
+        />
+        <Field cfgKey="ai.planCheckpointMinExtension"
+          label="Plan: minimum rounds per Keep going"
+          hint="The fewest rounds a Keep going at a plan checkpoint grants."
+          tooltip="Keeps a small plan's checkpoint from granting only one or two rounds at a time."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.planCheckpointMinExtension}
+          value={c.ai.planCheckpointMinExtension}
+          min={1} max={64} integer
+          onChange={v => set('ai', 'planCheckpointMinExtension', v)}
+        />
+        <Field cfgKey="ai.planCostSampleRounds"
+          label="Plan: rounds sampled for cost"
+          hint="Recent priced rounds of the chat averaged to turn a plan's round estimate into dollars."
+          tooltip="The plan card shows an estimated cost: the plan's round range times this chat's average cost per round, over this many of its most recent rounds."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.planCostSampleRounds}
+          value={c.ai.planCostSampleRounds}
+          min={1} max={200} integer
+          onChange={v => set('ai', 'planCostSampleRounds', v)}
+        />
+        <Field cfgKey="ai.planCalibrationMaxEntries"
+          label="Plan: builds kept for calibration"
+          hint="Past plan-mode builds (estimate vs actual) remembered in this browser."
+          tooltip="Each build of an approved plan records how many rounds and dollars it planned and actually used. The planner sees a summary so its next estimates can correct for being too optimistic."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.planCalibrationMaxEntries}
+          value={c.ai.planCalibrationMaxEntries}
+          min={1} max={500} integer
+          onChange={v => set('ai', 'planCalibrationMaxEntries', v)}
+        />
+        <Field cfgKey="ai.planCalibrationMinBuilds"
+          label="Plan: builds before calibration"
+          hint="Past builds needed before the calibration summary is shown and sent to the planner."
+          tooltip="A summary of one or two builds is noise; this waits until there are enough to say something."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.planCalibrationMinBuilds}
+          value={c.ai.planCalibrationMinBuilds}
+          min={1} max={50} integer
+          onChange={v => set('ai', 'planCalibrationMinBuilds', v)}
         />
       </Section>
 
@@ -795,6 +915,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0} max={50_000_000} step={50_000} integer
           onChange={v => set('renderer', 'creaseEdgeMaxTriangles', v)}
         />
+        <Field cfgKey="renderer.creaseMinStep"
+          label="Ignore steps under"
+          unit="× model size"
+          hint="Crease edges skip tiny ledges this shallow, relative to the model's size."
+          tooltip="Two nearly parallel faces offset by less than this fraction of the model's bounding-box diagonal read as one surface, so the wall between them isn't outlined. This hides the hairline seam a scoped api.round / api.smoothWeld leaves where its remeshed strip meets the untouched model. Real steps and engraved lettering are deeper and still show. 0 = outline every crease."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.creaseMinStep}
+          value={c.renderer.creaseMinStep}
+          min={0} max={0.05} step={0.001}
+          onChange={v => set('renderer', 'creaseMinStep', v)}
+        />
         <Field cfgKey="renderer.lazyManifoldMinTriangles"
           label="Defer solid rebuild from"
           unit="triangles"
@@ -842,6 +972,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0} max={1_000_000} step={1000} integer
           onChange={v => set('renderer', 'modelLogMaxChars', v)}
         />
+        <Field cfgKey="renderer.thicknessMapMaxTriangles"
+          label="Thickness map limit"
+          unit="triangles"
+          hint="Biggest mesh thicknessMap measures; simplify bigger ones first."
+          tooltip="thicknessMap casts one ray through the solid for every triangle on the main thread, about 1.5 s per 250k triangles. Above this limit it asks for a simplified model (simplifyModel) instead of freezing the tab."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.thicknessMapMaxTriangles}
+          value={c.renderer.thicknessMapMaxTriangles}
+          min={1_000} max={50_000_000} step={100_000} integer
+          onChange={v => set('renderer', 'thicknessMapMaxTriangles', v)}
+        />
         <Field cfgKey="renderer.gridRoomFactor"
           label="Grid room factor"
           unit="× model"
@@ -876,6 +1016,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.renderer.exportPoolSize}
           min={1} max={16} integer
           onChange={v => set('renderer', 'exportPoolSize', v)}
+        />
+        <Field cfgKey="renderer.exportMaxSplitItems"
+          label="Export split limit"
+          hint="Most pieces or parts one object can split into when exporting."
+          tooltip="The export picker can split one object into its separate pieces (connected solids) or its labelled parts, so each lands as its own object in the file. An object with more pieces or parts than this offers only Whole: thousands of loose shells aren't worth spreading over build plates."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.exportMaxSplitItems}
+          value={c.renderer.exportMaxSplitItems}
+          min={2} max={5000} integer
+          onChange={v => set('renderer', 'exportMaxSplitItems', v)}
         />
         <Field cfgKey="renderer.assemblyGridGutter"
           label="Assembly grid gutter"
@@ -1032,6 +1181,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0} max={20_000_000} integer
           onChange={v => set('renderer', 'surfaceTexturePersistMaxTriangles', v)}
         />
+        <Field cfgKey="renderer.versionMeshMaxTriangles"
+          label="Keep the newest saved mesh up to"
+          unit="tris"
+          hint="Each object's newest version keeps the mesh it showed, so the saved model can be restored if an update changes how its code builds."
+          tooltip="Opening a saved version re-runs its code, and an update to the app can make the same code build a slightly different model. Every version stores a small fingerprint so the app notices when that happens; each object's NEWEST version also keeps the mesh it displayed (colours included), so you can restore it. Older versions drop theirs when you save a newer one, so this costs one mesh per object. Models that are already stored meshes (imports, baked textures) never keep a second copy. About 18 bytes per triangle; 0 never keeps a mesh."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.versionMeshMaxTriangles}
+          value={c.renderer.versionMeshMaxTriangles}
+          min={0} max={20_000_000} integer
+          onChange={v => set('renderer', 'versionMeshMaxTriangles', v)}
+        />
         <Field cfgKey="renderer.storedArrayBlobMinKB"
           label="Store big arrays as files from"
           unit="KB"
@@ -1077,6 +1236,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.renderer.probePixelsMaxPixels}
           min={1} max={100_000} integer
           onChange={v => set('renderer', 'probePixelsMaxPixels', v)}
+        />
+        <Field cfgKey="renderer.viewFocusPadding"
+          label="Zoomed-render margin"
+          unit="×"
+          tooltip="When renderView/renderViews zoom onto a part or box (focus), this fraction of the part's largest side is added around it as context. A call's own padding option overrides it."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.viewFocusPadding}
+          value={c.renderer.viewFocusPadding}
+          min={0} max={5}
+          onChange={v => set('renderer', 'viewFocusPadding', v)}
         />
         <Field cfgKey="renderer.sdfPreviewScale"
           label="SDF fast-preview coarsening"
@@ -1470,6 +1638,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={10} max={100} integer
           onChange={v => set('geometry', 'engineHeapHighPct', v)}
         />
+        <Field
+          label="Undeclared-name check limit"
+          unit="characters"
+          hint="Longer model code skips the 'X is not defined' check."
+          tooltip="Model code runs in a hardened sandbox where an undeclared name would read as undefined; before each run the code is scanned so a typo throws 'X is not defined' like normal JavaScript. The scan costs about half a millisecond per KB of code on every run, so code longer than this skips it (undeclared names then read as undefined). Applies to geometry engines started after the change."
+          defaultValue={APP_CONFIG_DEFAULTS.geometry.sesUndeclaredCheckMaxChars}
+          value={c.geometry.sesUndeclaredCheckMaxChars}
+          min={0} max={10_000_000} integer
+          onChange={v => set('geometry', 'sesUndeclaredCheckMaxChars', v)}
+        />
       </Section>
 
       <Section title="Part detection">
@@ -1783,6 +1961,86 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={5_000} max={600_000} step={5_000} integer
           onChange={v => set('ui', 'paintAdjacencyWorkerTimeoutMs', v)}
         />
+        <Field cfgKey="ui.paintBrushSliverPx"
+          label="Brush sliver catch"
+          unit="px"
+          hint="Paint thin triangles the brush can't see (0 = off)."
+          tooltip="With smooth edges off, the brush paints the triangles visible under it on screen. Very thin triangles along a seam can be narrower than a pixel and get skipped, leaving a fine line of the old colour. Triangles thinner than this many pixels next to the painted area are painted too."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.paintBrushSliverPx}
+          value={c.ui.paintBrushSliverPx}
+          min={0} max={10} step={0.5}
+          onChange={v => set('ui', 'paintBrushSliverPx', v)}
+        />
+        <Field cfgKey="ui.partBoxSelectSamples"
+          label="Box-select samples per part"
+          unit="tris"
+          hint="How many of a part's triangles Shift-drag box select checks."
+          tooltip="Shift-dragging a box in the viewport selects every part with geometry inside it. Each part is tested by projecting up to this many of its triangle centres onto the screen; higher catches thin slivers of very big parts at the cost of a slower box select."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.partBoxSelectSamples}
+          value={c.ui.partBoxSelectSamples}
+          min={50} max={1_000_000} integer
+          onChange={v => set('ui', 'partBoxSelectSamples', v)}
+        />
+        <Field cfgKey="ui.partArrangeGapRatio"
+          label="Part arrange gap"
+          unit="× size"
+          hint="Gap between parts when the Parts panel arranges or copies them."
+          tooltip="Grid, pack, bed packing and copies leave this much space between parts, as a fraction of the parts' average footprint (0.2 = a fifth of a part's width). The Parts panel's gap box overrides it for one action."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.partArrangeGapRatio}
+          value={c.ui.partArrangeGapRatio}
+          min={0} max={5} step={0.05}
+          onChange={v => set('ui', 'partArrangeGapRatio', v)}
+        />
+        <Field cfgKey="ui.partSnapStep"
+          label="Part snap step"
+          unit="units"
+          hint="Grid step for the Parts panel's “Snap to grid”."
+          tooltip="“Snap to grid” moves each part's lower corner onto the nearest multiple of this step on X and Y."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.partSnapStep}
+          value={c.ui.partSnapStep}
+          min={0.001} max={10_000} step={0.5}
+          onChange={v => set('ui', 'partSnapStep', v)}
+        />
+        <Field cfgKey="ui.partNudgeStep"
+          label="Part nudge step"
+          unit="units"
+          hint="How far an arrow key moves the selected parts."
+          tooltip="With the Parts panel open, the arrow keys move the selected parts by this much on X and Y (PageUp/PageDown on Z). Hold Shift for ten times the step."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.partNudgeStep}
+          value={c.ui.partNudgeStep}
+          min={0.001} max={10_000} step={0.5}
+          onChange={v => set('ui', 'partNudgeStep', v)}
+        />
+        <Field cfgKey="ui.partNudgeSaveDelayMs"
+          label="Part nudge save delay"
+          unit="ms"
+          hint="How long after the last arrow-key nudge it is saved as a version."
+          tooltip="Holding an arrow key moves the selected parts step by step, but the whole move is saved as one version (and one Undo step) once the keys have been idle for this long."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.partNudgeSaveDelayMs}
+          value={c.ui.partNudgeSaveDelayMs}
+          min={100} max={30_000} step={100} integer
+          onChange={v => set('ui', 'partNudgeSaveDelayMs', v)}
+        />
+        <Field cfgKey="ui.partEditUndoDepth"
+          label="Part edit undo depth"
+          unit="edits"
+          hint="How many part edits the Parts panel can undo."
+          tooltip="Each arrange, copy or group action remembers the code before it so Undo can put it back. Past this many, the oldest are forgotten."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.partEditUndoDepth}
+          value={c.ui.partEditUndoDepth}
+          min={1} max={500} integer
+          onChange={v => set('ui', 'partEditUndoDepth', v)}
+        />
+        <Field cfgKey="ui.partMaxCopies"
+          label="Max part copies"
+          unit="copies"
+          hint="Most copies one duplicate or array action makes."
+          tooltip="Duplicate, array and grid array refuse to make more copies than this in one step, so a typo can't freeze the app."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.partMaxCopies}
+          value={c.ui.partMaxCopies}
+          min={1} max={10_000} integer
+          onChange={v => set('ui', 'partMaxCopies', v)}
+        />
         <Field cfgKey="ui.maxPendingAppliedNotes"
           label="AI applied-notes kept"
           unit="notes"
@@ -1833,6 +2091,25 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={2000} max={60_000} integer
           onChange={v => set('ui', 'undoToastDurationMs', v)}
         />
+        <Field cfgKey="ui.splitPreviewExplode"
+          label="Split preview spread"
+          hint="How far a Split into pieces preview pulls the pieces apart (0 = in place)."
+          tooltip="Split into printable pieces shows a preview first, with each piece moved away from the model's centre by this factor so every seam is visible. A saved split keeps the pieces in place."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.splitPreviewExplode}
+          value={c.ui.splitPreviewExplode}
+          min={0} max={3}
+          onChange={v => set('ui', 'splitPreviewExplode', v)}
+        />
+        <Field cfgKey="ui.modelConsoleAutoHideMs"
+          label="Console pill auto-hide"
+          unit="ms"
+          hint="How long the console pill stays in the viewport corner after a run prints. 0 = until dismissed."
+          tooltip="When model code prints with console.log or console.warn, a small Console pill with the line count appears in the viewport's lower-left corner. Click it to read the output. It fades after this long; output with errors stays until you dismiss it. Show console output in the command palette brings it back."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.modelConsoleAutoHideMs}
+          value={c.ui.modelConsoleAutoHideMs}
+          min={0} max={600_000} integer
+          onChange={v => set('ui', 'modelConsoleAutoHideMs', v)}
+        />
         <Field cfgKey="ui.deletedObjectRetentionDays"
           label="Keep deleted objects"
           unit="days"
@@ -1842,6 +2119,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.deletedObjectRetentionDays}
           min={1} max={365} integer
           onChange={v => set('ui', 'deletedObjectRetentionDays', v)}
+        />
+        <Field cfgKey="ui.annotationViewMaxWidth"
+          label="Annotation view width"
+          unit="px"
+          hint="Widest a saved annotation view's captured frame is stored at."
+          tooltip="Saving an annotation view captures the viewport as a JPEG. Wider viewports are scaled down to this width. Larger values give the AI a sharper picture but use more storage."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.annotationViewMaxWidth}
+          value={c.ui.annotationViewMaxWidth}
+          min={320} max={4096} integer
+          onChange={v => set('ui', 'annotationViewMaxWidth', v)}
         />
         <Field cfgKey="ui.paneSlideMs"
           label="Pane slide"

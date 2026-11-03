@@ -12,7 +12,7 @@ capabilities have gotten better. Some catalog models could be better: robot
 buddy looks terrible (bad painting); the SDF Organic Creature is loved but the
 eyes sit above the eye sockets; SDF Twisted Vessel is boring; SDF Helix Lamp
 looks bad; SDF Aetherjelly isn't great; the arcade cabinet is lame; the royal
-crown could be better; Pac-Man & ghost could be cooler; many things lack color
+crown could be better; the arcade diorama could be cooler; many things lack color
 (all languages now have paint-by-label, so basic colorization is possible).
 Review the catalog and list models to improve. Add ~5 more voxel
 creatures/characters. Use subagents (up to 10) to drive the modeling; have them

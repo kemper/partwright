@@ -25,6 +25,7 @@ sessions.)
 | Nudge a surface: bump, dent, pull, flat spot | `api.sculpt.grab/inflate/flatten(...)` |
 | Move / scale / rotate ONE part in place ("bigger head", "raise the arm") | `api.editPart(m, 'head', { scale: 1.3 })` (rigid, cut at the seam) or `api.sculpt.transform(m, { select, scale \| rotate \| translate, blend })` (soft warp) |
 | Swap / delete / rebuild one part | `api.editPart(m, 'hat', (part, info) => newHat)` — return `null` to delete |
+| Cut the model into separate printable pieces along its parts | `api.splitParts(m, { seams: { eye: 'plug' } })` — see [/ai/segmentation.md](/ai/segmentation.md#split-into-printable-pieces) |
 | Check an edit touched only what it should | `partwright.diffVersions(a, b, { geometry: true, render: true })`; the chat tool: `diffVersions { a, b, geometry: true, heatmap: true }` |
 | Confine any of the above to one part / region / facing | `select: { label } \| { region } \| { where }` — see below |
 
@@ -174,8 +175,9 @@ existing models render exactly as before.
 rounded when it lies within `radius` of a selected face; the rounding fades out
 over `blend` (default = radius). Everything the op doesn't change — other
 edges, flat faces, the tessellation, labels — stays the input's own geometry:
-only the rounded strip is remeshed and spliced in (the seam is about a tenth of
-a voxel). Labels carry through by default here (`keepLabels: false` to drop
+only the rounded strip is remeshed and spliced in (the seam is a fraction of
+a voxel, and `renderView`'s crease edges leave it out, so a clean edit isn't
+outlined). Labels carry through by default here (`keepLabels: false` to drop
 them in the strip).
 
 ```js

@@ -158,7 +158,7 @@ const r = partwright.query({
   decompose: true,             // component breakdown
   boundingBox: true,           // bounding box
 });
-// r.slices     = { z5: {area, contours, ...}, z10: {...}, ... }
+// r.slices     = { z5: {area, polygons, svg, boundingBox}, z10: {...}, ... }  (polygons.length = contour count)
 // r.components = [{ index, volume, centroid, boundingBox }, ...]
 // r.boundingBox = { min: [...], max: [...] }
 // r.stats      = current geometry-data stats
@@ -300,6 +300,11 @@ await partwright.simplifyModel({ mode: 'enhance', targetEdge: 1, amount: 2 }) //
 // -> {ok, mode, before, after, version:{index,label}, message, warnings?} or {error}
 ```
 
+**Simplify a big import FIRST, not last.** For a scan or sculpt in the hundreds of
+thousands of triangles, `simplifyModel({ targetTris: 200000 })` right after the import
+is the single biggest speed-up for everything that follows; see
+[/ai/file-io.md → Big imports](/ai/file-io.md#big-imports--decimate-once-first).
+
 Pass exactly one of `targetTris` / `targetEdge`. `amount` (1..6, only with `targetEdge`)
 strengthens it: simplify multiplies the tolerance, enhance halves the edge length per step.
 `preserveColor` (default true) carries paint across. Enhance refuses a projected result over
@@ -319,6 +324,20 @@ Every Advanced Settings (⚙) field is readable and settable, validated exactly 
 browser and apply immediately, except rendering settings that need a reload. The in-app assistant
 may only change a short allow-list of result-affecting settings, and the user confirms each change.
 
+## Debugging with console.log
+
+Model code can print with `console.log` / `info` / `warn` / `error`, in
+manifold-js, voxel and BREP sessions. The lines come back as `logs: string[]` on
+`run`, `runAndSave`, `setParams`, `runIsolated`, `runAndAssert` and
+`runAndExplain` results (also when the code throws), and `getGeometryData().logs`
+holds the last run's, including runs the user started. People see the same lines
+in the viewport's Console drawer.
+
+- Objects print as compact JSON, and a Manifold prints as `Manifold{tris, bbox}`.
+- `warn:` / `error:` / `assert:` prefixes mark the level.
+- Output is capped per run (200 lines / 20,000 characters by default, set in
+  Advanced Settings), so log summaries rather than every loop iteration.
+
 ## Debugging with the Diagnostic Log
 
 ```js
@@ -332,3 +351,32 @@ intercepted console warnings and every toast, newest first. Read it before guess
 failed. Anything that looks like a credential — API keys, `Authorization` headers, `?key=` URL
 parameters, `user:password@` URL userinfo — is redacted, and so is every provider key saved in
 this browser, whatever its format. The default `limit` is `ui.diagnosticLogApiLimit`.
+
+## AI session trace
+
+```js
+const t = await partwright.getAiSessionTrace()                  // open session's chat (or the global chat)
+await partwright.getAiSessionTrace({ includeImages: true, includeSystemPrompt: true })
+await partwright.downloadAiSessionTrace()                       // same, as a JSON download -> {filename, bytes, summary}
+```
+
+One in-app AI chat as a self-describing JSON file (the `readme` field explains every part), read
+from the saved chat so it survives reloads. Also on the 🩺 AI Call Log button and the `/trace`
+chat command.
+
+- `summary` — totals (API calls, tool calls/errors, auto-resumes, retries, images), tokens split
+  into uncached input / cache read / cache write / output, `cacheHitRate`, `costUsd` vs
+  `uncachedCostUsd` (`cacheSavingsUsd`), stop reasons, `byModel`, `byTool` (calls, errors,
+  avg ms, input/result chars, images), the 10 `heaviestCalls` and `heaviestToolResults`, and
+  `cacheMisses` (a call that read nothing from cache after that model's first call).
+- `turns` — one per human prompt: API calls, tool calls, cost, tokens, API vs tool time, and
+  `steps`, the ordered tool sequence (`runAndSave✗` marks a failed call).
+- `timeline` — every message: text, thinking, tool calls with inputs, tool results with full
+  content, `durationMs` and `attempts`. Assistant entries carry the per-call `request` shape
+  (offered tool names, tool-schema chars, system prompt + suffix chars, history chars, chars
+  pruned, images sent/elided) and transient `retries`.
+- `callLog` / `errors` — this tab's AI Call Log, and AI entries from the Diagnostic
+  Log. Secrets are redacted everywhere.
+
+Turns compacted away are deleted, but their totals stay on the `compaction_summary` entry and in
+`summary`. Messages from before per-call telemetry existed show provider/model `unknown`.
