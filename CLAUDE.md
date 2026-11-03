@@ -62,6 +62,8 @@ Feature work follows a **draft-PR-first** flow: open the PR as a draft the momen
 6. After the feature PR merges to `main`, the staging gate runs the full e2e suite; on green it advances `staging`, which auto-deploys to the staging preview. Once validated there, open a PR from `staging` → `production` for the production release.
 
 > **Always start from — and re-sync against — the latest `origin/main`.** Branches cut from a stale main produce noisy diffs and merge conflicts, and can quietly clobber recently merged work. Re-fetch and merge/rebase `origin/main` right before pushing the draft, and again before marking the PR ready or opening any `staging` → `production` PR.
+>
+> **Merged-result checks, and stacked PRs.** `pr-checks.yml` only runs on PRs whose base is `main`, so a PR stacked on another branch gets **no CI** (retargeting doesn't re-trigger it; the next push does): target `main` and say in the body which PR merges first, and when stacking is unavoidable run the affected specs locally and say so. Cross-PR invariants (`toolGroups`, `aiContextBudget`, `aiToolGating`, `appConfigApi`, `workerMessageValidation`) can be green on each branch and red together, so after any merge of `origin/main` re-run `npm run test:unit` (and `npm ci` if `package-lock.json` changed) rather than trusting the branch's last green run.
 
 ### Pull Requests — open a draft when the work looks good
 
@@ -117,6 +119,8 @@ How it's wired:
   so it stays frozen. (Tracked in the versioned-deploy issue.)
 
 ## Tests — two tiers
+
+> **Test fixtures must not contain key-shaped literals** (fake `sk-…`/API-key strings): gitleaks scans full history in CI, and removing one means rewriting the branch. Build such strings at runtime (e.g. `'sk-' + 'x'.repeat(40)`).
 
 The suite is split into a fast unit tier and the browser e2e tier. Run the
 right one for what you touched; run both before marking a PR ready.
@@ -568,7 +572,7 @@ A core product goal: **anything a user can do from the UI, an AI agent can do th
 2. **Register it in the `help()` table** (`src/main.ts`) — that's the discoverability surface and it must not drift from the implementation.
 3. **Document it** in `public/ai.md` (the console-API list) and the relevant `public/ai/*.md` subdoc (`file-io`, `textures`, `printing`, …). External agents read these.
 4. **Consider an in-app AI tool** (`src/ai/tools.ts`): a schema + dispatch case + the correct gating set (`SAVE_GATED` / `PAINT_GATED` / …) when the chat AI should drive it. Skip it only when it can't be driven from chat (e.g. needs local file bytes) or is too destructive to expose unscoped — and say which in the PR.
-5. **Keep the AI's turn-0 context flat.** Place the new tool in a `TOOL_GROUPS` entry in `src/ai/toolGroups.ts` (or `CORE_TOOLS` only if nearly every chat needs it), and map its readDoc topic in `DOC_TOOL_GROUPS`. Put long console docs in a `public/ai/*.md` subdoc, not `ai.md`, which the in-app AI receives whole. `tests/unit/toolGroups.test.ts` fails on an unplaced tool. `tests/unit/aiContextBudget.test.ts` fails when the system prompt, the first request's tools, or one tool's schema passes its ceiling (`npm run ai:budget` for the report). Don't raise a ceiling to fit a feature. (#1175: the starting context had regrown to ~110K tokens.)
+5. **Keep the AI's turn-0 context flat.** Place the new tool in a `TOOL_GROUPS` entry in `src/ai/toolGroups.ts` (or `CORE_TOOLS` only if nearly every chat needs it), and map its readDoc topic in `DOC_TOOL_GROUPS`. Put long console docs in a `public/ai/*.md` subdoc, not `ai.md`, which the in-app AI receives whole. `tests/unit/toolGroups.test.ts` fails on an unplaced tool. `tests/unit/aiContextBudget.test.ts` fails when the system prompt, the first request's tools, or one tool's schema passes its ceiling (`npm run ai:budget` for the report). Don't raise a ceiling to fit a feature — `ai.md` sits within ~100 chars of its ceiling, so put new console-API detail in a subdoc from the start, leaving at most a one-line pointer in `ai.md`. (#1175: the starting context had regrown to ~110K tokens.)
 
 > A pure static lint can't tell that a new DOM button lacks an API method — there's no typed link between the two — so **this same-PR norm plus the `work-reviewer`'s parity check are the enforcement**, not a gate. (The robust structural fix would be a single capability registry both the command palette and the API derive from; that's a deliberate larger refactor, not done yet.) `npm run lint:consistency` (ast-grep) *does* catch the related UI-*consistency* drift — modals not on `modalShell`, buttons bypassing the `BUTTON_*` constants — so run it, and prefer promoting a clean rule to `error`.
 
