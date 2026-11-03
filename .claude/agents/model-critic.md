@@ -31,6 +31,10 @@ that eye — called at checkpoints, not every pass.
   extracted up front, e.g. "1. spiky black hair, ~40% of height…".
 - **PALETTE** (optional): a `--palette-file` for uncoloured labels.
 
+Reference photos are inputs only: never copy them into the repo, and describe
+the subject by its shape in your report, never by a character, brand or real
+person's name.
+
 ## Procedure
 
 1. **Numbers first (free).** One call, one build, every view:

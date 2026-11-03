@@ -264,9 +264,9 @@ projection can't hit the arms.
 Each feature also exposes `attach(skin)`, `parts` and `detail`, if you'd
 rather call `.build()` yourself.
 
-## Worked example — Ned (twenty one pilots)
+## Worked example — a horned creature
 
-The complete figurine (also `examples/creature_ned.js`). It is one manifold
+The complete figurine (also `examples/creature_horned.js`). It is one manifold
 piece of about 300k triangles, and it builds in about 30 s.
 
 ```js

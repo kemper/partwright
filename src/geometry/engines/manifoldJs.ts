@@ -3,6 +3,7 @@ import { compileModelCode, hardenModelShared } from '../modelEval';
 import { javaScriptSyntaxDiagnostics, runtimeDiagnostic, modelCodeDiagnostics } from '../sourceDiagnostics';
 import { createCurvesNamespace } from '../curves';
 import { createMeshOpsNamespace } from '../meshOps';
+import { createHumanNamespace } from '../../human/humanApi';
 import { createParamCapture } from '../params';
 import { preloadTextFonts } from '../textGlyphs';
 import { getDefaultCircularSegments } from '../qualitySettings';
@@ -13,6 +14,7 @@ import { createFastenersNamespace } from '../fasteners';
 import { createJointsNamespace } from '../joints';
 import { createGearsNamespace } from '../gears';
 import { createThreadsNamespace } from '../threads';
+import { createHeadform } from '../headform';
 import { createEnclosureNamespace } from '../enclosure';
 import { createKnurlNamespace } from '../knurl';
 import { createSculptOps } from '../sculpt';
@@ -899,6 +901,13 @@ export const manifoldJsEngine: Engine = {
     // the run's `label` function (so labelled SDF subtrees register with
     // the same labelRegistry as `api.label`-tagged Manifold parts).
     const sdfNamespace = createSdfNamespace(Manifold, label);
+    // Parametric MakeHuman-based character (asset preloaded by the Worker when
+    // the source mentions api.human).
+    const human = createHumanNamespace(manifoldModule, label, (id, name, color) => {
+      labelRegistry.set(id, name);
+      const rgb = color ? parseLabelColor(color) : null;
+      if (rgb) labelColors.set(name, rgb);
+    }, (name) => removedParts.has(name));
 
     // `BREP` is only present when the engine Worker has lazy-loaded
     // OpenCASCADE.js — otherwise the namespace is undefined and the user
@@ -924,6 +933,7 @@ export const manifoldJsEngine: Engine = {
       BREP,
       meshOps: meshOpsNamespace,
       sdf: sdfNamespace,
+      human,
       geom: geom2dNamespace,
       fasteners: fastenersNamespace,
       joints: jointsNamespace,
@@ -933,6 +943,8 @@ export const manifoldJsEngine: Engine = {
       threads: threadsNamespace,
       enclosure: enclosureNamespace,
       knurl: knurlNamespace,
+      // Metric adult head proxy for wearable fit (masks, helmets, glasses).
+      headform: createHeadform(sdfNamespace),
       // Text helpers — flat aliases so agents can write api.text(...) directly.
       text: curvesNamespace.text,
       textSection: curvesNamespace.textSection,
@@ -949,6 +961,8 @@ export const manifoldJsEngine: Engine = {
       intersects: meshOpsNamespace.intersects,
       contains: meshOpsNamespace.contains,
       pointInside: meshOpsNamespace.pointInside,
+      raycast: meshOpsNamespace.raycast,
+      closestPoint: meshOpsNamespace.closestPoint,
       bbox: meshOpsNamespace.bbox,
       componentBounds: meshOpsNamespace.componentBounds,
       volumeDelta: meshOpsNamespace.volumeDelta,
@@ -974,6 +988,8 @@ export const manifoldJsEngine: Engine = {
       smoothWeld: meshOpsNamespace.smoothWeld,
       // Edit one part as a solid (cut at its seam, transform, re-attach):
       editPart: meshOpsNamespace.editPart,
+      // Cut a solid into separate printable pieces along its part seams:
+      splitParts: meshOpsNamespace.splitParts,
       // Declarative sculpt nudges (grab / inflate / flatten):
       sculpt: sculptNamespace,
       // Robust booleans + heal:

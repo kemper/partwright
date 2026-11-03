@@ -16,6 +16,7 @@ npm run lint:deadcode     # knip: dead deps/imports (gate) + unused exports (adv
 npm run lint:deps         # madge: circular dependencies (gate — graph is acyclic)
 npm run model:preview -- <file.js>   # headless model stats + 4-view PNG (Node+WASM, ~2s) — see below
 npm run snap -- /editor [--out f.png] [--wait ms]  # one-shot navigate→settle→screenshot, no spec needed — see Manual Verification
+npm run human:fit -- --photo p.png [--photo side.png@0,0]   # fit api.human's body sliders + arm/leg spread to a photo's silhouette → api.human code (see public/ai/human.md)
 npm run pr:screenshots -- a.png b.png  # upload screenshots; a workflow posts them as the PR's "Visual proof" comment (stored on pr-assets, never in branch history) — see Visual proof in the PR
 npm run cf:prune-previews [-- --yes]   # delete Cloudflare Pages per-branch preview deployments (dry run unless --yes; keeps main/staging, never production; needs CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID)
 ```
@@ -68,6 +69,8 @@ Feature work follows a **draft-PR-first** flow: open the PR as a draft the momen
 When an implementation looks good and working, **open a draft pull request into `main`** — don't wait until you've run the slow verification. This is a standing instruction that overrides any default "don't open a PR unless explicitly asked" behavior: treat "the implementation looks done" as the authorization to open the draft. Don't pause to ask whether to create one, and don't report a task as done without it.
 
 Open it as a **draft** (`create_pull_request` with `draft: true`) after a fast pre-flight — re-sync `origin/main`, run `npm run build` + `npm run test:unit`, and do a quick manual browser check (run a Playwright spec that screenshots the change — see [Manual Verification](#manual-verification--checking-your-work-in-the-browser)) if not already done. **Defer the full `test:e2e` suite until after the draft is up** (see [After Opening a PR](#after-opening-a-pr)); the draft PR is what *kicks off* the CI verification phase. PR-checks runs the full suite — build + unit **and** the e2e shards — on every draft push, so you watch e2e on the draft itself. Marking the PR ready for review (`update_pull_request` with `draft: false`) is a review-readiness signal, not a CI trigger. The task is done once every PR-checks shard is green.
+
+**Stacked PRs get no CI.** `pr-checks.yml` only triggers for PRs whose base is `main`, so a PR based on another feature branch runs no shards until its base merges. Prefer independent branches off `origin/main`; if you must stack, retarget the PR to `main` with a "review only these commits" note, or run the affected specs locally and say so in the PR body. Merge the branch with the largest overlap with `main` first.
 
 Skip the PR only when the user explicitly scoped you away from it — a request to "just commit" or "push to the branch" is *not* a request for a PR — or for a pure throwaway experiment. If you genuinely can't tell whether the work is a complete, reviewable unit, ask. Follow the [commit & PR conventions](#commit--pr-conventions) below for the title, prefix, and labels.
 
@@ -222,6 +225,7 @@ What to capture:
 - **New feature** → the feature in its key state(s) (e.g. opened panel, result rendered).
 - **Changed behavior or a visual fix** → a **before (main) / after (this PR)** pair, side by side in a table. Capture "before" by running the same spec against `origin/main` (e.g. in a `git worktree`) before you change it, or by checking out main briefly.
 - **Theme- or size-sensitive UI** → add a light-mode and/or a 375 px-wide (mobile) shot when the change touches those.
+- **Only the app's own content in the shot** — a model built in the app, a synthetic test mesh, or a model the owner made or that carries a license allowing it. Never screenshot a user's imported third-party model, a scan of someone else's figure or product, or a reference photo, even when that is what you were testing. Re-run the check on a stand-in and capture that. See [Copyright, licenses and trademarks](#copyright-licenses-and-trademarks--no-third-party-work-without-permission).
 
 **How to attach: `npm run pr:screenshots`** (`scripts/pr-screenshots.mjs` + the `Visual proof comment` workflow, `.github/workflows/pr-visual-proof.yml`):
 
@@ -362,13 +366,17 @@ All providers share the same chat loop (`src/ai/chatLoop.ts`), the same tool sch
 
 See `docs/ai-internals.md` for per-provider thinking/auto-continue wire-format details (thinking box, thought signatures, thinking level mappings, auto-continue implementation, OpenAI routing).
 
+#### Worker delegation
+
+On hosted providers the agent can call `delegateTask` to hand a measurable sub-task to a cheaper model of the same provider. That's Sonnet 5.5 under Opus, GPT-5 mini, or Gemini Flash. The worker runs a nested, in-memory `runTurn` with its own fresh context, step cap and $ cap, and only its report (plus last render) comes back. `src/ai/delegate.ts` holds the pure helpers and `runWorkerTask` in `chatLoop.ts` runs the worker; the step and spend limits live under the `ai.delegateToWorker` / `ai.workerMax*` settings. See `docs/ai-internals.md` → Worker delegation.
+
 #### Cross-provider review
 
 A "👁" button in the panel header opens `src/ui/aiReviewModal.tsx`. The user picks a **different** provider/model than the one driving the chat, optionally types a focus prompt, and the reviewer is sent the current code + geometry stats + 4-iso snapshot + session notes — plus (each a checkbox, on by default) the user's attached reference images and the user's **own** chat messages, never the agent's replies — only a compaction summary, labelled as agent-written, stands in for deleted early turns (`userConversation` in `src/ai/autoReview.ts`, budget `ai.reviewConversationMaxChars`) — via a single non-tool turn. The automatic end-of-task review sends the same extras (its "All your messages" setting). The response lands as a `'review'` `ChatBlock` rendered with a distinct purple-bordered bubble in the transcript AND a `[REVIEW from <provider> / <model>] …` session note (so the primary agent picks it up on its next turn via `getSessionContext()`).
 
 #### AI Call Log (per-provider diagnostics)
 
-A "🩺" button in the panel header opens `src/ui/aiDiagnosticsModal.ts`. Shows the last 50 provider API calls from an in-memory ring buffer (`src/ai/diagnostics.ts`): provider/model/kind, duration, status, full error messages (errors auto-expand), token usage, stop reason, request summary. Filter (all/errors/successes), Clear, Copy JSON. This is distinct from the app-wide **Diagnostic Log** (`src/diagnostics/errorLog.ts`, toolbar ⚠ button) which captures uncaught errors, intercepted `console.warn`/`console.error`, and every toast (see [User Messaging & the Diagnostic Log](#user-messaging--the-diagnostic-log)); the AI Call Log adds per-call detail (successes, tokens, the "empty_final" non-error case) the general log intentionally doesn't. To avoid double-listing, the AI Call Log mirrors to `console.info`/`console.debug` (not `warn`/`error`), and hard provider errors reach the app-wide log via `chatLoop`'s `onError → errorLog.capture({source:'ai'})`.
+A "🩺" button in the panel header opens `src/ui/aiDiagnosticsModal.ts`. Shows the last 50 provider API calls from a ring buffer (`src/ai/diagnostics.ts`, mirrored to the tab's `sessionStorage` so it survives a reload but not closing the tab): provider/model/kind, duration, status, full error messages (errors auto-expand), token usage incl. cache reads/writes, per-call cost, stop reason, request summary. Filter (all/errors/successes), Clear, Copy JSON. This is distinct from the app-wide **Diagnostic Log** (`src/diagnostics/errorLog.ts`, toolbar ⚠ button) which captures uncaught errors, intercepted `console.warn`/`console.error`, and every toast (see [User Messaging & the Diagnostic Log](#user-messaging--the-diagnostic-log)); the AI Call Log adds per-call detail (successes, tokens, the "empty_final" non-error case) the general log intentionally doesn't. For a whole chat's history (all reloads, any tab), the modal's **Download session trace** (also `/trace`, `partwright.getAiSessionTrace()`) exports the persisted chat plus per-call telemetry (`ChatMessage.call`, tool `durationMs`, compaction totals) via `src/ai/sessionTrace.ts` (pure builder) + `src/export/aiTrace.ts`. To avoid double-listing, the AI Call Log mirrors to `console.info`/`console.debug` (not `warn`/`error`), and hard provider errors reach the app-wide log via `chatLoop`'s `onError → errorLog.capture({source:'ai'})`.
 
 #### Slash commands
 
@@ -381,10 +389,12 @@ The AI chat input supports `/command` shortcuts (`src/ai/slashCommands.ts`). A l
 | `/repair` (alias `/fix`) | Repair corrupted tool history (orphaned tool calls) so a chat wedged on a provider 400 can send again |
 | `/review` | Open the cross-provider review modal |
 | `/export` | Download the conversation as Markdown |
+| `/trace` | Download the chat as a JSON session trace (tool calls, thinking, per-call tokens/cache/cost) for analysis |
 | `/models` (alias `/settings`) | Open AI settings modal |
 | `/portrait` (alias `/bust`) | Prefill a prompt to model a stylized 3D bust from a photo you attach |
 | `/reconstruct` (alias `/convert`) | Prefill a prompt to reverse-engineer an imported mesh into editable code |
 | `/parts` (alias `/segment`) | Prefill a prompt to split an imported mesh into named parts and paint each one (#1025) |
+| `/split` (alias `/pieces`) | Prefill a prompt to cut an imported mesh into separate printable pieces along its accepted parts (`splitIntoPieces`) |
 | `/help` (alias `/commands`) | List all commands in chat |
 
 The command names and descriptions are defined in `SLASH_COMMANDS` in `slashCommands.ts`; the panel's handler map is type-checked against `SlashCommandName` so a name can't exist without a handler. Tests: `tests/unit/slashCommands.test.ts` (unit), `tests/ai-slash-commands.spec.ts` (e2e).
@@ -561,7 +571,7 @@ A core product goal: **anything a user can do from the UI, an AI agent can do th
 2. **Register it in the `help()` table** (`src/main.ts`) — that's the discoverability surface and it must not drift from the implementation.
 3. **Document it** in `public/ai.md` (the console-API list) and the relevant `public/ai/*.md` subdoc (`file-io`, `textures`, `printing`, …). External agents read these.
 4. **Consider an in-app AI tool** (`src/ai/tools.ts`): a schema + dispatch case + the correct gating set (`SAVE_GATED` / `PAINT_GATED` / …) when the chat AI should drive it. Skip it only when it can't be driven from chat (e.g. needs local file bytes) or is too destructive to expose unscoped — and say which in the PR.
-5. **Keep the AI's turn-0 context flat.** Place the new tool in a `TOOL_GROUPS` entry in `src/ai/toolGroups.ts` (or `CORE_TOOLS` only if nearly every chat needs it), and map its readDoc topic in `DOC_TOOL_GROUPS`. Put long console docs in a `public/ai/*.md` subdoc, not `ai.md`, which the in-app AI receives whole. `tests/unit/toolGroups.test.ts` fails on an unplaced tool. `tests/unit/aiContextBudget.test.ts` fails when the system prompt, the first request's tools, or one tool's schema passes its ceiling (`npm run ai:budget` for the report). Don't raise a ceiling to fit a feature. (#1175: the starting context had regrown to ~110K tokens.)
+5. **Keep the AI's turn-0 context flat.** Place the new tool in a `TOOL_GROUPS` entry in `src/ai/toolGroups.ts` (or `CORE_TOOLS` only if nearly every chat needs it), and map its readDoc topic in `DOC_TOOL_GROUPS`. Put long console docs in a `public/ai/*.md` subdoc, or inside an `<!-- external-only:start -->` … `<!-- external-only:end -->` block in `ai.md`: the in-app AI receives `ai.md` minus those blocks (`inAppAiMd` in `src/ai/systemPrompt.ts`), so anything outside them costs every chat. `tests/unit/toolGroups.test.ts` fails on an unplaced tool. `tests/unit/aiContextBudget.test.ts` fails when the system prompt, the first request's tools, or one tool's schema passes its ceiling (`npm run ai:budget` for the report). Don't raise a ceiling to fit a feature. (#1175: the starting context had regrown to ~110K tokens.)
 
 > A pure static lint can't tell that a new DOM button lacks an API method — there's no typed link between the two — so **this same-PR norm plus the `work-reviewer`'s parity check are the enforcement**, not a gate. (The robust structural fix would be a single capability registry both the command palette and the API derive from; that's a deliberate larger refactor, not done yet.) `npm run lint:consistency` (ast-grep) *does* catch the related UI-*consistency* drift — modals not on `modalShell`, buttons bypassing the `BUTTON_*` constants — so run it, and prefer promoting a clean rule to `error`.
 
@@ -630,6 +640,33 @@ This repo runs a lightweight self-improving loop so agents make the *next* agent
 
 - **When you finish a meaningful task (≈ a PR), run `/retro`** (`.claude/skills/retro/SKILL.md`). It drops a short **4-Ls** reflection — *Liked · Lacked · Learned · Longed for* — into `retros/inbox/`. Think like an engineer about your own toolchain: the most valuable note is what would have made delivery faster (the "Longed for" bucket), not just what broke. A `Stop` hook nudges you when the tree is dirty, but the call is yours — skip it when nothing was notable. Entries are append-only and commit with the work.
 - **`/retro-review`** (`.claude/skills/retro-review/SKILL.md`) is the weekly facilitator, fired by a scheduled trigger. It clusters the inbox (frequency across independent agents = the vote), applies the confident process diffs to `CLAUDE.md`/`docs`/skills, files tooling asks as backlog items, writes a durable report to `retros/reports/`, archives the entries, and opens a **draft PR** for human review. It never merges itself.
+
+### Copyright, licenses and trademarks — no third-party work without permission
+
+The repo, its PRs and its issues are public, and the site is free and open, so nothing in them may infringe someone else's copyright, license or trademark. That covers everything that ships or gets posted: models, meshes, scans, photos, renders, textures, fonts, sounds, code, data, names and logos. A user handing you a file (an STL, a 3MF, a scan, a photo) is permission to work on it in the session, not to publish it. When unsure, ask the owner before committing or posting. If a rights holder objects, remove the content first and discuss afterwards.
+
+**Files and media**
+
+1. **Test and demo with content we may share:** models built in the app, synthetic meshes, the owner's own designs, or files whose license allows it (rule 3). A user's third-party files stay local: `/tmp`, the scratchpad, or a gitignored path. Never commit them, not even under `.plans/` (it's gitignored, so committing there takes a force-add, which is a red flag).
+2. **Record the source and license of every third-party file you commit, at the moment you download it** — in a README next to it (title, author, source page URL, license, what you changed) and in the catalog description when it ships. Sources can't be reliably recovered later: seven eval reference photos once had to be traced back after the fact. Re-check a license before relying on it, because licenses change (3DBenchy moved from CC BY-ND to CC0 in 2025).
+3. **Which licenses are OK.** CC0 and public domain: yes. CC BY: yes, with the credit from rule 2. CC BY-SA: only as a standalone asset, credited and marked BY-SA. **Not without the owner's approval:** ND (no derivatives, so no reconstructing, remixing or even cropping), NC (the code is PolyForm Noncommercial, but NC assets would block any later commercial use), "personal use only", "all rights reserved", "free download" with no license, and anything whose license you can't find. A search result, a gallery listing or "it's all over the internet" is not a license: read the license on the item's own page.
+
+**Characters, brands and real people**
+
+4. **No recognisable third-party characters, brands, logos or products in shipped content:** catalog entries, `examples/`, presets, the ideas page and starter prompts, docs, AI prompts, and captured or derived data. Describe the shape, not the IP ("soccer figure", "horned creature", "arcade ghost"), and don't name a model, file or preset after a character. Data captured from a third-party model (a hair capture, a fitted spec, a reconstruction) is derived from it, so the same rule applies. **Renaming doesn't fix a copy:** new content must not reproduce a specific character's or product's distinctive design under a generic name either. Make an original design in the genre instead ("a chunky robot", "a pixel ghost").
+5. **No likeness of a real, identifiable person** (a celebrity, public figure or private individual) in shipped content or on GitHub, unless it's the owner or someone who agreed to it. Photo-to-bust demos and tests use the owner's own photos or a synthetic stand-in.
+6. **Trademarks in prose:** naming another product to say what we work with is fine ("exports a 3MF that Bambu Studio opens", "the OpenSCAD engine", "Minecraft-style voxels"). Using a brand as the name of our feature, model, preset or file, or showing its logo anywhere, is not.
+
+**Code, dependencies and fonts**
+
+7. **Don't paste code from other projects, docs or Q&A sites** beyond a few trivial lines unless its license is compatible (MIT, BSD, Apache-2.0, ISC, 0BSD, CC0). Keep its copyright and license header, and name the source in the commit. Never copy GPL, AGPL or LGPL code into the repo, nor CC BY-SA snippets (Stack Overflow) without crediting them in a comment. Otherwise, write it yourself from the idea.
+8. **Check the license before adding a dependency, WASM module, font, texture or vendored library** (its `package.json` `license` field or LICENSE file). Permissive licenses are fine. Flag copyleft (GPL, AGPL, LGPL, MPL), noncommercial, custom or missing licenses to the owner before adding. A shipped font needs a license that allows embedding (OFL, Apache), and its license file ships with it. Never strip license headers, NOTICE files or attribution from vendored code (e.g. `public/openscad-libs/BOSL2/`).
+
+**On GitHub**
+
+9. **Keep it off GitHub too:** no screenshots, photos or renders of a user's third-party model in PRs, issues or comments (the `pr-assets` screenshot branch is public and append-only, so a mistake there can't be cleaned up), and don't name private files, scans or characters in titles, descriptions, commit messages, prompt logs or retros. Write "the user's figurine scan" or "a 3MF figure", never its file or character name.
+
+The `work-reviewer` checks diffs against these rules; the model-building agents and skills (`model-sculpt`, `model-critic`, `inverse-sculpt`, `/sculpt`, `/inverse-cad`) carry the short form.
 
 ### Prompt Logs
 

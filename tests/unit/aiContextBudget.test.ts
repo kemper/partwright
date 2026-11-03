@@ -11,16 +11,17 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import { buildToolList, type ToolDefinition } from '../../src/ai/tools';
-import { buildSystemPrompt, toggleSuffix } from '../../src/ai/systemPrompt';
-import { toolsForRequest } from '../../src/ai/chatLoop';
+import { buildSystemPrompt, inAppAiMd, toggleSuffix } from '../../src/ai/systemPrompt';
+import { toolsForRequest, turnToolList } from '../../src/ai/chatLoop';
 import { CORE_TOOLS, TOOL_GROUPS } from '../../src/ai/toolGroups';
 import { applyPreset, loadSettings } from '../../src/ai/settings';
 import type { ChatToggles } from '../../src/ai/types';
 
 /** Ceilings in characters (≈ 3.7 chars per token). */
 const BUDGET = {
-  /** Preamble + ai.md. Phase 1 (the in-app core prompt) lowers this. */
-  systemPrompt: 168_000,
+  /** Preamble + ai.md as the in-app AI sees it (external-only blocks
+   *  removed, see inAppAiMd). Was 168_000 before the Phase 1 split. */
+  systemPrompt: 104_000,
   /** Tool schemas sent on the first request, default (Standard) toggles. */
   turn0Tools: 70_000,
   /** Every tool schema (on-demand groups switched off), all toggles on. */
@@ -42,7 +43,7 @@ const standard: ChatToggles = loadSettings().toggles;
 const allOn: ChatToggles = applyPreset(loadSettings(), 'full').toggles;
 
 function turn0(t: ChatToggles) {
-  const gated = buildToolList(t, []);
+  const gated = turnToolList(t, []);
   const { tools, suffixLine } = toolsForRequest(t, gated, []);
   const system = buildSystemPrompt(aiMd).length;
   const suffix = toggleSuffix(t).length + suffixLine.length;
@@ -94,8 +95,9 @@ describe('AI turn-0 context budget', () => {
       'Heaviest tool schemas:',
       ...[...byName].sort((a, b) => b[1] - a[1]).slice(0, 15).map(([n, c]) => `  ${n.padEnd(24)} ${c.toLocaleString().padStart(7)} chars`),
       '',
-      'ai.md sections over 3K chars:',
-      ...sections(aiMd).filter(x => x.chars > 3000).sort((a, b) => b.chars - a.chars).map(x => `  ${x.chars.toLocaleString().padStart(7)}  ${x.heading}`),
+      `ai.md: ${aiMd.length.toLocaleString()} chars served to external agents, ${inAppAiMd(aiMd).length.toLocaleString()} sent in-app`,
+      'In-app ai.md sections over 3K chars:',
+      ...sections(inAppAiMd(aiMd)).filter(x => x.chars > 3000).sort((a, b) => b.chars - a.chars).map(x => `  ${x.chars.toLocaleString().padStart(7)}  ${x.heading}`),
       '',
     ];
     console.log(lines.join('\n'));

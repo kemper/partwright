@@ -57,25 +57,89 @@ test.describe('model code console output', () => {
 });
 
 test.describe('model console panel', () => {
-  test('shows what the last run printed, collapses, and hides after a quiet run', async () => {
-    const run = (code: string) => page.evaluate(async (c) => {
-      await (window as unknown as { partwright: { run: (code: string) => Promise<unknown> } }).partwright.run(c);
-    }, code);
+  const run = (code: string) => page.evaluate(async (c) => {
+    await (window as unknown as { partwright: { run: (code: string) => Promise<unknown> } }).partwright.run(c);
+  }, code);
+  const setAutoHide = (ms: number) => page.evaluate(async (v) => {
+    const cfg = await import('/src/config/appConfig.ts');
+    const c = cfg.getConfig();
+    cfg.saveAppConfig({ ...c, ui: { ...c.ui, modelConsoleAutoHideMs: v } });
+  }, ms);
+  const quiet = 'return api.Manifold.cube([4, 4, 4]);';
+  const chatty = "console.log('hello', { n: 1 });\nconsole.warn('careful');\nreturn api.Manifold.cube([4, 4, 4]);";
+
+  test.afterEach(async () => {
+    await page.evaluate(async () => {
+      const cfg = await import('/src/config/appConfig.ts');
+      const c = cfg.getConfig();
+      cfg.saveAppConfig({ ...c, ui: { ...c.ui, modelConsoleAutoHideMs: cfg.APP_CONFIG_DEFAULTS.ui.modelConsoleAutoHideMs } });
+    });
+    await run(quiet);
+  });
+
+  test('a run that prints shows a collapsed pill that expands, collapses, and hides after a quiet run', async () => {
+    await setAutoHide(0);
     const panel = page.locator('#model-console');
     const body = page.locator('#model-console-body');
+    const toggle = page.locator('#model-console-toggle');
 
-    await run("console.log('hello', { n: 1 });\nconsole.warn('careful');\nreturn api.Manifold.cube([4, 4, 4]);");
+    await run(chatty);
     await expect(panel).toBeVisible();
-    await expect(page.locator('#model-console-toggle')).toContainText('2');
+    await expect(page.locator('#model-console-count')).toHaveText('2');
+    // Arrives as a pill — the output drawer stays shut until asked for.
+    await expect(body).toBeHidden();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    // Worst level is a warning → amber count badge.
+    await expect(page.locator('#model-console-count')).toHaveClass(/bg-amber-600/);
+
+    await toggle.click();
+    await expect(body).toBeVisible();
     await expect(body).toContainText('hello {"n":1}');
     await expect(body.locator('div', { hasText: 'warn: careful' })).toHaveClass(/text-amber-500/);
-
-    await page.locator('#model-console-toggle').click();
-    await expect(body).toBeHidden();
-    await page.locator('#model-console-toggle').click();
+    // An open drawer stays open when the next run prints.
+    await run("console.log('again');\nreturn api.Manifold.cube([4, 4, 4]);");
+    await expect(body).toContainText('again');
     await expect(body).toBeVisible();
 
-    await run('return api.Manifold.cube([4, 4, 4]);');
+    await toggle.click();
+    await expect(body).toBeHidden();
+    await expect(panel).toBeVisible();
+
+    await run(quiet);
     await expect(panel).toBeHidden();
+  });
+
+  test('× dismisses until the next run prints; the palette command brings it back', async () => {
+    await setAutoHide(0);
+    const panel = page.locator('#model-console');
+    await run(chatty);
+    await expect(panel).toBeVisible();
+    await page.locator('#model-console-close').click();
+    await expect(panel).toBeHidden();
+
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur?.());
+    await page.keyboard.press('ControlOrMeta+k');
+    await page.locator('input[aria-label="Search commands"]').fill('Show console output');
+    await page.keyboard.press('Enter');
+    await expect(panel).toBeVisible();
+    await expect(page.locator('#model-console-body')).toBeVisible();
+
+    await page.locator('#model-console-close').click();
+    await run(chatty);
+    await expect(panel).toBeVisible();
+    await expect(page.locator('#model-console-body')).toBeHidden();
+  });
+
+  test('the collapsed pill fades on its own, but error output stays', async () => {
+    await setAutoHide(400);
+    const panel = page.locator('#model-console');
+    await run(chatty);
+    await expect(panel).toBeVisible();
+    await expect(panel).toBeHidden({ timeout: 5000 });
+
+    await run("console.error('bad');\nreturn api.Manifold.cube([4, 4, 4]);");
+    await expect(page.locator('#model-console-count')).toHaveClass(/bg-red-600/);
+    await page.waitForTimeout(1200);
+    await expect(panel).toBeVisible();
   });
 });

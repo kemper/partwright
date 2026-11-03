@@ -43,7 +43,7 @@
 // object or on `api`; the only door to it is `fetchAppAsset(url)`, which only
 // issues same-origin GETs, with redirects refused, for normalized paths under a
 // short allow-list of static-asset prefixes (`<base>assets/`,
-// `<base>openscad-libs/`, plus `<base>node_modules/` in dev) — no `.`/`..`
+// `<base>openscad-libs/`, `<base>human/`, plus `<base>node_modules/` in dev) — no `.`/`..`
 // segments, no `//`, no query. Even if model code reaches that function (e.g.
 // via `import()` of the bundled chunk) or steers a loader's inputs by patching
 // built-ins, the most it can cause is a same-origin GET of a public static
@@ -367,12 +367,14 @@ export function verifyLockdown(g: object): string[] {
 // ── Private same-origin asset fetch ─────────────────────────────────────────
 
 /** The only path prefixes fetchAppAsset will request: the build's hashed
- *  assets (OCCT WASM), the bundled OpenSCAD libraries + fonts, and — dev
- *  server only — node_modules (where Vite serves `?url` WASM). Frozen at module
- *  load, before any model code exists. */
+ *  assets (OCCT WASM), the bundled OpenSCAD libraries + fonts, the parametric
+ *  human's mesh/morph data (`api.human`), and — dev server only — node_modules
+ *  (where Vite serves `?url` WASM). Frozen at module load, before any model
+ *  code exists. */
 const ASSET_PREFIXES: readonly string[] = Object.freeze([
   BASE + 'assets/',
   BASE + 'openscad-libs/',
+  BASE + 'human/',
   ...(import.meta.env?.DEV ? [BASE + 'node_modules/'] : []),
 ]);
 

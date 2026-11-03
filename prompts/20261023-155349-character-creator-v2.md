@@ -18,7 +18,7 @@ byte-identical. Panel: a Style segmented control, a head-size slider,
 style-dependent hair knobs and a Holding control, working at 375 px with 44 px
 targets. AI parity: a buildCharacter tool, getCharacterSpec(), and a
 "figure from a photo" recipe in figure.md / ai.md. Add unit + e2e tests.
-Validate by building the Captain Tsubasa Funko from a spec and scoring it
+Validate by building a Funko soccer figure from a spec and scoring it
 with photoMatch against the hand-written v5 (0.876 front / 0.881 back).
 
 ## Assistant
@@ -51,7 +51,7 @@ back out of the library's `assertEnum` error messages, so the internal
 library constants did not need to be exported.
 
 **Beyond the issue's field list: eyeSize and mouth.** The first spec-built
-Tsubasa had pin-prick eyes and a lip ridge. A Funko's likeness is mostly its
+The figurine had pin-prick eyes and a lip ridge. A Funko's likeness is mostly its
 big bead eyes and its lack of a mouth. Both fields are cheap, and their
 defaults reproduce v1. The Funko style preset sets eyeSize 1.8 and mouth off.
 
@@ -69,7 +69,7 @@ preset button, and the Mouth toggle clashed with the Mouth select. I gave the
 presets a labelled group, named the style row "Proportions" and named the
 toggle "Show mouth".
 
-**Validation result.** The spec-built Tsubasa reached photoMatch IoU 0.856
+**Validation result.** The spec-built figurine reached photoMatch IoU 0.856
 front and 0.868 back, against 0.876 / 0.881 for the hand-written version.
 The spec is 909 characters against 5,691 characters of code. The spec cannot
 express the N and 10 numerals, the collar and cuff trim, the socks with

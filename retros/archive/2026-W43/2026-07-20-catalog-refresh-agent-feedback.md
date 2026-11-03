@@ -66,7 +66,7 @@ frequency across independent agents is the vote.
 
 ## Longed for (new items beyond #928's list)
 - `api.placeOnFace(shape, {face})` — "flat 2D relief onto one of a box's six
-  faces" placement (companion-cube hand-derived rotation matrices for four
+  faces" placement (heart-cube hand-derived rotation matrices for four
   faces).
 - Region-scoped `smoothWeld`/`round` (the local-weld recipe as a first-class
   option).

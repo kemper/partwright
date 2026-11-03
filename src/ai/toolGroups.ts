@@ -61,16 +61,16 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
   },
   {
     id: 'inspect',
-    summary: 'mesh probing and measurement: findFaces, probeRay/probePixel, slices and sections, measurements, photoMatch, fitment ghost',
+    summary: 'mesh probing and measurement: findFaces, probeRay/probePixel, slices and sections, measurements, photoMatch, fitment ghost, saved annotation views',
     tools: [
       'getMeshSummary', 'findFaces', 'probePixel', 'probePixels', 'probeRay', 'getFeatureCentroids',
       'sliceAtZVisual', 'renderSection', 'getMeasurement', 'photoMatch', 'getViewState',
-      'setReferenceGeometry', 'clearReferenceGeometry', 'thicknessMap',
+      'setReferenceGeometry', 'clearReferenceGeometry', 'thicknessMap', 'viewAnnotationView',
     ],
   },
   {
     id: 'objects',
-    summary: 'manage objects, parts and pieces: rename, delete/restore, hide/isolate, extract, merge, reorder, group',
+    summary: 'manage objects, parts and pieces: rename, delete/restore, hide/isolate, extract, merge, reorder, group, arrange parts, export split items',
     tools: [
       'renameObject', 'deleteObject', 'listDeleted', 'restoreObject', 'highlightObjectPart',
       'setObjectPartHidden', 'deleteObjectPart', 'restoreObjectPart', 'frameObjectPart',
@@ -91,17 +91,17 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
   },
   {
     id: 'character',
-    summary: 'the buildCharacter humanoid figure builder and its presets',
-    tools: ['buildCharacter', 'getCharacterSpec', 'listCharacterPresets', 'randomCharacter'],
+    summary: 'the buildCharacter humanoid figure builder and its presets; fit an api.human body to a photo',
+    tools: ['buildCharacter', 'getCharacterSpec', 'listCharacterPresets', 'randomCharacter', 'fitHumanToPhoto'],
   },
   {
     id: 'parts',
-    summary: 'part detection on imported meshes: detect, edit, preview, accept named parts',
+    summary: 'part detection on imported meshes: detect, edit, accept parts, split into print pieces',
     tools: [
       'listPartDetectors', 'detectParts', 'autoDetectParts', 'reopenParts', 'previewPartPresets',
       'applyPartPreset', 'setPartSelection', 'setPartsView', 'partAt', 'previewSeeds',
       'openPartsPanel', 'getPartDraft', 'editParts', 'renderParts', 'comparePartDetectors',
-      'setPartsOverlay', 'acceptParts', 'discardParts',
+      'setPartsOverlay', 'acceptParts', 'discardParts', 'splitIntoPieces',
     ],
   },
   {
@@ -143,6 +143,7 @@ export const DOC_TOOL_GROUPS: Readonly<Record<string, readonly string[]>> = {
   colors: ['paint', 'inspect'],
   'reference-images': ['inspect'],
   'visual-verification': ['inspect'],
+  annotations: ['inspect'],
   textures: ['textures'],
   figure: ['character'],
   segmentation: ['parts'],
@@ -153,6 +154,8 @@ export const DOC_TOOL_GROUPS: Readonly<Record<string, readonly string[]>> = {
   printing: ['printing', 'transforms'],
   'iteration-workflow': ['versions'],
   'ui-control': ['ui'],
+  // headform's fit checks use the reference ghost and sections.
+  headform: ['inspect'],
 };
 
 const GROUP_OF_TOOL: ReadonlyMap<string, string> = new Map(

@@ -111,6 +111,10 @@ export function requestRender(): void {
 let measureLock = false;
 let userLock = false;
 let gizmoLock = false;
+// Annotate pen/text: the frame being marked up must not move at all — rotate,
+// pan AND zoom are frozen. Separate from the user's Lock toggle so the
+// toolbar button doesn't light up for it.
+let drawLock = false;
 
 // Pointer suppressors — capture-phase pointerdown veto for OrbitControls.
 // Lets paint mode let orbit handle clicks that miss the model while keeping
@@ -1312,15 +1316,16 @@ export function getMeshGroup(): THREE.Group {
 
 // === Orbit lock API ===
 
-// Locks gate rotate + pan; zoom is intentionally always enabled so
+// Locks gate rotate + pan; zoom is intentionally enabled (except under the
+// Annotate draw lock, which freezes the frame entirely) so
 // wheel / two-finger-scroll zooms the camera in every mode.
 function syncOrbitState(): void {
   const animating = isGizmoAnimating();
-  const rotatePanLocked = animating || measureLock || userLock || gizmoLock;
+  const rotatePanLocked = animating || measureLock || userLock || gizmoLock || drawLock;
   controls.enabled = !animating;
   controls.enableRotate = !rotatePanLocked;
   controls.enablePan = !rotatePanLocked;
-  controls.enableZoom = !animating;
+  controls.enableZoom = !animating && !drawLock;
 }
 
 export function setMeasureLock(locked: boolean): void {
@@ -1347,6 +1352,14 @@ export function onUserOrbitLockChange(fn: (locked: boolean) => void): () => void
     const i = userOrbitLockListeners.indexOf(fn);
     if (i >= 0) userOrbitLockListeners.splice(i, 1);
   };
+}
+
+/** Freeze the camera completely (rotate, pan and zoom) while Annotate's pen
+ *  or text sub-mode is marking up the frame. Independent of the user's Lock. */
+export function setDrawLock(locked: boolean): void {
+  if (drawLock === locked) return;
+  drawLock = locked;
+  syncOrbitState();
 }
 
 /** Transient lock raised by TransformControls (paint Box gizmo) while a handle

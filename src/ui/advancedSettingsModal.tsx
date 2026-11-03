@@ -352,6 +352,65 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ai.cacheConversationHistory}
           onChange={v => set('ai', 'cacheConversationHistory', v)}
         />
+        <ToggleField cfgKey="ai.extendedCacheForDeepThinking"
+          label="1-hour cache for long steps (Anthropic)"
+          hint="At High, XHigh or Max thinking a single step can think for more than 5 minutes — and a delegated worker can run longer — which expires Anthropic's default cache, so the next step re-writes the whole conversation at 1.25× input. With this on, those turns (and any turn that can delegate) use the 1-hour cache: 2× input to write, but it survives long steps and pauses between messages."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.extendedCacheForDeepThinking}
+          value={c.ai.extendedCacheForDeepThinking}
+          onChange={v => set('ai', 'extendedCacheForDeepThinking', v)}
+        />
+        <ToggleField cfgKey="ai.delegateToWorker"
+          label="Delegate sub-tasks to a cheaper worker"
+          hint="Lets the agent hand a measurable sub-task (tune until a score or gate passes) to a cheaper model of the same provider — Sonnet under Opus, GPT-5 mini, Gemini Flash. The worker runs in its own fresh context and only its report comes back, so the main conversation stays small."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.delegateToWorker}
+          value={c.ai.delegateToWorker}
+          onChange={v => set('ai', 'delegateToWorker', v)}
+        />
+        <Field cfgKey="ai.workerMaxSteps"
+          label="Worker step limit"
+          unit="steps"
+          hint="Most agent steps one delegated worker may take."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.workerMaxSteps}
+          value={c.ai.workerMaxSteps}
+          min={1} max={60} integer
+          onChange={v => set('ai', 'workerMaxSteps', v)}
+        />
+        <Field cfgKey="ai.workerMaxSpendUsd"
+          label="Worker spend limit"
+          unit="USD"
+          hint="Most one delegated worker may spend. Also capped by what's left of the session's $ budget."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.workerMaxSpendUsd}
+          value={c.ai.workerMaxSpendUsd}
+          min={0.05} max={20} step={0.05}
+          onChange={v => set('ai', 'workerMaxSpendUsd', v)}
+        />
+        <Field cfgKey="ai.workerReportMaxChars"
+          label="Worker report length"
+          unit="chars"
+          hint="Longest worker report passed back to the main agent."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.workerReportMaxChars}
+          value={c.ai.workerReportMaxChars}
+          min={500} max={20000} integer
+          onChange={v => set('ai', 'workerReportMaxChars', v)}
+        />
+        <Field cfgKey="ai.workerStallTimeoutMs"
+          label="Worker stall timeout"
+          unit="ms"
+          hint="A worker request silent this long is stopped and its partial report returned. Time running its tools doesn't count."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.workerStallTimeoutMs}
+          value={c.ai.workerStallTimeoutMs}
+          min={10000} max={900000} integer
+          onChange={v => set('ai', 'workerStallTimeoutMs', v)}
+        />
+        <Field cfgKey="ai.workerMinBudgetUsd"
+          label="Worker minimum budget"
+          unit="USD"
+          hint="With less than this left in the session's $ budget, the agent can't start a worker."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.workerMinBudgetUsd}
+          value={c.ai.workerMinBudgetUsd}
+          min={0} max={5} step={0.01}
+          onChange={v => set('ai', 'workerMinBudgetUsd', v)}
+        />
         <Field cfgKey="ai.cachedImageLimit"
           label="Render images before a trim (cached providers)"
           unit="images"
@@ -534,6 +593,60 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ai.reviewNoteMaxChars}
           min={200} max={8000} integer
           onChange={v => set('ai', 'reviewNoteMaxChars', v)}
+        />
+        <Field cfgKey="ai.planAssessMaxRounds"
+          label="Plan: assessment rounds"
+          hint='Most tool rounds an "Assess first" plan may spend inspecting before it reports.'
+          tooltip="In plan mode, the Assess-first style looks at your attachments and the current model with read-only tools before planning. This caps how many tool rounds that look may take, so the assessment itself stays cheap."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.planAssessMaxRounds}
+          value={c.ai.planAssessMaxRounds}
+          min={2} max={40} integer
+          onChange={v => set('ai', 'planAssessMaxRounds', v)}
+        />
+        <Field cfgKey="ai.planCheckpointExtensionFraction"
+          label="Plan: rounds per Keep going (fraction)"
+          hint="At a plan checkpoint, Keep going grants this fraction of the plan's estimated maximum rounds."
+          tooltip="Building an approved plan stops at the plan's estimated maximum rounds (a checkpoint). Keep going grants another batch: this fraction of that maximum, but never fewer than the minimum below."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.planCheckpointExtensionFraction}
+          value={c.ai.planCheckpointExtensionFraction}
+          min={0.1} max={2}
+          onChange={v => set('ai', 'planCheckpointExtensionFraction', v)}
+        />
+        <Field cfgKey="ai.planCheckpointMinExtension"
+          label="Plan: minimum rounds per Keep going"
+          hint="The fewest rounds a Keep going at a plan checkpoint grants."
+          tooltip="Keeps a small plan's checkpoint from granting only one or two rounds at a time."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.planCheckpointMinExtension}
+          value={c.ai.planCheckpointMinExtension}
+          min={1} max={64} integer
+          onChange={v => set('ai', 'planCheckpointMinExtension', v)}
+        />
+        <Field cfgKey="ai.planCostSampleRounds"
+          label="Plan: rounds sampled for cost"
+          hint="Recent priced rounds of the chat averaged to turn a plan's round estimate into dollars."
+          tooltip="The plan card shows an estimated cost: the plan's round range times this chat's average cost per round, over this many of its most recent rounds."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.planCostSampleRounds}
+          value={c.ai.planCostSampleRounds}
+          min={1} max={200} integer
+          onChange={v => set('ai', 'planCostSampleRounds', v)}
+        />
+        <Field cfgKey="ai.planCalibrationMaxEntries"
+          label="Plan: builds kept for calibration"
+          hint="Past plan-mode builds (estimate vs actual) remembered in this browser."
+          tooltip="Each build of an approved plan records how many rounds and dollars it planned and actually used. The planner sees a summary so its next estimates can correct for being too optimistic."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.planCalibrationMaxEntries}
+          value={c.ai.planCalibrationMaxEntries}
+          min={1} max={500} integer
+          onChange={v => set('ai', 'planCalibrationMaxEntries', v)}
+        />
+        <Field cfgKey="ai.planCalibrationMinBuilds"
+          label="Plan: builds before calibration"
+          hint="Past builds needed before the calibration summary is shown and sent to the planner."
+          tooltip="A summary of one or two builds is noise; this waits until there are enough to say something."
+          defaultValue={APP_CONFIG_DEFAULTS.ai.planCalibrationMinBuilds}
+          value={c.ai.planCalibrationMinBuilds}
+          min={1} max={50} integer
+          onChange={v => set('ai', 'planCalibrationMinBuilds', v)}
         />
       </Section>
 
@@ -1124,6 +1237,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={1} max={100_000} integer
           onChange={v => set('renderer', 'probePixelsMaxPixels', v)}
         />
+        <Field cfgKey="renderer.viewFocusPadding"
+          label="Zoomed-render margin"
+          unit="×"
+          tooltip="When renderView/renderViews zoom onto a part or box (focus), this fraction of the part's largest side is added around it as context. A call's own padding option overrides it."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.viewFocusPadding}
+          value={c.renderer.viewFocusPadding}
+          min={0} max={5}
+          onChange={v => set('renderer', 'viewFocusPadding', v)}
+        />
         <Field cfgKey="renderer.sdfPreviewScale"
           label="SDF fast-preview coarsening"
           unit="×"
@@ -1422,6 +1544,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.import.photoMatchRenderSize}
           min={128} max={2048} integer
           onChange={v => set('import', 'photoMatchRenderSize', v)}
+        />
+        <Field cfgKey="import.humanFitBudget"
+          label="Human photo fit: build budget"
+          unit="builds"
+          hint="Candidate bodies the photo fit builds by default."
+          tooltip="fitHuman (and the AI's fitHumanToPhoto) searches api.human's body sliders against a photo's silhouette. Each candidate is a full model build in the engine Worker (roughly 0.5–1 s), so this sets how long a fit takes; more builds refine the result further."
+          defaultValue={APP_CONFIG_DEFAULTS.import.humanFitBudget}
+          value={c.import.humanFitBudget}
+          min={10} max={400} integer
+          onChange={v => set('import', 'humanFitBudget', v)}
         />
         <Field cfgKey="import.photoMatchMinSubjectPx"
           label="Photo match: minimum subject height"
@@ -1969,6 +2101,25 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={2000} max={60_000} integer
           onChange={v => set('ui', 'undoToastDurationMs', v)}
         />
+        <Field cfgKey="ui.splitPreviewExplode"
+          label="Split preview spread"
+          hint="How far a Split into pieces preview pulls the pieces apart (0 = in place)."
+          tooltip="Split into printable pieces shows a preview first, with each piece moved away from the model's centre by this factor so every seam is visible. A saved split keeps the pieces in place."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.splitPreviewExplode}
+          value={c.ui.splitPreviewExplode}
+          min={0} max={3}
+          onChange={v => set('ui', 'splitPreviewExplode', v)}
+        />
+        <Field cfgKey="ui.modelConsoleAutoHideMs"
+          label="Console pill auto-hide"
+          unit="ms"
+          hint="How long the console pill stays in the viewport corner after a run prints. 0 = until dismissed."
+          tooltip="When model code prints with console.log or console.warn, a small Console pill with the line count appears in the viewport's lower-left corner. Click it to read the output. It fades after this long; output with errors stays until you dismiss it. Show console output in the command palette brings it back."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.modelConsoleAutoHideMs}
+          value={c.ui.modelConsoleAutoHideMs}
+          min={0} max={600_000} integer
+          onChange={v => set('ui', 'modelConsoleAutoHideMs', v)}
+        />
         <Field cfgKey="ui.deletedObjectRetentionDays"
           label="Keep deleted objects"
           unit="days"
@@ -1978,6 +2129,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.deletedObjectRetentionDays}
           min={1} max={365} integer
           onChange={v => set('ui', 'deletedObjectRetentionDays', v)}
+        />
+        <Field cfgKey="ui.annotationViewMaxWidth"
+          label="Annotation view width"
+          unit="px"
+          hint="Widest a saved annotation view's captured frame is stored at."
+          tooltip="Saving an annotation view captures the viewport as a JPEG. Wider viewports are scaled down to this width. Larger values give the AI a sharper picture but use more storage."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.annotationViewMaxWidth}
+          value={c.ui.annotationViewMaxWidth}
+          min={320} max={4096} integer
+          onChange={v => set('ui', 'annotationViewMaxWidth', v)}
         />
         <Field cfgKey="ui.paneSlideMs"
           label="Pane slide"

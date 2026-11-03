@@ -15,6 +15,7 @@
 // so the same checks apply to console/MCP callers, not just the model.
 
 import { ASK_USER_TOOL, CARD_TOOL_ACK, PROPOSE_PLAN_TOOL } from './planReply';
+import { planEstimateInputError } from './planEstimate';
 import { detectorIds, paramsJsonSchema } from '../segmentation/registry';
 import type { ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
@@ -70,10 +71,11 @@ export interface ToolExecResult {
  *  from this so the schema can't silently omit a name the validator accepts
  *  (which previously schema-blocked the model from 5 valid subdocs). */
 export const SUBDOC_NAMES_LIST = [
-  'curves', 'bosl2', 'replicad', 'sdf', 'figure', 'creature', 'voxel', 'colors', 'print-safety',
+  'curves', 'bosl2', 'replicad', 'sdf', 'figure', 'creature', 'human', 'voxel', 'colors', 'print-safety',
   'fasteners', 'joints', 'gears', 'threads', 'reference-images', 'file-io', 'annotations',
   'printing', 'relief', 'textures', 'mechanisms', 'iteration-workflow', 'gotchas',
   'visual-verification', 'spending', 'manifold-api', 'reconstruction', 'deform', 'segmentation', 'ui-control',
+  'enclosure', 'knurl', 'headform', 'feasibility',
   // Deprecated: 'print-fit' split into 'fasteners' + 'joints'. Kept so an older
   // cached prompt requesting it gets the redirect stub instead of an error.
   'print-fit',
@@ -124,6 +126,16 @@ const normalConeSchema = (description: string) => ({
   required: ['axis', 'angleDeg'],
 });
 const AXIS_SCHEMA = { type: 'string', enum: ['x', 'y', 'z'] };
+/** renderView/renderViews zoom keys; probePixel views repeat them to match. */
+const VIEW_FOCUS_PROPS = {
+  focus: {
+    type: 'object',
+    description: 'Zoom onto a feature: {part:"name"} (listObjectParts), {piece:i}, or a world box {min:[x,y,z], max:[x,y,z]}.',
+    properties: { part: { type: 'string' }, piece: { type: 'integer' }, min: VEC3_SCHEMA, max: VEC3_SCHEMA },
+  },
+  padding: { type: 'number', description: 'Margin around focus, as a fraction of its largest side (default 0.15).' },
+  clip: { type: 'boolean', description: 'With focus: hide everything outside the focus box, so nearer geometry cannot block the view (sockets, slots).' },
+};
 
 const ALL_TOOLS: ToolDefinition[] = [
   {
@@ -332,7 +344,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'buildCharacter',
-    description: 'Build a posed, painted figure from a Character Creator SPEC and commit it as a version — the token-cheap way to make a person/toy figure: fill in parameters instead of writing + debugging figure code. Any subset of fields; missing ones take defaults; every field is validated (bad ones are listed in the error). Style: body.proportions "realistic" | "chibi" | "funko" (vinyl-pop: huge wide head; also set headsTall 3), body.headScale {x,y,z} to resize the head. body.headSink (≈0.4 = neckless toy), body.mittens. Face: eyeStyle "bead" (glossy toy eyes + glint), browThickness/browWidth (bold brows ≈ 3/1.5), jaw/chin/cheek. Hair: "anime" (flat swoopy ribbon locks: lockShape/chunk/spike/swoop/fringe/seed), "shag" (layered spiky jet-black mop: crown/layers/raggedness/flare/notched/crownSize/backWidth/tipWidth), "captured" (the Tsubasa Funko hairdo: volume/length/capturedFringe/spikiness/smooth/tilt/windowScale/mirror) or "mop". pose.hold {kind:"ball", radius, cup, cupL?, cupR?, handScale} = both hands hold a soccer ball (colors.ball base + pose.hold.color panels). Clothing: top.trim {collar, cuffs} (colors.trim); top.print [{text, where:"chest"|"back", size, x, z, color}] = embossed letters/numbers (e.g. N on the chest, 10 on the back); pants.length "shorts" (knee-length, hem) | "briefs"; socks {on, height, stripes, stripeSpan} (colors.socks + colors.sockStripe); feet {style:"toy", size, height, cleats} = chunky vinyl sneakers with studs. Colors are "#rrggbb" per region (skin, hair, top, pants, feet, sole, eyes/iris/pupil, eyeHighlight, lips, brows, trim, socks, sockStripe, base, ball). Figure-from-a-photo loop: view the photo once → fill the spec → buildCharacter → photoMatch (text only) → adjust spec fields from worst[] → repeat; tweak with getCharacterSpec. Returns geometry stats + version (the generated code is NOT echoed — call getCode only if you must hand-edit something the spec cannot express).',
+    description: 'Build a posed, painted figure from a Character Creator SPEC and commit it as a version — the token-cheap way to make a person/toy figure: fill in parameters instead of writing + debugging figure code. Any subset of fields; missing ones take defaults; every field is validated (bad ones are listed in the error). Style: body.proportions "realistic" | "chibi" | "funko" (vinyl-pop: huge wide head; also set headsTall 3), body.headScale {x,y,z} to resize the head. body.headSink (≈0.4 = neckless toy), body.mittens. Face: eyeStyle "bead" (glossy toy eyes + glint), browThickness/browWidth (bold brows ≈ 3/1.5), jaw/chin/cheek. Hair: "anime" (flat swoopy ribbon locks: lockShape/chunk/spike/swoop/fringe/seed), "shag" (layered spiky jet-black mop: crown/layers/raggedness/flare/notched/crownSize/backWidth/tipWidth), "captured" (a captured shaggy mop: volume/length/capturedFringe/spikiness/smooth/tilt/windowScale/mirror) or "mop". pose.hold {kind:"ball", radius, cup, cupL?, cupR?, handScale} = both hands hold a soccer ball (colors.ball base + pose.hold.color panels). Clothing: top.trim {collar, cuffs} (colors.trim); top.print [{text, where:"chest"|"back", size, x, z, color}] = embossed letters/numbers (e.g. N on the chest, 10 on the back); pants.length "shorts" (knee-length, hem) | "briefs"; socks {on, height, stripes, stripeSpan} (colors.socks + colors.sockStripe); feet {style:"toy", size, height, cleats} = chunky vinyl sneakers with studs. Colors are "#rrggbb" per region (skin, hair, top, pants, feet, sole, eyes/iris/pupil, eyeHighlight, lips, brows, trim, socks, sockStripe, base, ball). From a photo: fill the spec, build, score with photoMatch, adjust from worst[], repeat. Returns geometry stats + version (the generated code is NOT echoed — call getCode only if you must hand-edit something the spec cannot express).',
     input_schema: {
       type: 'object',
       properties: {
@@ -368,7 +380,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'photoMatch',
-    description: 'TEXT-ONLY likeness check of the current model against a reference photo — call this INSTEAD of renderView/renderViews for routine "does it look like the photo yet?" passes, and keep image renders for checkpoints (e.g. every 3–5 edits, or before finishing). Renders the model flat from `view` (default front: azimuth 0, elevation 0, ortho — match the photo\'s camera; azimuth 0 = model front faces -Y, 90 = faces +X), segments the photo (backdrop estimated from its border, or pass `bg`), normalises both silhouettes to a common height and returns: silhouetteIoU (1 = identical outline), aspect (model vs photo w/h), bands[] (10 horizontal slices top→bottom: photo/model width as % of height, widthDiffPct, dx centre offset), regions[] (per api.label part: iou, areaRatio, widthRatio/heightRatio, dx/dy centroid offset in % of height, photoColor vs model colour) and worst[] — the 3–5 most actionable findings in plain words (e.g. "hair: model 27% narrower across bands 0–1", "shoes: model region 28% smaller"). Fix the worst[] items, re-run photoMatch, and watch silhouetteIoU climb. Exclude parts the photo does not show (e.g. a display base) with `exclude`. If warnings say the photo silhouette touches the crop edge, or the aspect differs wildly, pass `crop`, `bg`, `pixelAspect` (stretched video frames) or `fit: "box"` (compare proportions only). Needs labelled parts with colours for the region analysis (silhouette metrics work without). outline[] is a compact text diff of the outline ("photo-only at bands 2–4 left: up to 3.1% of height (hair) → grow"); bands also carry left/right edge offsets (outward-positive). Pass `bands: 20` for a finer profile once the coarse shape is right. Have photos from several angles? Pass `views: [{image, azimuth, elevation}, …]` to score them all in one call (returns the mean silhouetteIoU + per-view results). Parts the photo cannot tell apart (white ball on a white shirt) come back with `lowConfidence` and their size findings suppressed — `merge` them ([["jersey","ball"]]) or `ignore` them. Busy backdrop: the scorer auto-switches to a colour model; pass `mask` (attachment id of a white-on-black silhouette) if it still fails. warnings[] also flag a reference too small to judge fine detail.',
+    description: 'TEXT-ONLY likeness check of the current model against a reference photo — call this INSTEAD of renderView/renderViews for routine "does it look like the photo yet?" passes, and keep image renders for checkpoints (e.g. every 3–5 edits, or before finishing). Renders the model flat from `view` (default front: azimuth 0, elevation 0, ortho — match the photo\'s camera; azimuth 0 = model front faces -Y, 90 = faces +X), segments the photo (backdrop estimated from its border, or pass `bg`), normalises both silhouettes to a common height and returns silhouetteIoU (1 = identical outline), aspect, bands[] (width per horizontal slice), regions[] (per api.label part: iou, size ratios, centroid offset, colour) and worst[]: the 3–5 most actionable findings in plain words (e.g. "hair: model 27% narrower across bands 0–1"). Field details: /ai/reference-images.md#photo-match. Fix the worst[] items, re-run photoMatch, and watch silhouetteIoU climb. Exclude parts the photo does not show (e.g. a display base) with `exclude`. If warnings say the photo silhouette touches the crop edge, or the aspect differs wildly, pass `crop`, `bg`, `pixelAspect` (stretched video frames) or `fit: "box"` (compare proportions only). Needs labelled parts with colours for the region analysis (silhouette metrics work without). outline[] is a compact text diff of the outline. Pass `bands: 20` for a finer profile once the coarse shape is right. Have photos from several angles? Pass `views: [{image, azimuth, elevation}, …]` to score them all in one call (returns the mean silhouetteIoU + per-view results). Parts the photo cannot tell apart (white ball on a white shirt) come back with `lowConfidence` and their size findings suppressed — `merge` them ([["jersey","ball"]]) or `ignore` them. Busy backdrop: the scorer auto-switches to a colour model; pass `mask` (attachment id of a white-on-black silhouette) if it still fails. warnings[] also flag a reference too small to judge fine detail.',
     input_schema: {
       type: 'object',
       properties: {
@@ -416,6 +428,32 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'fitHumanToPhoto',
+    description: 'Fit an api.human body (sliders + arm/leg spread) to a full-body photo\'s silhouette and save it as a version. Then style it in code; check with photoMatch. Read /ai/human.md#fit-to-a-photo first.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        image: { type: 'string', description: 'Front photo: attachment id or data URL.' },
+        views: {
+          type: 'array',
+          description: '1–4 photos instead of image.',
+          items: {
+            type: 'object',
+            properties: {
+              image: { type: 'string' },
+              azimuth: { type: 'number', description: '0 = front, 90 = left side.' },
+              elevation: { type: 'number' },
+              mask: { type: 'string', description: 'White = person.' },
+            },
+          },
+        },
+        baseJson: { type: 'string', description: 'api.human options to keep (JSON).' },
+        fit: { type: 'array', items: { type: 'string' }, description: 'Sliders to search.' },
+        budget: { type: 'integer', description: 'Candidate builds.' },
+      },
+    },
+  },
+  {
     name: 'probePixel',
     description: 'Click in your own perception. Translates a pixel in a renderView image back to a world-space surface hit on the mesh: {point, normal, distance, triangleId, nextStep}. The view must match the renderView call (same elevation/azimuth/ortho/size). This is THE tool for organic geometry: render → identify the feature visually → probePixel to get exact coords → paintConnected or paintNear. The returned point is exactly on the mesh surface (raycast, not snap), so paintRegion-style seed-precision worries are gone. Front-most hit = occlusion correct. A background pixel does NOT fail — it returns {hit:false, modelPixelBounds, hint} reporting where the model projects in this view, so just re-aim inside those bounds and probe again (pixel estimates off a render carry ±10-20px error, so the occasional miss is normal). THIN FEATURES: if the same feature keeps missing (e.g. a rim, a wire, a thin stripe) and the model only occupies a small fraction of the frame on the minor axis, the miss-hint suggests doubling the renderView `size` — each pixel then covers half the real area, so the same ±20px aim error stays on the feature.',
     input_schema: {
@@ -424,12 +462,13 @@ const ALL_TOOLS: ToolDefinition[] = [
         pixel: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2, description: '[x, y] pixel position. (0, 0) is top-left.' },
         view: {
           type: 'object',
-          description: 'Camera spec. MUST match the renderView call that produced the image — same elevation, azimuth, ortho, size.',
+          description: 'Camera spec. MUST match the renderView call that produced the image — same elevation, azimuth, ortho, size, and focus/padding/clip if used.',
           properties: {
             elevation: { type: 'number' },
             azimuth: { type: 'number' },
             ortho: { type: 'boolean' },
             size: { type: 'integer', description: 'Image size in px. Omit only if the renderView call omitted it too (both then use your render budget size).' },
+            ...VIEW_FOCUS_PROPS,
           },
         },
       },
@@ -445,12 +484,13 @@ const ALL_TOOLS: ToolDefinition[] = [
         pixels: { type: 'array', items: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 }, description: '[[x, y], ...] pixel positions. (0, 0) is top-left.' },
         view: {
           type: 'object',
-          description: 'Camera spec. MUST match the renderView call that produced the image — same elevation, azimuth, ortho, size.',
+          description: 'Camera spec. MUST match the renderView call that produced the image — same elevation, azimuth, ortho, size, and focus/padding/clip if used.',
           properties: {
             elevation: { type: 'number' },
             azimuth: { type: 'number' },
             ortho: { type: 'boolean' },
             size: { type: 'integer', description: 'Image size in px. Omit only if the renderView call omitted it too (both then use your render budget size).' },
+            ...VIEW_FOCUS_PROPS,
           },
         },
       },
@@ -525,6 +565,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         size: { type: 'integer', description: 'Pixel size of the rendered square. Default: your render budget (256 / 384 / 512 px by spending mode); the result label states the size used — pass that same size to probePixel. Larger costs more tokens.' },
         edges: { type: 'string', enum: [...EDGE_MODES], description: 'Edge overlay style. "crease" (default for uncolored models) draws only feature edges — corners and the silhouette — so the shape reads cleanly without facet noise on curves. "none" is a plain shaded surface (best when reading painted colors; the default for painted models). "wireframe" draws every triangle edge — use only to inspect tessellation or debug a failed boolean.' },
         reference: { type: 'boolean', description: 'Draw the setReferenceGeometry ghost (translucent, depth-tested: it shows where it pokes through the model). Default true when a reference is set; false hides it.' },
+        ...VIEW_FOCUS_PROPS,
       },
     },
   },
@@ -539,6 +580,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         size: { type: 'integer', description: 'Pixel size per cell. Default: your render budget (256 / 384 / 512 px by spending mode). Raise to 512-768 for a high-resolution final check; larger costs more tokens.' },
         edges: { type: 'string', enum: [...EDGE_MODES], description: 'Edge overlay applied to every tile. "crease" (default for uncolored models) draws only feature edges — corners and silhouette — so shape reads cleanly without facet noise on curves. "none" is a plain shaded surface (best for reading painted colors; default for painted models). "wireframe" draws every triangle edge — use only to inspect tessellation or debug a failed boolean.' },
         reference: { type: 'boolean', description: 'Draw the setReferenceGeometry ghost (translucent, depth-tested: it shows where it pokes through the model). Default true when a reference is set; false hides it.' },
+        ...VIEW_FOCUS_PROPS,
       },
     },
   },
@@ -797,6 +839,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         align: { type: 'string', enum: ['surface', 'area', 'view'], description: 'Slab prism direction. surface (default): normal of the triangle under each point. area: normal averaged over the brush (steadier on bumpy meshes). view: down the camera ray (viewDir, or the live camera) — paints what is under the brush as seen from that view.' },
         viewDir: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Camera forward direction (camera → model) for align "view" / frontFacesOnly, e.g. [0,1,0] for the front view. Omit to use the live viewport camera.' },
         frontFacesOnly: { type: 'boolean', description: 'Only paint triangles facing the camera (viewDir or the live camera), so the stroke never reaches the far side of a thin part.' },
+        occlude: { type: 'boolean', description: 'Only paint triangles the camera can see: skip ones hidden behind other geometry (e.g. a cheek just behind a nose, inside the brush). Pair with frontFacesOnly for "paint what this view shows".' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
         withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
@@ -1153,7 +1196,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'modifyAndTest',
-    description: 'Apply string substitution(s) to the current editor code, run the result, and return stats — WITHOUT saving a version or changing the editor. Use to test a tweak before committing. Provide either a single `find`/`replace` pair or a `patches` array for multiple simultaneous substitutions; each `find` must match exactly once or the call errors (no silent no-op). Returns {modifiedCode, codeDiff: {changed, added, removed, diff}, stats, passed?, failures?} — check codeDiff.changed to confirm the tweak actually altered the code.',
+    description: 'Apply string substitution(s) to the current editor code, run the result, and return stats — WITHOUT saving a version or changing the editor. Use to test a tweak before committing. Provide either a single `find`/`replace` pair or a `patches` array for multiple simultaneous substitutions; each `find` must match exactly once or the call errors (no silent no-op). Returns {modifiedCode, codeDiff: {changed, added, removed, diff}, stats, passed?, failures?, logs?} — check codeDiff.changed to confirm the tweak actually altered the code; logs is the patched code\'s console output.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1235,7 +1278,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'changeObject',
-    description: "Switch the active object — i.e. change what the USER sees in the editor/viewport. Address it by name, id (from listObjects), or 0-based index. Loads that object's latest version. You usually do NOT need this just to work on a different object: every object-scoped tool (getCode, runCode, runAndSave, paint*, getGeometryData, …) takes an optional `object` target that addresses an object directly. Use changeObject only when you want to move the user's focus, or to reset the editor to an object's latest saved version.",
+    description: "Switch the active object — i.e. change what the USER sees in the editor/viewport. Address it by name, id (from listObjects), or 0-based index. Like the user clicking it: unsaved edits on the open object are saved first, and the target opens at its latest version plus any unsaved draft. You usually do NOT need this just to work on a different object: every object-scoped tool (getCode, runCode, runAndSave, paint*, getGeometryData, …) takes an optional `object` target that addresses an object directly. Use changeObject only to move the user's focus; to go back to a saved version use loadVersion.",
     input_schema: {
       type: 'object',
       properties: {
@@ -1291,7 +1334,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'detectParts',
-    description: 'Split an IMPORTED mesh (e.g. a fused STL figurine) into named parts — hair, face, eyes, shirt, ball… — so paint can follow real part boundaries instead of boxes/slabs/normal floods. Creates a DRAFT (nothing saved), shows a coloured overlay and opens the Part Detection panel so the user can refine it by hand. "auto-merge" (Auto patches) needs no seeds: it splits the surface along its grooves into generic "patch N" parts — rename/merge them with editParts, or convert them to seeds (editParts seedsFromParts) and refine. For "crease-watershed" pass seeds: one or more {label, point} per part — get points from probePixel on a renderViews image; several seeds may share a label (add more for big or wrapped parts like a shirt front+back). Boundaries settle on the sculpted grooves between seeds and cover hidden surfaces too (inner arms behind a ball). "pieces" needs no seeds (separate bodies). Returns {parts:[{id,name,triCount,areaFrac,neighbors,regions,anchor}], quality, unassigned}. Then call renderParts to SEE the result and fix it with editParts. Read /ai/segmentation.md first.',
+    description: 'Split an IMPORTED mesh (e.g. a fused STL figurine) into named parts (hair, face, eyes, shirt…) so paint and cuts follow real part boundaries. Creates a DRAFT (nothing saved) with an overlay and opens the Part Detection panel. "auto-merge" needs no seeds (generic "patch N" parts to rename/merge with editParts); "crease-watershed" takes seeds {label, point} per part (points from probePixel; several per label for big or wrapped parts); "pieces" splits separate bodies. Then renderParts to SEE it and editParts to fix it. Read /ai/segmentation.md first.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1304,8 +1347,8 @@ const ALL_TOOLS: ToolDefinition[] = [
             properties: {
               label: { type: 'string', description: 'Part name this seed belongs to.' },
               point: { type: 'array', items: { type: 'number' }, description: '[x, y, z] on the surface (from probePixel / probeRay).' },
-              color: { type: 'string', description: 'Optional "#rrggbb": becomes the part\'s colour (kept through acceptParts). listPartDetectors labelPresets has default colours for common figure parts.' },
-              maxRadius: { type: 'number', description: 'Optional cap (model units, measured along the surface) on how far this seed may grow — stops a seed on an ungrooved area leaking. Prefer paintAlongBoundary for collars/cuffs.' },
+              color: { type: 'string', description: 'Optional "#rrggbb" part colour.' },
+              maxRadius: { type: 'number', description: 'Optional cap on how far this seed grows along the surface (stops leaks on ungrooved areas).' },
             },
             required: ['label', 'point'],
           },
@@ -1315,8 +1358,8 @@ const ALL_TOOLS: ToolDefinition[] = [
           type: 'object',
           description: 'Shared surface analysis. Usually omit.',
           properties: {
-            normalSmoothRadius: { type: 'number', minimum: 0, description: 'World-unit radius for denoising normals before measuring grooves. Omit = raw (default); try ~3× the mesh edge length only on very noisy scans.' },
-            normalSmoothEdgeLengths: { type: 'number', minimum: 0, description: 'Same denoise, as a multiple of the median edge length (3 ≈ a noisy scan). Ignored when normalSmoothRadius is set.' },
+            normalSmoothRadius: { type: 'number', minimum: 0, description: 'Normal-denoise radius (world units); only for very noisy scans.' },
+            normalSmoothEdgeLengths: { type: 'number', minimum: 0, description: 'Same, as a multiple of the median edge length.' },
           },
         },
         importIndex: { type: 'integer', minimum: 0, description: 'Which import (default 0).' },
@@ -1326,7 +1369,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'autoDetectParts',
-    description: 'Seedless first pass on an IMPORTED mesh — the same proposal an interactive STL import runs. Tries every automatic detector (listPartDetectors autoPropose:true), cheapest first, and the first that splits the mesh into 2+ parts REPLACES the current draft (e.g. "pieces" on a multi-body figure, one body per colour). Returns {proposed:true, proposedBy, tried, parts, quality} — then renderParts to check and editParts to rename — or {proposed:false, tried, reason} with the existing draft untouched (one solid piece: place named seeds and call detectParts with a seeded detector; or too many loose pieces to be colour bodies).',
+    description: 'Seedless first pass on an IMPORTED mesh, as an interactive STL import runs: tries the automatic detectors cheapest first; the first that finds 2+ parts REPLACES the draft (e.g. "pieces" on a multi-body figure). proposed:false leaves the draft untouched; for one solid piece, place named seeds and call detectParts.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1486,6 +1529,21 @@ const ALL_TOOLS: ToolDefinition[] = [
         label: { type: 'string', description: 'Version label (default "Detected parts").' },
         smoothEdges: { type: 'boolean', description: 'With edge smoothing on (the default, 3), the import is re-meshed along the smooth part boundaries. false keeps the original triangles.' },
         applyColors: { type: 'boolean', description: 'Default true: every part\'s visible colour becomes its model colour. false saves labels only (no colours).' },
+      },
+    },
+  },
+  {
+    name: 'splitIntoPieces',
+    description: 'Cut the model into printable pieces along its accepted parts; never hand-place planes across fused parts. preview (default) renders pulled-apart pieces without saving; preview:false saves. See /ai/segmentation.md.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        parts: { type: 'array', items: { type: 'string' }, description: 'Piece names; "a+b" = one piece. Default: every part.' },
+        seams: { type: 'array', description: 'Seam per piece (others auto).', items: { type: 'object', properties: { piece: { type: 'string' }, mode: { type: 'string', enum: ['auto', 'medial', 'flat', 'plug'] }, axis: { type: 'array', items: { type: 'number' } }, depth: { type: 'number' } }, required: ['piece', 'mode'] } },
+        keep: { type: 'string', description: 'Piece that keeps the rest (default largest).' },
+        clearance: { type: 'number', minimum: 0 },
+        preview: { type: 'boolean' },
+        remove: { type: 'boolean' },
       },
     },
   },
@@ -1897,7 +1955,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'thicknessMap',
-    description: 'Wall-thickness map of the current model: EVERY triangle\'s distance straight through the solid to the opposite wall (exact on flat walls, a close estimate on curved ones — checkPrintability only samples a few hundred). Returns the thinnest wall and where, the median, how much surface is below `threshold` (default 2 × the printer nozzle width), and the thin SPOTS — connected thin areas, thinnest first, each with { center, thinnest, thickness, area, triangleCount } — so you can thicken exactly those places. render: true adds a heatmap image (red ≤ ½·threshold, yellow at the threshold, grey ≥ 2·threshold).',
+    description: 'Wall thickness under EVERY triangle of the current model (checkPrintability only samples). Returns the thinnest wall and where, the median, the share below `threshold`, and the thin SPOTS (connected areas, thinnest first: center, thinnest, thickness, area) to thicken. render: true adds a heatmap (red ≤ ½·threshold, yellow at it, grey ≥ 2×).',
     input_schema: {
       type: 'object',
       properties: {
@@ -2054,20 +2112,20 @@ const ALL_TOOLS: ToolDefinition[] = [
 
 **Routing — prefer the default.** mode 'auto' (default): in a manifold-js session the texture is written INTO THE CODE as an \`api.surface.<id>({…})\` call (inserted before the final return, or the existing call for that id is updated in place) — the model stays parametric, the texture recomputes when the code changes, and saved versions keep the computed result. In a SCAD/BREP/voxel session it falls back to BAKING the textured mesh (the parametric source is replaced — the returned warnings say so). mode 'code' forces the in-code path (errors off manifold-js); mode 'bake' forces the destructive bake. To fine-tune on manifold-js, just call again with new opts — the code call is edited in place, no undo round-trip needed.
 
-**opts by id** (all optional — size-relative defaults fill in; amplitude in world units, start ~1–3% of model diagonal; quality 1–5 mesh detail; seed for reproducibility):
-- fuzzy: amplitude, scale (feature size, ~4% of diagonal), octaves (1–5), seed, quality
-- knit: amplitude, stitchWidth, stitchHeight, rowOffset (0–1), roundness (0–1), grainAngleDeg, variation, seed, quality, algorithm ('bfs'|'lscm'|'harmonic')
+**opts by id** (all optional; size-relative defaults; amplitude in world units, start ~1–3% of the model diagonal; quality 1–5; seed). Meanings and good values: /ai/textures.md.
+- fuzzy: amplitude, scale, octaves, seed, quality
+- knit: amplitude, stitchWidth, stitchHeight, rowOffset, roundness, grainAngleDeg, variation, seed, quality, algorithm ('bfs'|'lscm'|'harmonic')
 - cable: amplitude, cableWidth, cablePitch, plyWidth, grainAngleDeg, variation, seed, quality
-- waffle: amplitude, cellWidth, cellHeight, sharpness (1=soft…8+=thin border), rowOffset (0.5=honeycomb), grainAngleDeg, seed, quality
+- waffle: amplitude, cellWidth, cellHeight, sharpness, rowOffset (0.5 = honeycomb), grainAngleDeg, seed, quality
 - fur: amplitude, fiberSpacing, fiberLength, octaves, grainAngleDeg, seed, quality
-- woven: amplitude, threadSpacing, threadWidth (0.1–0.9 fraction), underDepth (0–1), grainAngleDeg, seed, quality
-- knurl: amplitude (ridge height), cellWidth/cellHeight (ridge spacing), style ('diamond'|'straight'|'ribs'), profile ('round' soft cosine bumps | 'pyramid' straight-sided machinist diamonds), sharpness (1 soft … 6+ sharp peaks), grainAngleDeg, seed, quality — the machinist grip pattern (diamond cross-hatch, axial splines, or finger ribs)
-- voronoi: amplitude, cellSize, wallWidth (fraction), raised (false = engraved channels), jitter (0–1), grainAngleDeg, seed, quality
-- smooth: iterations (Taubin passes, ~5), subdivide (default true)
+- woven: amplitude, threadSpacing, threadWidth, underDepth, grainAngleDeg, seed, quality
+- knurl (machinist grip): amplitude, cellWidth, cellHeight, style ('diamond'|'straight'|'ribs'), profile ('round'|'pyramid'), sharpness, grainAngleDeg, seed, quality
+- voronoi: amplitude, cellSize, wallWidth, raised (false = engraved channels), jitter, grainAngleDeg, seed, quality
+- smooth: iterations (~5), subdivide (default true)
 Plus preserveColor (default true — bake path only; on the code path paint re-resolves against the textured mesh every run automatically).
 
 **Scoping (code path / manifold-js only).** By default the texture covers the whole skin. Add ONE of these to opts to limit it to part of the model:
-- label: 'name' — texture only the triangles of an \`api.label(shape, 'name', …)\` region. Lets you texture one shape of a union (e.g. a knurled grip on a smooth body): label that shape in the code, union it, then \`applySurfaceTexture('knurl', { label: 'grip' })\`.
+- label: 'name' — only an \`api.label(shape, 'name')\` region (e.g. a knurled grip on a smooth body: \`applySurfaceTexture('knurl', { label: 'grip' })\`).
 - region: { point: [x,y,z], radius } — texture every triangle whose surface is within \`radius\` of a world-space point. Use getGeometryData's bbox/centroid to pick a point on the model.
 (Scoping is ignored on the bake path; pass label/region only with mode 'auto'/'code'.)
 
@@ -2366,6 +2424,7 @@ Returns { ok, stats, metrics, version } or { error }.`,
         align: { type: 'string', enum: ['surface', 'area', 'view'], description: 'Slab direction, as for paintStroke: surface (default), area (averaged normal), view (down the camera ray).' },
         viewDir: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Camera forward direction for align "view" / frontFacesOnly; omit for the live camera.' },
         frontFacesOnly: { type: 'boolean', description: 'Only spray triangles facing the camera.' },
+        occlude: { type: 'boolean', description: 'Only spray triangles the camera can see (not hidden behind other geometry).' },
         name: { type: 'string' },
         withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge.' },
       },
@@ -2374,7 +2433,7 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: 'exportModel',
-    description: "Download the model as a file — the toolbar Export menu. REQUIRES USER CONFIRMATION (it saves a file to the user's computer): only call it when the user asked to export or download. format: 'stl' | 'obj' | 'glb' | '3mf' (one file of the current object, or of several objects with `objects`), '3mf-objects' (a Bambu Studio / OrcaSlicer project with each object on its own plate and colours bound to filaments; default all objects), 'step' (BREP / replicad sessions only), 'vox' (MagicaVoxel, voxel sessions only). `objects` (names or ids from listObjects) bundles several objects into one download; STEP and VOX export only the current object. `split` writes an object as one file object per separate piece ('pieces') or per labelled part ('parts'; parts fused into one solid stay together), keeping each piece's modelled orientation; `exclude` leaves split items out by name (\"<object> · <item>\"). Painted colours are kept where the format supports them (3MF, OBJ, GLB). Returns { ok, format, filename?, objects?, items? } or { error }.",
+    description: "Download the model as a file — the toolbar Export menu. REQUIRES USER CONFIRMATION (it saves a file to the user's computer): only call it when the user asked to export or download. format: 'stl' | 'obj' | 'glb' | '3mf' (one file of the current object, or of several objects with `objects`), '3mf-objects' (a Bambu Studio / OrcaSlicer project with each object on its own plate and colours bound to filaments; default all objects), 'step' (BREP / replicad sessions only), 'vox' (MagicaVoxel, voxel sessions only). `objects` (names or ids from listObjects) bundles several objects into one download; STEP and VOX export only the current object. `split` writes an object as one file object per separate piece ('pieces') or per labelled part ('parts'; parts fused into one solid stay together), keeping each piece's modelled orientation; `exclude` leaves split items out by name (\"<object> · <item>\"). listExportItems (tool group \"objects\") lists what each object splits into. Painted colours are kept where the format supports them (3MF, OBJ, GLB). Returns { ok, format, filename?, objects?, items? } or { error }.",
     input_schema: {
       type: 'object',
       properties: {
@@ -2390,7 +2449,7 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: 'renderSection',
-    description: 'Render a CROSS-SECTION image of the current model cut along any axis — see inside: wall thickness, cavities, internal supports, a press-fit gap. axis x | y | z (default z); offset = where along that axis to cut (default: the middle of the model). The image reads like the matching view: a y cut is seen from the front (+X right, +Z up), an x cut from the right (+Y right, +Z up), a z cut from above (+X right, +Y up); it is captioned, has labelled axis arrows and a scale bar, and outlines the setReferenceGeometry ghost (dashed green) when one is set. Returns the image plus { axis, offset, area, contours, view: {right, up, from}, boundingBox (in those image axes), referenceContours? } (contours > 1 = hollow or several pieces). sliceAtZVisual is the z-only shortcut.',
+    description: 'CROSS-SECTION image of the current model along any axis — see walls, cavities, a press-fit gap. offset defaults to the middle. Oriented like the matching view (y from the front, x from the right, z from above), with a caption, axis arrows, a scale bar, and the reference ghost dashed. Returns the image + { area, contours, view: {right, up, from}, boundingBox (image axes), referenceContours? }; contours > 1 = hollow or several pieces.',
     input_schema: {
       type: 'object',
       properties: {
@@ -2539,13 +2598,27 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: PROPOSE_PLAN_TOOL,
-    description: 'Present your plan as a card the user can build, revise or discard. Plan mode only. This ENDS your turn. Keep it concrete: a short summary of what you will make, the ordered steps you will take, and the assumptions you made so the user can correct them. If you need answers before you can plan well, call askUser instead.',
+    description: 'Present your plan as a card the user can build, revise or discard. Plan mode only. This ENDS your turn. Keep it concrete: a short summary of what you will make, the ordered steps you will take, and the assumptions you made so the user can correct them. Always include an honest `estimate` — the build is stopped for the user\'s go-ahead at roundsMax, so an optimistic estimate only means an earlier checkpoint. If you need answers before you can plan well, call askUser instead.',
     input_schema: {
       type: 'object',
       properties: {
         summary: { type: 'string', description: 'One short paragraph: what you will build and the overall approach.' },
         steps: { type: 'array', minItems: 1, items: { type: 'string' }, description: 'The concrete steps, in order.' },
         assumptions: { type: 'array', items: { type: 'string' }, description: 'Defaults you chose that the user may want to change.' },
+        estimate: {
+          type: 'object',
+          description: 'How likely this is to land. A round = one of your tool round-trips while building.',
+          properties: {
+            difficulty: { type: 'string', enum: ['easy', 'medium', 'hard', 'research'], description: 'For this app and its tools: research = no known reliable route.' },
+            confidence: { type: 'integer', minimum: 0, maximum: 100, description: 'Chance (%) of reaching `quality` within roundsMax.' },
+            roundsMin: { type: 'integer', minimum: 1, maximum: 200 },
+            roundsMax: { type: 'integer', minimum: 1, maximum: 200, description: 'Realistic upper bound, including verification and fixes.' },
+            quality: { type: 'string', description: 'What the result will realistically look like (e.g. "clean blockout", "close to the photo").' },
+            gaps: { type: 'array', items: { type: 'string' }, description: 'Tools missing or weak for this task.' },
+            risks: { type: 'array', items: { type: 'string' }, description: 'What is most likely to go wrong.' },
+          },
+          required: ['difficulty', 'roundsMin', 'roundsMax'],
+        },
       },
       required: ['summary', 'steps'],
     },
@@ -2554,12 +2627,24 @@ Returns { ok, stats, metrics, version } or { error }.`,
   // Kept in one contiguous block; gated in the sets below.
   {
     name: 'listAnnotations',
-    description: 'Read the marks the USER drew on the model with the Annotate tool (✏️): freehand strokes and pinned text labels, with their 3D positions. Call this when the user says "here", "this part", "where I marked", or after they annotate — it locates what they pointed at without a render. Returns { count, strokes: [{id, color, width, pointCount, bbox, centroid, points (downsampled), camera}], texts: [{id, text, color, anchor, camera}] }. Annotations are a feedback layer, not geometry: infer the feature under each point (probeRay / findFaces / listLabels) and confirm your reading with the user before editing.',
+    description: 'Read the marks the USER drew on the model with the Annotate tool (✏️): freehand strokes and pinned text labels, with their 3D positions. Call this when the user says "here", "this part", "where I marked", or after they annotate — it locates what they pointed at without a render. Returns { count, strokes: [{id, color, width, pointCount, bbox, centroid, points (downsampled), camera}], texts: [{id, text, color, anchor, camera}], views: [{id, title, summary, createdAt, attached}] }. `views` are frames the user saved with their exact camera (Snapshot style) — call viewAnnotationView to see one. Annotations are a feedback layer, not geometry: infer the feature under each point (probeRay / findFaces / listLabels) and confirm your reading with the user before editing.',
     input_schema: {
       type: 'object',
       properties: {
         maxPointsPerStroke: { type: 'integer', minimum: 0, maximum: 500, description: 'Downsample each stroke polyline to at most this many points (endpoints kept). 0 omits points entirely (bbox/centroid are still returned). Default 16.' },
       },
+    },
+  },
+  {
+    name: 'viewAnnotationView',
+    description: 'See an annotation view the USER saved with the Annotate tool (ids from listAnnotations().views, or an "[Annotation view …]" line in their message): the frame they marked up from their exact camera, plus what each mark points at — hits[] {parts (labelled parts under the mark, most-hit first), centroid, bbox in world units, hits/samples} and marks2D (normalized image positions; closed: true = a loop around something). Pass fresh: true to render the CURRENT model from that same camera with their marks on top, to check your change from the angle they flagged.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Annotation view id (av_…).' },
+        fresh: { type: 'boolean', description: 'Render the current model from the saved camera instead of returning the frame the user saw. Default false.' },
+      },
+      required: ['id'],
     },
   },
   {
@@ -2730,13 +2815,35 @@ export const OBJECT_TARGETABLE_TOOLS = new Set<string>([
   'healCurrent', 'replaceColor', 'setRegionVisibility', 'paintAirbrush', 'renderSection',
   'getObjectPartInfo', 'setObjectPartColor', 'renameObjectPart', 'bakeObjectPartColor',
   'extractObjectPiece', 'extractObjectParts', 'reassignPaint', 'partAction', 'undoPartEdit',
+  'splitIntoPieces',
 ]);
+
+/** Read-only object-targetable tools. When one targets an object other than
+ *  the open one, focus returns to the user's object (and version) afterwards,
+ *  so an agent inspecting a sibling doesn't leave the user looking at it
+ *  (#1197). Left out on purpose: tools that change an object (the user should
+ *  see the change), and reads whose answer feeds a follow-up call on the same
+ *  object — triangle ids (findFaces, getPartTriangles), region ids
+ *  (listRegions, paintExplain), piece indices (getObjectPartInfo), surface
+ *  points (probe*, partBoundary) — so an untargeted paint right after still
+ *  lands on the object those ids belong to. */
+export const FOCUS_RETURNING_TOOLS = new Set<string>([
+  'getActiveLanguage', 'getCode', 'getParams', 'getGeometryData', 'getMeshSummary', 'getFeatureCentroids',
+  'listVersions', 'getModelDrift', 'diffVersions', 'modifyAndTest', 'query', 'listComponents',
+  'listLabels', 'getModelColors', 'assertPaint', 'sliceAtZVisual', 'renderSection',
+  'checkPrintability', 'thicknessMap', 'renderView', 'renderViews',
+]);
+
+/** Bumped on every executeTool call, so a focus return that finishes late (its
+ *  read outlived the agent's tool timeout) can tell a newer call has started
+ *  and must not be switched away from under it. */
+let toolCallGeneration = 0;
 
 // The shared `object` target schema, injected into every targetable tool so the
 // description stays in one place. Typeless on purpose — it accepts a name/id
 // string OR a 0-based index number (resolvePartTarget in main.ts handles both).
 const OBJECT_TARGET_PROP = {
-  description: 'Optional. The OBJECT to act on — addressed by its name, its id (from listObjects), or its 0-based index. Defaults to the current object. Pass this to target a specific object directly instead of relying on the current selection; it also makes a separate changeObject call unnecessary. Switching focus to the object is visible to the user.',
+  description: 'Optional. The OBJECT to act on — its name, id (from listObjects), or 0-based index. Defaults to the current object. Pass it instead of relying on the current selection or a separate changeObject call. Read-only tools (renders, queries) switch back to the user\'s object afterwards; tools that change the object leave it focused.',
 };
 for (const tool of ALL_TOOLS) {
   if (OBJECT_TARGETABLE_TOOLS.has(tool.name) && !('object' in tool.input_schema.properties)) {
@@ -2841,6 +2948,7 @@ const ALWAYS_AVAILABLE = new Set([
   'evalAgainstImport',
   // #1085: reads + metadata setters wrapping existing window.partwright methods.
   'listAnnotations',
+  'viewAnnotationView',
   'diffVersions',
   'getMeasurement',
   'getViewState',
@@ -2974,7 +3082,7 @@ const PLAN_MODE_TOOLS = new Set([
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
   'evalAgainstImport',
   // #1085 pure reads.
-  'listAnnotations', 'diffVersions', 'getMeasurement', 'getViewState',
+  'listAnnotations', 'viewAnnotationView', 'diffVersions', 'getMeasurement', 'getViewState',
   'getPalette', 'getUnits', 'listSessions',
   'getCurvatureQuality', 'getAppConfig', 'getDiagnosticLog',
   'getUiState',
@@ -3006,7 +3114,7 @@ export const RETRY_SAFE_TOOLS = new Set([
   'probePixels', 'getPartTriangles', 'partBoundary', 'previewSeeds',
   'evalAgainstImport',
   // #1085 pure reads.
-  'listAnnotations', 'diffVersions', 'getMeasurement', 'getViewState',
+  'listAnnotations', 'viewAnnotationView', 'diffVersions', 'getMeasurement', 'getViewState',
   'getPalette', 'getUnits', 'listSessions',
   'getUiState', 'listCatalog',
   // Visual-only view state; re-applying it is idempotent.
@@ -3025,7 +3133,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams', 'setCurvatureQuality']);
-const SAVE_GATED = new Set(['runAndSave', 'forkVersion', 'loadVersion', 'saveVersion', 'resolveModelDrift', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts', 'partAction', 'undoPartEdit']);
+const SAVE_GATED = new Set(['runAndSave', 'fitHumanToPhoto', 'forkVersion', 'loadVersion', 'saveVersion', 'resolveModelDrift', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts', 'partAction', 'undoPartEdit', 'splitIntoPieces']);
 /** SAVE_GATED tools that touch version history WITHOUT executing new code, so
  *  they only need the saveVersions scope (not runCode). */
 const SAVE_NON_RUNNING = new Set(['loadVersion', 'saveVersion', 'renameVersion', 'deleteVersion', 'saveAllObjects']);
@@ -3047,7 +3155,8 @@ export function isModelChangingTool(name: string, input?: Record<string, unknown
   if (name === 'renameVersion') return false;
   // editPalette is paint-gated but edits the spool list, not the model.
   if (name === 'editPalette') return false;
-  return name === 'runCode' || name === 'setCode' || name === 'setParams' || SAVE_GATED.has(name) || PAINT_GATED.has(name);
+  // A delegated worker edits and saves the model on the main agent's behalf.
+  return name === 'delegateTask' || name === 'runCode' || name === 'setCode' || name === 'setParams' || SAVE_GATED.has(name) || PAINT_GATED.has(name);
 }
 
 /** Where the AI's importFromUrl lands when the model names no target: a new
@@ -3095,7 +3204,7 @@ export function describeToolConfirmation(name: string, input: Record<string, unk
  *  vision spend in one place — when off, the agent has to reason from
  *  code + stats alone. runIsolated is here because its primary value is
  *  the thumbnail; without vision it degrades to just the stats. */
-const VIEWS_GATED = new Set(['renderView', 'renderViews', 'runIsolated', 'renderSection']);
+const VIEWS_GATED = new Set(['renderView', 'renderViews', 'runIsolated', 'renderSection', 'viewAnnotationView']);
 // `finish` only exists in auto-continue mode — it's the sentinel the model
 // calls to end a turn (otherwise the loop resumes it). Off-mode never offers
 // it, so off-mode behavior is unchanged.
@@ -3339,24 +3448,25 @@ function matchObjectRow(objects: ObjectRow[], target: string | number): ObjectRo
  *  last selected in the object list. `target` is an object name, id, or 0-based
  *  index (mirrors resolvePartTarget on the API side). No-op when the target is
  *  already current — which avoids reloading the object and clobbering any
- *  in-progress editor draft on it. Returns an error string on a bad target, or
- *  null on success. */
-async function focusTargetObject(api: PartwrightAPI, target: string | number): Promise<string | null> {
+ *  in-progress editor draft on it. Returns `{ error }` on a bad target, else
+ *  where focus was before (`previous`, null when nothing switched). */
+type FocusSpot = { id: string; version: number | null };
+async function focusTargetObject(api: PartwrightAPI, target: string | number): Promise<{ error: string } | { previous: FocusSpot | null }> {
   const objects = api.listObjects() as ObjectRow[] | undefined;
   if (!Array.isArray(objects) || objects.length === 0) {
-    return `Cannot target object ${JSON.stringify(target)}: no active session with objects. Open a session first.`;
+    return { error: `Cannot target object ${JSON.stringify(target)}: no active session with objects. Open a session first.` };
   }
   if (typeof target === 'number' && (!Number.isInteger(target) || target < 0)) {
-    return `Cannot target object: index must be a non-negative integer (got ${JSON.stringify(target)}).`;
+    return { error: `Cannot target object: index must be a non-negative integer (got ${JSON.stringify(target)}).` };
   }
   const match = matchObjectRow(objects, target);
-  if (!match) return `Cannot target object ${JSON.stringify(target)}: no matching object (by name, id, or index). Call listObjects() to see what's available.`;
-  if (match.isCurrent) return null; // already focused — don't reload and clobber an in-progress edit
-  const switched = await api.changeObject(match.id) as { error?: string } | undefined;
+  if (!match) return { error: `Cannot target object ${JSON.stringify(target)}: no matching object (by name, id, or index). Call listObjects() to see what's available.` };
+  if (match.isCurrent) return { previous: null }; // already focused — don't reload and clobber an in-progress edit
+  const switched = await api.changeObject(match.id) as { error?: string; previous?: FocusSpot | null } | undefined;
   if (switched && typeof switched === 'object' && 'error' in switched && switched.error) {
-    return `Cannot target object ${JSON.stringify(target)}: ${switched.error}`;
+    return { error: `Cannot target object ${JSON.stringify(target)}: ${switched.error}` };
   }
-  return null;
+  return { previous: switched?.previous ?? null };
 }
 
 /** Dispatches a tool call to window.partwright and stringifies the result.
@@ -3389,7 +3499,7 @@ function proposePlanInputError(input: Record<string, unknown>): string | null {
   if (input.assumptions !== undefined && (!Array.isArray(input.assumptions) || input.assumptions.some(s => typeof s !== 'string'))) {
     return 'proposePlan: `assumptions` must be an array of strings.';
   }
-  return null;
+  return planEstimateInputError(input.estimate);
 }
 
 export async function executeTool(name: string, rawInput: Record<string, unknown>): Promise<ToolExecResult> {
@@ -3432,6 +3542,10 @@ export async function executeTool(name: string, rawInput: Record<string, unknown
       delete input.scope;
     }
     const api = getApi();
+    const generation = ++toolCallGeneration;
+    // Set when a read-only tool switched focus to another object: where to
+    // switch back to, and the object it switched to.
+    let returnFocus: { to: FocusSpot; from: string } | null = null;
     // Object addressing: an object-scoped tool may name an `object` target (name,
     // id, or 0-based index; `part` is the pre-rename spelling, still accepted).
     // Switch focus to it before running so the op acts on the addressed object —
@@ -3445,40 +3559,72 @@ export async function executeTool(name: string, rawInput: Record<string, unknown
       delete input.object;
       if (!ownsPart) delete input.part;
       if (target != null) {
-        const focusErr = await focusTargetObject(api, target);
-        if (focusErr) return { content: focusErr, isError: true };
+        const focus = await focusTargetObject(api, target);
+        if ('error' in focus) return { content: focus.error, isError: true };
+        const after = currentObjectId(api);
+        if (FOCUS_RETURNING_TOOLS.has(name) && focus.previous && after && after !== focus.previous.id) {
+          returnFocus = { to: focus.previous, from: after };
+        }
       }
     }
-    // Tools that ship images back to the model bypass the generic JSON
-    // dispatch — they need the data-URL → multimodal-image wrapping.
-    if (name === 'renderView') return executeRenderView(api, input);
-    if (name === 'renderViews') return await executeRenderViews(api, input);
-    if (name === 'thicknessMap') return await executeThicknessMap(api, input);
-    if (name === 'runIsolated') return await executeRunIsolated(api, input);
-    if (name === 'sliceAtZVisual') return await executeSliceAtZVisual(api, input);
-    if (name === 'getReferenceImages') return await executeGetReferenceImages(api);
-    if (name === 'getAttachments') return executeGetAttachments(api);
-
-    const result = await dispatch(api, name, input);
-    if (result === undefined) return { content: '(ok)', isError: false };
-    if (typeof result === 'string') return { content: result, isError: false };
-    // If a dispatch returned an object that already looks like our
-    // ToolExecResult shape (image-bearing), pass it through. Otherwise
-    // serialize normally.
-    if (result && typeof result === 'object' && 'content' in (result as Record<string, unknown>) && 'isError' in (result as Record<string, unknown>)) {
-      return result as ToolExecResult;
+    let result: ToolExecResult;
+    try {
+      result = await runTool(api, name, input);
+    } catch (err) {
+      result = { content: err instanceof Error ? err.message : String(err), isError: true };
     }
-    // A value-returning API method reports failure as `{ error }` instead of
-    // throwing (ai.md#argument-validation): flag it as an error result so the
-    // model and the loop (finishBatchErrored) see a failure, as they did when
-    // the same bad input threw. Auto-retry still only re-runs TRANSIENT failures.
-    const failed = typeof result === 'object' && result !== null && !Array.isArray(result)
-      && typeof (result as { error?: unknown }).error === 'string';
-    return { content: JSON.stringify(result, null, 2), isError: failed };
+    // Switch back only when nothing moved focus meanwhile (the user clicking
+    // an object) and no newer tool call has started — never yank the user,
+    // or a later call, off the object they're on.
+    if (returnFocus && generation === toolCallGeneration && currentObjectId(api) === returnFocus.from) {
+      const back = await api.changeObject(returnFocus.to.id, returnFocus.to.version != null ? { version: returnFocus.to.version } : undefined) as { error?: string; name?: string } | undefined;
+      if (back && !back.error) {
+        const fromName = (api.listObjects() as ObjectRow[]).find(o => o.id === returnFocus!.from)?.name ?? returnFocus.from;
+        result.content += `\n\n(Focus went back to the user's object "${back.name}". Pass object: ${JSON.stringify(fromName)} again on follow-up calls about ${JSON.stringify(fromName)}.)`;
+      }
+    }
+    return result;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { content: msg, isError: true };
   }
+}
+
+/** The id of the object open in the editor, or null with no session. */
+function currentObjectId(api: PartwrightAPI): string | null {
+  const objects = api.listObjects() as ObjectRow[] | undefined;
+  return Array.isArray(objects) ? objects.find(o => o.isCurrent)?.id ?? null : null;
+}
+
+/** Run one tool on the focused object (executeTool has already resolved its
+ *  object target). */
+async function runTool(api: PartwrightAPI, name: string, input: Record<string, unknown>): Promise<ToolExecResult> {
+  // Tools that ship images back to the model bypass the generic JSON
+  // dispatch — they need the data-URL → multimodal-image wrapping.
+  if (name === 'renderView') return executeRenderView(api, input);
+  if (name === 'renderViews') return await executeRenderViews(api, input);
+  if (name === 'thicknessMap') return await executeThicknessMap(api, input);
+  if (name === 'runIsolated') return await executeRunIsolated(api, input);
+  if (name === 'sliceAtZVisual') return await executeSliceAtZVisual(api, input);
+  if (name === 'getReferenceImages') return await executeGetReferenceImages(api);
+  if (name === 'getAttachments') return executeGetAttachments(api);
+
+  const result = await dispatch(api, name, input);
+  if (result === undefined) return { content: '(ok)', isError: false };
+  if (typeof result === 'string') return { content: result, isError: false };
+  // If a dispatch returned an object that already looks like our
+  // ToolExecResult shape (image-bearing), pass it through. Otherwise
+  // serialize normally.
+  if (result && typeof result === 'object' && 'content' in (result as Record<string, unknown>) && 'isError' in (result as Record<string, unknown>)) {
+    return result as ToolExecResult;
+  }
+  // A value-returning API method reports failure as `{ error }` instead of
+  // throwing (ai.md#argument-validation): flag it as an error result so the
+  // model and the loop (finishBatchErrored) see a failure, as they did when
+  // the same bad input threw. Auto-retry still only re-runs TRANSIENT failures.
+  const failed = typeof result === 'object' && result !== null && !Array.isArray(result)
+    && typeof (result as { error?: unknown }).error === 'string';
+  return { content: JSON.stringify(result, null, 2), isError: failed };
 }
 
 /** Returns an error message when the supplied code clearly doesn't match
@@ -3660,7 +3806,7 @@ function executeRenderView(api: PartwrightAPI, input: Record<string, unknown>): 
   // Mirror the budget-driven default size applied in window.partwright.renderView
   // so the label reports the size actually rendered.
   const size = (input.size as number | undefined) ?? getRenderBudget().defaultPx;
-  const label = `view: elev=${elevation}°, az=${azimuth}°${ortho ? ', ortho' : ''}, ${size}px`;
+  const label = `view: elev=${elevation}°, az=${azimuth}°${ortho ? ', ortho' : ''}, ${size}px${input.focus ? `, focus ${JSON.stringify(input.focus)}${input.clip ? ' (clipped)' : ''}` : ''}`;
   return wrapImageResult(result, 'renderView', label);
 }
 
@@ -3674,7 +3820,8 @@ async function executeRenderViews(api: PartwrightAPI, input: Record<string, unkn
   const label = angles && angles.length > 0
     ? `views: ${angles.length} custom angles (${size}px per cell)`
     : `views: ${views} composite (${size}px per cell)`;
-  return wrapImageResult(result, 'renderViews', label);
+  const focus = input.focus ? `, focus ${JSON.stringify(input.focus)}${input.clip ? ' (clipped)' : ''}` : '';
+  return wrapImageResult(result, 'renderViews', label + focus);
 }
 
 async function executeRunIsolated(api: PartwrightAPI, input: Record<string, unknown>): Promise<ToolExecResult> {
@@ -3920,6 +4067,21 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.paintAlongBoundary(input);
     case 'photoMatch':
       return await api.photoMatch(input);
+    case 'fitHumanToPhoto': {
+      // Always commits (like buildCharacter) and drops the generated code from
+      // the result: the model only needs it to hand-edit, via getCode.
+      const { baseJson, ...rest } = input;
+      let base: unknown;
+      if (typeof baseJson === 'string' && baseJson.trim()) {
+        try { base = JSON.parse(baseJson); } catch { return { error: 'fitHumanToPhoto: baseJson is not valid JSON' }; }
+      }
+      const r = await api.fitHuman({ ...rest, ...(base !== undefined ? { base } : {}), save: true }) as Record<string, unknown>;
+      if (r && typeof r === 'object' && typeof r.code === 'string') {
+        const { code, ...rest } = r;
+        return { ...rest, codeChars: (code as string).length };
+      }
+      return r;
+    }
     case 'buildCharacter': {
       // Always commits (the chat AI's work should leave a version), and drops
       // the generated code from the result — it is a few KB the model only
@@ -4129,6 +4291,27 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.setPartsOverlay(input.visible);
     case 'acceptParts':
       return api.acceptParts(input);
+    case 'splitIntoPieces': {
+      // The schema carries seams as [{piece, mode, axis?, depth?, normal?}]
+      // (every object param declares its fields); the API takes { piece: seam }.
+      const args: Record<string, unknown> = { ...input };
+      if (Array.isArray(input.seams)) {
+        const seams: Record<string, unknown> = {};
+        for (const raw of input.seams as Record<string, unknown>[]) {
+          if (!raw || typeof raw.piece !== 'string') return { error: 'splitIntoPieces: each seams entry needs a piece name and a mode.' };
+          const { piece, ...spec } = raw;
+          seams[piece as string] = Object.keys(spec).length === 1 && typeof spec.mode === 'string' ? spec.mode : spec;
+        }
+        args.seams = seams;
+      }
+      const result = await api.splitIntoPieces(args) as Record<string, unknown>;
+      if (!result || typeof result !== 'object' || 'error' in result) return result;
+      const image = result.image as string | undefined;
+      delete result.image;
+      const img = typeof image === 'string' ? parseImageDataUrl(image) : null;
+      if (!img) return result;
+      return { content: `splitIntoPieces: ${JSON.stringify(result)}`, isError: false, image: { ...img, label: 'splitIntoPieces preview' } } satisfies ToolExecResult;
+    }
     case 'discardParts':
       return api.discardParts();
     case 'listObjectParts':
@@ -4313,11 +4496,29 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
         : 16;
       const strokes = (api.listAnnotations() as AnnotationStroke[] | undefined) ?? [];
       const texts = (api.listTextAnnotations() as unknown[] | undefined) ?? [];
+      const views = (api.listAnnotationViews?.() as { id: string; title: string; summary: string; createdAt: number; attachedAt?: number }[] | undefined) ?? [];
       return {
         count: api.getAnnotationCount(),
         strokes: strokes.map(s => summarizeStroke(s, maxPts)),
         texts,
+        views: views.map(v => ({ id: v.id, title: v.title, summary: v.summary, createdAt: v.createdAt, attached: v.attachedAt !== undefined })),
       };
+    }
+    case 'viewAnnotationView': {
+      if (typeof input.id !== 'string') return { error: 'viewAnnotationView: `id` must be a string.' };
+      const v = api.getAnnotationView(input.id, { includeImage: true }) as Record<string, unknown> | null;
+      if (!v || 'error' in v) return v;
+      const { image: frame, ...meta } = v as { image?: string } & Record<string, unknown>;
+      let src = frame;
+      if (input.fresh === true) {
+        const r = api.renderAnnotationView(input.id) as { image?: string; error?: string };
+        if (r.error) return r;
+        src = r.image;
+      }
+      const img = typeof src === 'string' ? parseImageDataUrl(src) : null;
+      if (!img) return meta;
+      const label = `${String(meta.title)}${input.fresh === true ? ' (current model, same camera)' : ''}`;
+      return { content: JSON.stringify(meta), isError: false, image: { ...img, label } };
     }
     case 'diffVersions': {
       const wantGeometry = input.geometry === true || input.heatmap === true;

@@ -17,6 +17,8 @@ import { showToast } from './toast';
 import { confirmDialog, promptDialog } from './dialogs';
 import { updateAppHistory } from './appHistory';
 import { appPath } from '../deployment';
+import { jsonToBlob } from '../export/jsonBlob';
+import { parseJsonBlob } from '../import/jsonBytes';
 
 let modalEl: HTMLElement | null = null;
 /** Loads the session `openSession` just opened into the editor — its version
@@ -80,7 +82,7 @@ export async function showSessionList(): Promise<void> {
       const file = input.files?.[0];
       if (!file) return;
       try {
-        const data: unknown = JSON.parse(await file.text());
+        const data: unknown = await parseJsonBlob(file);
         if (!importPayloadFn) return;
         await importPayloadFn(data, () => {
           // Push the editor entry before the session-mutating open so the Back
@@ -240,7 +242,7 @@ async function createSessionRow(session: Session): Promise<HTMLElement> {
       );
       return;
     }
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const blob = jsonToBlob(data, 2);
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
     link.download = `${session.name.replace(/[^a-zA-Z0-9_-]/g, '_')}.partwright.json`;

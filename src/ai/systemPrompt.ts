@@ -163,6 +163,7 @@ export function toggleSuffix(toggles: ChatToggles): string {
       '',
       'End this turn with exactly one of:',
       '- **The plan**: what you will build and its overall shape, the key design decisions and trade-offs, the concrete steps, and any assumptions you made so the user can correct them. Call `proposePlan` with it if you have that tool; otherwise write it as your final message, ending with its assumptions — not a question like "Does this look good?" (the user has a Build button for that).',
+      '  Every plan carries an honest **estimate**: difficulty (easy / medium / hard / research, for this app and its tools), your confidence, the realistic range of tool rounds the build takes including verification and fixes, the quality to expect, and the tools that are missing or weak for it (`proposePlan`\'s `estimate`; otherwise an "Estimate:" section). The build pauses for the user at your maximum, so don\'t lowball it. readDoc("feasibility") has the difficulty map.',
       '- **Questions**, only if you need answers before you can plan well: few of them, each with the option you would pick, so the user can just accept the defaults. Call `askUser` if you have that tool; otherwise end your message with them as a numbered list. Ask instead of planning — not both.',
       'The user will answer your questions, reply to revise the plan, or approve it — approval starts a new turn with your full tools. Until then, you are still planning: every reply in plan mode is a plan or questions, never the build.',
     ];
@@ -305,7 +306,31 @@ function printableGuidance(): string {
 }
 
 export function buildSystemPrompt(aiMd: string): string {
-  return PREAMBLE + aiMd;
+  return PREAMBLE + inAppAiMd(aiMd);
+}
+
+const EXTERNAL_ONLY_BLOCK = /<!-- external-only:start -->[\s\S]*?<!-- external-only:end -->\r?\n?/g;
+// Whole-line match, so a note body can't be cut short by an inner "-->".
+const IN_APP_NOTE = /^<!-- in-app: (.*) -->\r?$/gm;
+
+/** ai.md as the in-app chat sees it. The file also serves external agents
+ *  (Claude Code, the extension) that drive the `window.partwright` console,
+ *  so console-only material — the method listing, argument-validation
+ *  conventions, Arrange mode — sits between external-only markers and is
+ *  dropped here: the in-app model calls tools, each with its own schema.
+ *  `<!-- in-app: … -->` lines are the reverse: unwrapped for the in-app model.
+ *  Both are HTML comments, so the rendered page hides them; external agents
+ *  read the raw file and do see them, which is why each in-app note says
+ *  "(In-app chat only.)". Unbalanced markers are tolerated at runtime (a
+ *  throw would break chat) and caught by tests/unit/aiMdInApp.test.ts. */
+export function inAppAiMd(aiMd: string): string {
+  return aiMd
+    .replace(EXTERNAL_ONLY_BLOCK, '')
+    .replace(IN_APP_NOTE, '$1')
+    .replace(/<!-- Maintainers:[^\n]*-->\n?/g, '')
+    // Removing a block can leave a run of blank lines; this also collapses
+    // runs inside code fences, which ai.md doesn't rely on.
+    .replace(/(\r?\n){3,}/g, m => (m.includes('\r') ? '\r\n\r\n' : '\n\n'));
 }
 
 /** Slim local prompt (~700 tokens) — the default for smaller local models
@@ -353,6 +378,7 @@ Available tools you'll use most:
   curves (smooth shapes / lofts / airfoils),
   figure (api.sdf.figure — posable humanoid rig: people / characters / heroes / busts),
   creature (api.sdf.creature — creatures / monsters / mascots / toy animals: round lidded eyes, puffy cat muzzle, lobed bat ears, clawed feet),
+  human (api.human — parametric person: body/face sliders + skeleton pose, anime/chibi/funko styles, hair, clothing, armor, props; experimental),
   sdf (smooth blends / organic figures, creatures & busts / lattices / twists),
   bosl2 (OpenSCAD rounding / threads / gears),
   replicad (BREP / OpenCASCADE — exact fillets / chamfers / STEP export),

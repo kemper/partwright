@@ -1,7 +1,7 @@
 {
   "name": "partwright-cad",
   "private": true,
-  "version": "1.12.2",
+  "version": "1.13.0",
   "license": "LicenseRef-PolyForm-Noncommercial-1.0.0",
   "type": "module",
   "bin": {
@@ -33,6 +33,7 @@
     "bake:character-presets": "node scripts/bake-character-presets.mjs",
     "model:preview": "node scripts/model-preview.mjs",
     "figure:smoke": "node scripts/figure-smoke.mjs",
+    "human:fit": "node scripts/human-fit.mjs",
     "segment:bench": "node scripts/segment-bench.mjs",
     "eval:models": "node scripts/eval-models.mjs",
     "new:modifier": "node scripts/new-modifier.mjs",

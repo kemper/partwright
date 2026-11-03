@@ -3,7 +3,9 @@
 // input row, the cost meter, and the compact button. State lives in the
 // ai/* modules; this file is mostly DOM wiring.
 
-import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens, runTurn as runTurnOnMainThread, buildActiveSystemPrompt, toolsForRequest, type RunTurnInput, type RunTurnCallbacks } from '../ai/chatLoop';
+import { registerAiComposerAttach } from './aiComposerBridge';
+import { getAnnotationViews } from '../annotations/annotationViews';
+import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens, runTurn as runTurnOnMainThread, buildActiveSystemPrompt, toolsForRequest, turnToolList, type RunTurnInput, type RunTurnCallbacks } from '../ai/chatLoop';
 import { getActiveImports } from '../import/importedMesh';
 import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerClient';
 import { getConfig } from '../config/appConfig';
@@ -14,8 +16,8 @@ import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
 import { PHOTO_BUST_PROMPT } from '../ai/photoModelPrompt';
 import { RECONSTRUCT_PROMPT } from '../ai/reconstructPrompt';
-import { PARTS_PROMPT } from '../ai/partsPrompt';
-import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setCustomContext, setCustomModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
+import { PARTS_PROMPT, SPLIT_PROMPT } from '../ai/partsPrompt';
+import { isLegacyDefaultThinking, loadSettings, saveSettings, SETTINGS_REV, setPlanStylePrefs, setAnthropicModel, setOpenaiModel, setGeminiModel, setCustomContext, setCustomModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd, hasKnownPricing } from '../ai/cost';
 import { getLimits } from '../ai/catalog';
@@ -28,10 +30,13 @@ import { confirmUnpricedModel } from './unpricedModelGate';
 import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiReviewModal } from './aiReviewModal';
 import { gatherReviewContext, runReview } from '../ai/review';
-import { PLAN_FIRST_PREFIX, PLAN_REFINE_PREFIX, planApprovalText, planTurn } from '../ai/userWords';
+import { PLAN_REFINE_PREFIX, planApprovalText, planRequestPrefix, planTurn, type PlanStyle } from '../ai/userWords';
+import { calibrationRecord, checkpointExtension, estimateCostRange, perRoundCostUsd, remainingRounds, startBuildBudget, summarizeCalibration, type BuildBudget, type BuildOutcome } from '../ai/planEstimate';
+import { appendCalibration, loadCalibration } from '../ai/planCalibration';
+import { PLAN_STYLE_INFO, appendPlanCardList, checkpointBody, checkpointTitle, renderPlanEstimate, renderPlanStylePicker } from './aiPlanUi';
 import { ASK_USER_TOOL, CARD_TOOL_ACK, PROPOSE_PLAN_TOOL, answersText, type AskUserQuestion, derivePendingPlan, latestPlanReply, parseAskUser, parseProposedPlan, pendingAskUser, planMarkdown } from '../ai/planReply';
 import { buildFixPrompt, countModelChangingCalls, latestUserRequest, overSpendCap, parseReviewVerdict, requestText, resolveReviewer, shouldActOnReview, shouldAutoReview, userConversation } from '../ai/autoReview';
-import { buildToolList, isModelChangingTool, confirmToolLabel } from '../ai/tools';
+import { isModelChangingTool, confirmToolLabel } from '../ai/tools';
 import { DEFAULT_CUSTOM_CONTEXT, REDUCED_TOOLS_NOTE, customContextWindow, resolveCustomPromptTier } from '../ai/customContext';
 import { carriedAttachments, CARRIED_ATTACHMENTS_NOTE } from '../ai/compactionAttachments';
 import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
@@ -43,13 +48,17 @@ import { showCompactConfirmModal } from './aiCompactModal';
 import { showAttachmentModal } from './aiAttachmentModal';
 import { putAttachment } from '../ai/attachments';
 import { exportChatMarkdown } from '../export/chat';
+import { downloadAiSessionTrace } from '../export/aiTrace';
+import { compactionTraceFor } from '../ai/sessionTrace';
 import { getState, setSessionAiPreference, refreshCurrentSession } from '../storage/sessionManager';
 import { onTabSync, publishTabSync } from '../storage/tabSync';
 import { onOwnershipChange } from '../storage/sessionLock';
 import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
-import { activeModel, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolCall, type PersistedToolResult, type Preset, type Provider, type TurnOutcomeReason } from '../ai/types';
+import { lowerThinkingLevel } from '../ai/thinkingLevels';
+import { activeModel, MAX_TOKENS_WHILE_THINKING, SPEND_CAP_USD, THINKING_LEVELS, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolCall, type PersistedToolResult, type Preset, type Provider, type TurnOutcomeReason } from '../ai/types';
 import { matchSlashCommands, parseSlashCommand, slashMenuPrefix, type SlashCommandName, type SlashCommandSpec } from '../ai/slashCommands';
-import { repairToolHistory, hasOrphanedToolCalls, isToolHistoryMismatchError } from '../ai/historyRepair';
+import { repairToolHistory, hasOrphanedToolCalls, isEphemeral, isToolHistoryMismatchError } from '../ai/historyRepair';
+import { countChapters, countSteps, isChapterStart, mergeBySeq, planRewind, repairUndo, rewindCutIndex, takeFirstStep, type RepairUndo, type RewindEntry, type RewindKind } from '../ai/rewind';
 import { cancelCurrentExecution } from '../geometry/engine';
 import { errorLog } from '../diagnostics/errorLog';
 import { showToast } from './toast';
@@ -71,10 +80,12 @@ interface PanelState {
    *  exits with the queue still non-empty). In-memory only — lost on
    *  refresh, which matches the ephemeral "queue while running" use case. */
   queuedBlocks: ChatBlock[];
-  /** Undo stack for the rewind button. Each entry is the slice of messages
-   *  removed by one rewind operation. Popped by fast-forward to restore.
-   *  Cleared when the user sends a new message (conversation has diverged). */
-  rewindStack: ChatMessage[][];
+  /** Undo stack for the rewind transport (step/skip back). Each entry is the
+   *  slice removed by one rewind, so the entries read top→bottom form the
+   *  rewound "future" in order; step/skip forward restore from the top.
+   *  Cleared whenever a turn starts or the history is reloaded (the
+   *  conversation has diverged, so the rewound slice no longer fits). */
+  rewindStack: RewindEntry[];
   /** Set when planFirst mode has generated a plan and is awaiting user
    *  approval. Cleared on Build (which fires the real execution turn) or
    *  Discard (which removes planning messages from history and restores the
@@ -105,7 +116,7 @@ const state: PanelState = {
  *  which all receive the full ai.md system prompt. Default is a rough match
  *  for the current ai.md so the context meter is sensible before the fetch
  *  lands. */
-let cachedAiMdLength = 55_000;
+let cachedAiMdLength = 100_000;
 
 /** Fixed per-request overhead in characters for the active provider / model /
  *  override combo: the system prompt plus, for every provider but Local, the
@@ -153,7 +164,7 @@ let toolCharsMemo: { key: string; chars: number } | null = null;
  *  folds compact tool signatures into its own prompt budget (local.ts). */
 function requestToolChars(toggles: ChatToggles, history: readonly ChatMessage[]): number {
   if (toggles.provider === 'local') return 0;
-  const { tools } = toolsForRequest(toggles, buildToolList(toggles), history, sessionToolGroups());
+  const { tools } = toolsForRequest(toggles, turnToolList(toggles), history, sessionToolGroups());
   // Description lengths change with the Custom tier's compaction settings,
   // not just the tool names.
   const cfg = getConfig().ai;
@@ -169,7 +180,11 @@ function requestToolChars(toggles: ChatToggles, history: readonly ChatMessage[])
  *  that would load the whole group on nearly every chat.) */
 function sessionToolGroups(): string[] {
   try {
-    return getActiveImports().length > 0 ? ['import', 'parts'] : [];
+    const groups = getActiveImports().length > 0 ? ['import', 'parts'] : [];
+    // An annotation view the user attached to the chat: viewAnnotationView
+    // (inspect) re-renders it from their camera.
+    if (getAnnotationViews().some(v => v.attachedAt !== undefined)) groups.push('inspect');
+    return groups;
   } catch {
     return [];
   }
@@ -218,7 +233,11 @@ function contextLimitFor(settings: AiSettings): number {
  *  cap), so a reference photo survives compaction instead of becoming a
  *  text placeholder. The order [user: references][assistant: summary]
  *  [kept turns…] keeps roles alternating for every provider. */
-async function persistCompaction(dropped: ChatMessage[], summaryText: string): Promise<void> {
+async function persistCompaction(
+  dropped: ChatMessage[],
+  summaryText: string,
+  summarizer: { model: string; costUsd: number; usage: { inputTokens: number; outputTokens: number } },
+): Promise<void> {
   const seq = nextCompactedSeq(state.history);
   const carried = carriedAttachments(dropped, getConfig().ai.compactionKeepImages);
   const messages: ChatMessage[] = [];
@@ -240,6 +259,14 @@ async function persistCompaction(dropped: ChatMessage[], summaryText: string): P
     createdAt: Date.now(),
     seq,
     compacted: true,
+    // The dropped turns are deleted below — keep their totals so the session
+    // trace (🩺 → Download session trace) still accounts for their spend.
+    compaction: compactionTraceFor(dropped, {
+      model: summarizer.model,
+      inputTokens: summarizer.usage.inputTokens,
+      outputTokens: summarizer.usage.outputTokens,
+      costUsd: summarizer.costUsd,
+    }),
   });
   await deleteMessages(dropped.map(m => m.id));
   await putMessages(messages);
@@ -254,8 +281,9 @@ function nextCompactedSeq(history: ChatMessage[]): number {
 let sendBtnRef: HTMLButtonElement | null = null;
 let stopBtnRef: HTMLButtonElement | null = null;
 let queuedBadgeRef: HTMLElement | null = null;
-let rewindBtnRef: HTMLButtonElement | null = null;
-let forwardBtnRef: HTMLButtonElement | null = null;
+/** The rewind transport: skip back (to before your last message), step back
+ *  (one model step), step forward, skip forward (to your next message). */
+const transportBtnRefs: Partial<Record<TransportAction, HTMLButtonElement>> = {};
 
 let drawerEl: HTMLElement | null = null;
 let transcriptEl: HTMLElement | null = null;
@@ -266,6 +294,12 @@ let inputEl: HTMLTextAreaElement | null = null;
 let pendingPrefill: string | null = null;
 let voiceController: VoiceController | null = null;
 let planApprovalBarEl: HTMLElement | null = null;
+/** The planning-style picker shown on a new plan request (#1209). */
+let planStyleBarEl: HTMLElement | null = null;
+/** The round budget the build of an approved plan runs under: the plan's
+ *  estimate, extended by each checkpoint "Keep going". Overrides the ⟲ cap
+ *  while set. In memory only — like the checkpoint notice. */
+let buildBudget: BuildBudget | null = null;
 
 // The docked panel is an editor tool: it only takes layout space on the editor
 // route. On overlay pages (e.g. /ideas) it's force-hidden so those pages render
@@ -409,6 +443,22 @@ export async function initAiPanel(opts: AiPanelOptions = {}): Promise<void> {
     pendingPrefill = null;
     prefillAiInput(text);
   }
+  registerAiComposerAttach(stageAttachment);
+}
+
+/** Stage an image + text in the composer for the user to send (Annotate's
+ *  "Attach to AI"). The text is appended on its own line; nothing is sent. */
+function stageAttachment(image: ImageSource, text: string): void {
+  if (!state.open) showDrawer(false);
+  state.pendingImages.push(image);
+  renderPendingImages();
+  if (inputEl && text) {
+    const cur = inputEl.value.replace(/\s+$/, '');
+    inputEl.value = cur ? `${cur}\n${text}` : text;
+    inputEl.focus();
+    inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+    inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+  }
 }
 
 /** Called by main.ts whenever the active session changes (open / close).
@@ -440,6 +490,8 @@ export async function setActiveSession(sessionId: string | null): Promise<void> 
   renderQueuedBadge();
   state.pendingPlanApproval = null;
   renderPlanApprovalBar();
+  hidePlanStylePicker();
+  endBuildBudget(buildBudget && buildBudget.checkpoints > 0 ? 'accepted' : 'abandoned');
   await loadHistoryForCurrentSession();
   await applySessionAiPreference();
   renderTranscript();
@@ -666,6 +718,10 @@ export function setAiPanelRouteActive(active: boolean): void {
 
 async function loadHistoryForCurrentSession(): Promise<void> {
   state.history = await listMessages(state.sessionId);
+  // Rewound steps belong to one session's chat — drop them when this read is
+  // for another one. A same-session reload (saving or loading a version,
+  // compaction) leaves the tail they continue untouched, so they stay.
+  if (state.rewindStack[0]?.messages[0]?.sessionId !== state.sessionId) state.rewindStack = [];
   // Mid-turn reloads (auto-compaction, stall retries) can run before this
   // turn's plan request is persisted; the turn re-syncs when it ends.
   if (!state.inFlight) syncPendingPlanFromHistory();
@@ -677,7 +733,13 @@ async function loadHistoryForCurrentSession(): Promise<void> {
  *  Only while the Plan pill is on: turning it off is how the user leaves plan
  *  mode and keeps the conversation (Discard deletes it). */
 function syncPendingPlanFromHistory(): void {
-  const pending = loadSettings().toggles.planFirst ? derivePendingPlan(state.history) : null;
+  let pending = loadSettings().toggles.planFirst ? derivePendingPlan(state.history) : null;
+  // A plan request whose reply isn't in the history (e.g. stepped back past
+  // it) has no plan to build yet — Resume or Send re-plans instead.
+  if (pending) {
+    const reply = latestPlanReply(state.history, pending.requestIndex);
+    if (!reply.awaitingAnswers && reply.text.trim().length === 0) pending = null;
+  }
   state.pendingPlanApproval = pending
     ? {
       originalText: splitPartSelectionContext(pending.requestWords).rest,
@@ -718,6 +780,7 @@ function recordSessionAiPreference(): void {
       model,
       s.toggles as unknown as Record<string, unknown>,
       s.preset,
+      SETTINGS_REV,
     );
   }
 }
@@ -764,6 +827,9 @@ async function applySessionAiPreference(): Promise<void> {
     // else, then take the context from the saved endpoint the restored URL
     // points at (or keep the current one when it's the same URL).
     const { customContext: _snapshotContext, ...restorable } = pref.toggles as Record<string, unknown>;
+    // A snapshot saved before the Medium default carries the old High along;
+    // lower it the same way the tab's own settings were (settings rev 2).
+    if (isLegacyDefaultThinking(restorable.thinking, pref.settingsRev)) restorable.thinking = 'medium';
     // Full per-session toggle snapshot (current format): restore provider,
     // every per-provider model id, and all the toggles in one shot. Skip when
     // already applied so the focus / take-control re-assert is a cheap no-op
@@ -836,6 +902,8 @@ function broadcastChatChanged(): void {
  *  during an active turn). */
 async function reloadChatFromPeer(sessionId: string): Promise<void> {
   if (sessionId !== state.sessionId || state.inFlight) return;
+  // Another tab edited this chat, so rewound steps no longer fit its tail.
+  state.rewindStack = [];
   await loadHistoryForCurrentSession();
   renderTranscript();
   renderCostMeter();
@@ -852,6 +920,7 @@ function applyOwnership(owned: boolean): void {
   // The plan bar and question cards are owner-only controls.
   renderPlanApprovalBar();
   refreshAskUserCards();
+  updateRewindButtons();
   // Becoming a viewer mid-turn (another tab took control): stop our run.
   if (!writeOwner) stopActiveTurn();
   // Gaining write-ownership of a real session — "Take control" in a new tab —
@@ -974,7 +1043,7 @@ function buildDrawer(): void {
   header.appendChild(promptsBtn);
 
   const diagBtn = createIconButton('AI Call Log', '🩺');
-  diagBtn.title = 'AI Call Log — recent provider API calls: request shape, stop reason, token usage, full error messages. Open this when a turn ends with a confusing status.';
+  diagBtn.title = 'AI Call Log — recent provider API calls: request shape, stop reason, token usage, full error messages — and a download of the whole chat as a session trace (tool calls, thinking, tokens, cache, cost) for analysis.';
   diagBtn.addEventListener('click', () => { showAiDiagnosticsModal(); });
   header.appendChild(diagBtn);
 
@@ -1032,6 +1101,12 @@ function buildDrawer(): void {
   planApprovalBarEl = document.createElement('div');
   planApprovalBarEl.className = 'px-3 py-2 border-t border-amber-700/60 bg-amber-900/20 flex items-center gap-2 shrink-0 hidden';
   root.appendChild(planApprovalBarEl);
+
+  // Planning-style picker — shown when a new plan request is sent, until the
+  // user picks how to plan (or cancels).
+  planStyleBarEl = document.createElement('div');
+  planStyleBarEl.className = 'px-3 py-2 border-t border-amber-700/60 bg-amber-900/20 flex flex-col gap-1.5 shrink-0 hidden';
+  root.appendChild(planStyleBarEl);
 
   // Bottom section — rewind, toggles, cost, input
   const bottomSection = document.createElement('div');
@@ -1216,24 +1291,10 @@ function buildDrawer(): void {
   inputBtnSpacer.className = 'flex-1';
   inputBtnRow.appendChild(inputBtnSpacer);
 
-  // Rewind / fast-forward — compact icon buttons tucked before Stop/Send.
-  const rewindBtn = document.createElement('button');
-  rewindBtn.className = 'shrink-0 px-2 py-1.5 rounded text-xs text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors';
-  rewindBtn.textContent = '↩';
-  rewindBtn.title = 'Rewind: remove the last turn from history. Use ↪ to restore it.';
-  rewindBtn.disabled = true;
-  rewindBtn.addEventListener('click', () => { void rewindTurn(); });
-  rewindBtnRef = rewindBtn;
-  inputBtnRow.appendChild(rewindBtn);
-
-  const forwardBtn = document.createElement('button');
-  forwardBtn.className = 'shrink-0 px-2 py-1.5 rounded text-xs text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors';
-  forwardBtn.textContent = '↪';
-  forwardBtn.title = 'Fast-forward: restore the last rewound turn. Cleared when you send a new message.';
-  forwardBtn.disabled = true;
-  forwardBtn.addEventListener('click', () => { void fastForwardTurn(); });
-  forwardBtnRef = forwardBtn;
-  inputBtnRow.appendChild(forwardBtn);
+  // Rewind transport — a media-player style group tucked before Stop/Send:
+  // ⏮ skip back a chapter (to before your last message), ◀ step back one model
+  // step, ▶ step forward one step, ⏭ skip forward a chapter.
+  inputBtnRow.appendChild(buildRewindTransport());
 
   // Stop button — separate from Send so the human can queue follow-ups
   // mid-run (clicking Send) without losing the ability to actually halt
@@ -1576,7 +1637,7 @@ function renderPromptChip(): void {
   } else {
     label = '· Full ai.md';
     cls = 'h-6 px-1.5 inline-flex items-center rounded text-[10px] bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700';
-    title = 'Anthropic gets the full ai.md (~15K tokens) cached on the API. Click to view or edit.';
+    title = 'Hosted models get the full prompt: ai.md without its console-only sections (~27K tokens), cached on the API. Click to view or edit.';
   }
   chip.className = cls;
   chip.textContent = label;
@@ -1714,6 +1775,7 @@ function renderToggleStrip(): void {
     'Plan first: when ON, the AI writes a step-by-step plan (or asks its questions) before doing any work. Answer or revise by typing; nothing is built until you click Build. Useful for complex requests where you want to review the approach first.',
     () => {
       applyToggleChange({ planFirst: !toggles.planFirst });
+      if (toggles.planFirst) hidePlanStylePicker();
       // Off leaves plan mode (a pending plan's bar goes; its messages stay);
       // on picks a pending plan back up from the transcript.
       if (!state.inFlight) syncPendingPlanFromHistory();
@@ -2025,6 +2087,21 @@ function exportCurrentChat(): void {
   setTransientStatus('Chat exported as Markdown.');
 }
 
+/** /trace: download the chat as a JSON session trace (src/export/aiTrace.ts) —
+ *  the same file the 🩺 modal's "Download session trace" button writes. */
+async function exportCurrentTrace(): Promise<void> {
+  if (state.history.length === 0) {
+    setTransientStatus('Nothing to trace — the chat is empty.');
+    return;
+  }
+  try {
+    const r = await downloadAiSessionTrace({ sessionId: state.sessionId });
+    setTransientStatus(r ? `Session trace saved as ${r.filename}.` : 'Nothing to trace — the chat is empty.');
+  } catch (err) {
+    showToast(`Couldn't build the session trace: ${err instanceof Error ? err.message : String(err)}`, { variant: 'warn', source: 'ai' });
+  }
+}
+
 /** Clear chat history for the current session. Confirms first; refuses to
  *  fire mid-turn so we don't leave the agent's in-flight writes orphaned. */
 async function clearCurrentChat(): Promise<void> {
@@ -2047,11 +2124,13 @@ async function clearCurrentChat(): Promise<void> {
     return;
   }
   state.history = [];
+  state.rewindStack = [];
   state.pendingPlanApproval = null;
   renderPlanApprovalBar();
   broadcastChatChanged();
   renderTranscript();
   renderCostMeter();
+  updateRewindButtons();
   setTransientStatus('Chat cleared.');
 }
 
@@ -2086,6 +2165,7 @@ async function repairCurrentChat(): Promise<void> {
   // Keep the repaired (persisted) messages; drop any in-memory error bubble so
   // the user can continue immediately.
   state.history = result.messages.filter(m => !m.errored);
+  state.rewindStack = [];
   broadcastChatChanged();
   renderTranscript();
   updateRewindButtons();
@@ -2111,7 +2191,7 @@ function renderPlanApprovalBar(): void {
   // A planning turn either ends on a plan or on questions the model needs
   // answered first. Questions lead with "answer below" — Build stays on offer
   // (the model then picks its own defaults), but as the quieter choice.
-  const { awaitingAnswers } = latestPlanReply(state.history, state.pendingPlanApproval.historyLengthBefore);
+  const { awaitingAnswers, estimate } = latestPlanReply(state.history, state.pendingPlanApproval.historyLengthBefore);
   planApprovalBarEl.dataset.planState = awaitingAnswers ? 'questions' : 'plan';
 
   const label = document.createElement('span');
@@ -2129,7 +2209,9 @@ function renderPlanApprovalBar(): void {
   buildBtn.textContent = awaitingAnswers ? 'Build anyway' : '✓ Build it';
   buildBtn.title = awaitingAnswers
     ? 'Skip the questions: the AI picks sensible defaults and starts building.'
-    : 'Approve this plan and start building.';
+    : estimate
+      ? `Approve this plan and start building. It pauses for your go-ahead after ${estimate.roundsMax} rounds (the plan's estimate) instead of the ⟲ cap.`
+      : 'Approve this plan and start building.';
   buildBtn.addEventListener('click', () => { void approvePlan(); });
   planApprovalBarEl.appendChild(buildBtn);
 
@@ -2139,6 +2221,69 @@ function renderPlanApprovalBar(): void {
   discardBtn.title = 'Drop this plan and put your request back in the input to edit.';
   discardBtn.addEventListener('click', () => { void rejectPlan(); });
   planApprovalBarEl.appendChild(discardBtn);
+}
+
+/** Stop-notice / outcome detail marking an iteration-cap stop as the build
+ *  of an approved plan reaching its estimate. */
+const PLAN_CHECKPOINT = 'plan_checkpoint';
+/** Outcome detail for an "Assess first" planning turn that used its rounds. */
+const PLAN_ASSESS_CAP = 'plan_assess_cap';
+
+/** The detail a checkpoint stop carries: tied to the build it belongs to, so
+ *  a notice left over from an earlier build never acts on a later one. */
+function checkpointDetail(b: BuildBudget): string {
+  return `${PLAN_CHECKPOINT}:${b.id}`;
+}
+
+/** The current build's budget when `detail` is its checkpoint, else null. */
+function checkpointBudget(detail: string | undefined): BuildBudget | null {
+  return buildBudget && detail === checkpointDetail(buildBudget) ? buildBudget : null;
+}
+
+/** Drop checkpoint notices from earlier builds (in-memory only). */
+function dropCheckpointNotices(): void {
+  const before = state.history.length;
+  state.history = state.history.filter(m => !m.stopNotice?.detail?.startsWith(PLAN_CHECKPOINT));
+  if (state.history.length !== before) renderTranscript();
+}
+
+function showPlanStylePicker(current: PlanStyle): void {
+  if (!planStyleBarEl) return;
+  // Visible before rendering, so the picker can take focus.
+  planStyleBarEl.classList.remove('hidden');
+  renderPlanStylePicker(planStyleBarEl, {
+    current,
+    onPick: (style, remember) => {
+      // The pick becomes the default next time; "don't ask" stops the picker.
+      saveSettings(setPlanStylePrefs(loadSettings(), remember ? { planStyle: style, askPlanStyle: false } : { planStyle: style }));
+      hidePlanStylePicker();
+      void sendMessage({ planStyle: style });
+    },
+    onCancel: () => {
+      hidePlanStylePicker();
+      inputEl?.focus();
+    },
+  });
+}
+
+function hidePlanStylePicker(): void {
+  if (!planStyleBarEl) return;
+  planStyleBarEl.classList.add('hidden');
+  planStyleBarEl.replaceChildren();
+  planStyleBarEl.onkeydown = null;
+}
+
+/** Rounds a checkpoint "Keep going" grants for the current build. */
+function buildCheckpointExtension(b: BuildBudget): number {
+  const cfg = getConfig().ai;
+  return checkpointExtension(b.estimate.roundsMax, cfg.planCheckpointExtensionFraction, cfg.planCheckpointMinExtension);
+}
+
+/** End the current build's round budget and record estimate vs actual. */
+function endBuildBudget(outcome: BuildOutcome): void {
+  if (!buildBudget) return;
+  if (buildBudget.used > 0) appendCalibration(calibrationRecord(buildBudget, outcome, Date.now()));
+  buildBudget = null;
 }
 
 /** Set while Build is between its click and the build turn starting, so a
@@ -2152,7 +2297,8 @@ async function approvePlan(): Promise<void> {
   const reviewRequest = state.pendingPlanApproval.originalText;
   // The approval carries the plan the user is approving, so the build turn is
   // anchored to it (and the hand-off from planning is explicit).
-  const plan = latestPlanReply(state.history, state.pendingPlanApproval.historyLengthBefore).text;
+  const planReply = latestPlanReply(state.history, state.pendingPlanApproval.historyLengthBefore);
+  const plan = planReply.text;
 
   const settings = loadSettings();
   // Preflight may open the key modal and retry this later, so the plan stays
@@ -2168,7 +2314,15 @@ async function approvePlan(): Promise<void> {
   state.pendingPlanApproval = null;
   renderPlanApprovalBar();
 
-  state.rewindStack = [];
+  // The plan's estimate becomes the build's round budget: it stops at the
+  // estimated maximum for the user's go-ahead instead of at the ⟲ cap.
+  if (buildBudget) endBuildBudget('abandoned');
+  dropCheckpointNotices();
+  if (planReply.estimate) {
+    const cost = estimateCostRange(planReply.estimate, perRoundCostUsd(state.history, getConfig().ai.planCostSampleRounds));
+    buildBudget = startBuildBudget(generateId(), planReply.estimate, cost, settings.toggles.provider, activeModel(settings.toggles) ?? '');
+  }
+
   progressState.retryCount = 0;
   stalledByWatchdog = false;
   pinTranscriptToBottom();
@@ -2190,6 +2344,8 @@ async function rejectPlan(): Promise<void> {
     await deleteMessages(msgsToRemove.map(m => m.id));
     state.history = state.history.slice(0, historyLengthBefore);
   }
+  // The discarded planning turn may sit between history and a rewound slice.
+  state.rewindStack = [];
 
   state.pendingPlanApproval = null;
 
@@ -2274,13 +2430,15 @@ function renderTranscript(): void {
   transcriptEl.appendChild(renderSystemPromptBubble());
   const hasHistory = state.history.length > 0;
   const hasQueue = state.queuedBlocks.length > 0;
-  if (!hasHistory && !hasQueue) {
+  const hasRewound = state.rewindStack.length > 0;
+  if (!hasHistory && !hasQueue && !hasRewound) {
     transcriptEl.appendChild(renderEmptyState());
     return;
   }
   for (const msg of state.history) {
     transcriptEl.appendChild(renderMessage(msg));
   }
+  if (hasRewound) transcriptEl.appendChild(renderRewindBanner());
   // Pending preview — render queued follow-ups as faded user bubbles at the
   // bottom of the transcript so the human sees their typed message land
   // immediately, before the agent's loop drains the queue. When the drain
@@ -2338,6 +2496,16 @@ function renderMessage(msg: ChatMessage): HTMLElement {
       // A card tool's acknowledgement: the card above already shows it.
       if (!tr.isError && tr.content === CARD_TOOL_ACK) continue;
       wrap.appendChild(renderToolResultBubble(tr));
+    }
+    // A delegated worker's spend rides on its tool-result turn; show it there,
+    // like an assistant step's cost, so the per-message costs add up to the
+    // session total.
+    if (msg.costUsd !== undefined || msg.costUnknown) {
+      const meta = document.createElement('div');
+      meta.className = 'text-[10px] text-zinc-600';
+      meta.textContent = `worker ${msg.costUsd !== undefined ? formatUsd(msg.costUsd) : 'cost unknown'}`;
+      meta.title = 'What the delegated worker spent on this step (already included in the session total).';
+      wrap.appendChild(meta);
     }
   }
 
@@ -2397,7 +2565,8 @@ function renderMessage(msg: ChatMessage): HTMLElement {
         wrap.appendChild(line);
         continue;
       }
-      const bubble = renderTextBubble(msg.role, plan ? plan.words : b.text, msg.compacted, plan ? PLAN_TURN_CHIP[plan.kind] : undefined);
+      const chip = plan ? (plan.kind === 'request' ? PLAN_STYLE_INFO[plan.style ?? 'quick'].chip : PLAN_TURN_CHIP[plan.kind]) : undefined;
+      const bubble = renderTextBubble(msg.role, plan ? plan.words : b.text, msg.compacted, chip);
       if (isEmpty && msg.role === 'assistant') {
         // Live streaming placeholder: kept bare (no copy wrapper) so
         // onAssistantText can rewrite its textContent and the thinking-box
@@ -2563,7 +2732,7 @@ async function retryFailedTurn(errorMsgId: string): Promise<void> {
   progressState.retryCount = 0;
   stalledByWatchdog = false;
   pinTranscriptToBottom();
-  await runTurnWithStallRetry(apiKey, settings.toggles, []);
+  await runTurnWithStallRetry(apiKey, continuationToggles(settings.toggles), []);
 }
 
 /** Rendered for turns that auto-stopped early but can be picked back up — the
@@ -2573,6 +2742,8 @@ async function retryFailedTurn(errorMsgId: string): Promise<void> {
  *  off rather than re-sending the original prompt. */
 function renderStopNotice(msg: ChatMessage): HTMLElement {
   const notice = msg.stopNotice!;
+  const checkpoint = checkpointBudget(notice.detail);
+  if (checkpoint) return renderPlanCheckpoint(msg, checkpoint);
   const card = document.createElement('div');
   card.className = 'max-w-[95%] rounded border border-amber-700/60 bg-amber-900/15 px-3 py-2 flex flex-col gap-2';
 
@@ -2601,11 +2772,25 @@ function renderStopNotice(msg: ChatMessage): HTMLElement {
   const bumpedSpend = isSpend ? nextSpendTier(curSpend) : curSpend;
   const canRaise = isSpend && bumpedSpend !== curSpend;
 
+  // Ran out of room while thinking: the reasoning is gone, so retrying at the
+  // same level usually hits the same wall. Lead with a one-step-lower retry.
+  const lowerThinking = thinkingCutoffRetryLevel(notice);
+  if (lowerThinking) {
+    const lowerBtn = document.createElement('button');
+    lowerBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-100 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600';
+    lowerBtn.textContent = `↻ Retry at ${THINKING_LEVELS[lowerThinking].label} thinking`;
+    lowerBtn.title = 'Lower the Thinking level one step and run this step again.';
+    lowerBtn.addEventListener('click', () => { void resumeFromNotice(msg.id, false, lowerThinking); });
+    actions.appendChild(lowerBtn);
+  }
+
   const resumeBtn = document.createElement('button');
-  resumeBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-100 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600';
+  resumeBtn.className = lowerThinking
+    ? 'px-2 py-1 rounded text-[11px] text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800 border border-zinc-700'
+    : 'px-2 py-1 rounded text-[11px] text-zinc-100 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600';
   resumeBtn.textContent = canRaise
     ? `↻ Raise cap to ${spendTierLabel(bumpedSpend)} & keep going`
-    : '↻ Keep going';
+    : lowerThinking ? 'Keep going at this level' : '↻ Keep going';
   resumeBtn.title = 'Continue the agent loop from where it stopped — no need to retype your request.';
   resumeBtn.addEventListener('click', () => { void resumeFromNotice(msg.id, canRaise); });
   actions.appendChild(resumeBtn);
@@ -2624,11 +2809,55 @@ function renderStopNotice(msg: ChatMessage): HTMLElement {
   return card;
 }
 
+/** The checkpoint an approved plan's build stops at when it reaches its
+ *  estimate: what it planned vs used, then keep going (another batch of
+ *  rounds) or accept the result as it is. */
+function renderPlanCheckpoint(msg: ChatMessage, budget: BuildBudget): HTMLElement {
+  const extension = buildCheckpointExtension(budget);
+  const card = document.createElement('div');
+  card.className = 'max-w-[95%] rounded border border-amber-700/60 bg-amber-900/15 px-3 py-2 flex flex-col gap-2';
+  card.dataset.planCheckpoint = '';
+  const head = document.createElement('div');
+  head.className = 'flex items-center gap-1.5 text-xs font-medium text-amber-200';
+  head.textContent = `⏸ ${checkpointTitle(budget)}`;
+  const body = document.createElement('div');
+  body.className = 'text-[12px] text-amber-100/90 whitespace-pre-wrap leading-snug';
+  body.textContent = checkpointBody(budget, extension);
+  const actions = document.createElement('div');
+  actions.className = 'flex items-center gap-2 pt-1';
+  const resumeBtn = document.createElement('button');
+  resumeBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-100 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600';
+  resumeBtn.textContent = `↻ Keep going (+${extension} rounds)`;
+  resumeBtn.title = 'Continue the build for another batch of rounds; it pauses here again after them.';
+  resumeBtn.addEventListener('click', () => { void resumeFromNotice(msg.id, false); });
+  const acceptBtn = document.createElement('button');
+  acceptBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800 border border-zinc-700';
+  acceptBtn.textContent = '✓ Accept as is';
+  acceptBtn.title = 'Stop building and keep the model as it is now.';
+  acceptBtn.addEventListener('click', () => {
+    if (state.inFlight || !writeOwner || buildBudget !== budget) return;
+    endBuildBudget('accepted');
+    state.history = state.history.filter(m => m.id !== msg.id);
+    renderTranscript();
+    setTransientStatus('Build stopped — the model stays as it is.');
+  });
+  actions.append(resumeBtn, acceptBtn);
+  card.append(head, body, actions);
+  return card;
+}
+
+/** The Thinking level to offer a retry at when a step ran out of output room
+ *  while still thinking, or null (not that stop, or nothing lower). */
+function thinkingCutoffRetryLevel(notice: NonNullable<ChatMessage['stopNotice']>): ChatToggles['thinking'] | null {
+  if (notice.reason !== 'max_tokens' || notice.detail !== MAX_TOKENS_WHILE_THINKING) return null;
+  return lowerThinkingLevel(notice.ranAtThinking ?? loadSettings().toggles.thinking);
+}
+
 function stopNoticeTitle(notice: NonNullable<ChatMessage['stopNotice']>): string {
   switch (notice.reason) {
-    case 'iteration_cap': return `Stopped at the ${notice.iterations}-iteration cap`;
+    case 'iteration_cap': return notice.detail === PLAN_ASSESS_CAP ? `The assessment used its ${notice.iterations} rounds` : `Stopped at the ${notice.iterations}-iteration cap`;
     case 'spend_cap': return 'Stopped at the session spend cap';
-    case 'max_tokens': return 'Response was cut off';
+    case 'max_tokens': return notice.detail === MAX_TOKENS_WHILE_THINKING ? 'Ran out of room while thinking' : 'Response was cut off';
     case 'refusal': return 'The model declined';
     case 'empty_final': return 'Stopped without a final message';
     default: return 'Stopped early';
@@ -2638,11 +2867,19 @@ function stopNoticeTitle(notice: NonNullable<ChatMessage['stopNotice']>): string
 function stopNoticeBody(notice: NonNullable<ChatMessage['stopNotice']>): string {
   switch (notice.reason) {
     case 'iteration_cap':
+      if (notice.detail === PLAN_ASSESS_CAP) return `"Assess first" inspected for its ${notice.iterations}-round limit without writing the plan yet. Keep going to let it finish the assessment and plan (up to the ⟲ cap), or raise the limit in Advanced Settings.`;
       return `The agent used all ${notice.iterations} tool round-trips allowed per turn and was still working. Keep going to grant another batch, or raise the ⟲ iteration cap in the toggle strip for longer autonomous runs.`;
     case 'spend_cap':
       return `This session reached its ${notice.detail ?? 'spend'} budget. Raise the cap and keep going, or pick a higher $ cap in the toggle strip.`;
-    case 'max_tokens':
-      return 'The model hit its output-token limit before finishing this step. Keep going to let it continue from where it left off.';
+    case 'max_tokens': {
+      if (notice.detail !== MAX_TOKENS_WHILE_THINKING) {
+        return 'The model hit its output-token limit before finishing this step. Keep going to let it continue from where it left off.';
+      }
+      const lower = thinkingCutoffRetryLevel(notice);
+      return 'The model used its whole output allowance thinking and stopped before writing any reply or code. '
+        + 'That reasoning can\'t be picked up again, so continuing starts this step over — at the same Thinking level it will likely run out again. '
+        + (lower ? `Retry at ${THINKING_LEVELS[lower].label} thinking, or ask for a smaller step.` : 'Ask for a smaller step.');
+    }
     case 'refusal':
       return 'The model declined to continue this turn. Keep going to try again, or rephrase your request.';
     case 'empty_final':
@@ -2669,7 +2906,7 @@ function spendTierLabel(id: ChatToggles['maxSpend']): string {
  *  user message, so the model resumes from the last real turn (its tool
  *  results or its own last message). The per-turn iteration budget resets,
  *  so an iteration-cap stop gets a fresh batch of round-trips. */
-async function resumeFromNotice(noticeMsgId: string, raiseSpendCap: boolean): Promise<void> {
+async function resumeFromNotice(noticeMsgId: string, raiseSpendCap: boolean, lowerThinkingTo?: ChatToggles['thinking']): Promise<void> {
   if (state.inFlight) {
     setTransientStatus('Wait for the current turn to finish before resuming.');
     return;
@@ -2685,23 +2922,34 @@ async function resumeFromNotice(noticeMsgId: string, raiseSpendCap: boolean): Pr
     }
   }
 
-  const settings = loadSettings();
+  let settings = loadSettings();
   // Honor the (possibly just-raised) session spend cap before spending more.
   const sessionCap = SPEND_CAP_USD[settings.toggles.maxSpend];
   if (Number.isFinite(sessionCap) && totalCost(state.history) >= sessionCap) {
     setTransientStatus(`Session has spent ${formatUsd(totalCost(state.history))} — at or over the ${formatUsd(sessionCap)} cap. Raise the $ cap to continue.`);
     return;
   }
+  // Retry-at-lower-thinking: only change the level once the resume is going
+  // ahead, so a rejected click doesn't silently rewrite this session's setting.
+  if (lowerThinkingTo && settings.toggles.thinking !== lowerThinkingTo) {
+    applyToggleChange({ thinking: lowerThinkingTo });
+    renderToggleStrip();
+    settings = loadSettings();
+  }
 
   const apiKey = await preflightTurn(settings, () => { void resumeFromNotice(noticeMsgId, false); });
   if (apiKey === PREFLIGHT_ABORT) return;
+
+  // Keep going at a plan checkpoint grants the build another batch of rounds.
+  const checkpoint = checkpointBudget(state.history.find(m => m.id === noticeMsgId)?.stopNotice?.detail);
+  if (checkpoint) checkpoint.limit = checkpoint.used + buildCheckpointExtension(checkpoint);
 
   // Drop the notice card now that we're actually resuming.
   state.history = state.history.filter(m => m.id !== noticeMsgId);
   renderTranscript();
   progressState.retryCount = 0;
   stalledByWatchdog = false;
-  await runTurnWithStallRetry(apiKey, settings.toggles, []);
+  await runTurnWithStallRetry(apiKey, continuationToggles(settings.toggles), []);
 }
 
 /** Subtle centered divider for an auto-continue nudge (the synthetic "keep
@@ -2719,8 +2967,7 @@ function renderAutoResumeDivider(): HTMLElement {
   return el;
 }
 
-const PLAN_TURN_CHIP: Record<'request' | 'refine', string> = {
-  request: '📋 Plan first',
+const PLAN_TURN_CHIP: Record<'refine', string> = {
   refine: '📋 Plan revision',
 };
 
@@ -2853,9 +3100,13 @@ async function launchReview(): Promise<void> {
     sessionId: state.sessionId,
     history: state.history,
     onReviewPosted: (msg) => {
+      // The review judged the current (rewound) state — restoring steps after
+      // it would put them out of order, so they're discarded.
+      state.rewindStack = [];
       state.history.push(msg);
       renderTranscript();
       renderCostMeter();
+      updateRewindButtons();
       setTransientStatus('Review posted to the chat.');
     },
   });
@@ -3002,19 +3253,11 @@ function renderPlanCard(tc: PersistedToolCall): HTMLElement {
     steps.appendChild(li);
   }
   card.appendChild(steps);
-  if (plan.assumptions.length > 0) {
-    const label = document.createElement('div');
-    label.className = 'mt-1 text-[11px] uppercase tracking-wide text-zinc-400';
-    label.textContent = 'Assumptions';
-    card.appendChild(label);
-    const list = document.createElement('ul');
-    list.className = 'list-disc pl-5 text-zinc-300 flex flex-col gap-0.5';
-    for (const a of plan.assumptions) {
-      const li = document.createElement('li');
-      li.textContent = a;
-      list.appendChild(li);
-    }
-    card.appendChild(list);
+  appendPlanCardList(card, 'Assumptions', plan.assumptions);
+  if (plan.estimate) {
+    const cfg = getConfig().ai;
+    const cost = estimateCostRange(plan.estimate, perRoundCostUsd(state.history, cfg.planCostSampleRounds));
+    card.appendChild(renderPlanEstimate(plan.estimate, cost, summarizeCalibration(loadCalibration(), cfg.planCalibrationMinBuilds)));
   }
   return withCopyButton(card, 'assistant', () => planMarkdown(plan));
 }
@@ -3096,7 +3339,7 @@ function fillSystemPromptBody(pre: HTMLElement): void {
   void buildActiveSystemPrompt(toggles)
     .then((base) => {
       if (seq !== systemPromptFillSeq) return;
-      const { suffixLine } = toolsForRequest(toggles, buildToolList(toggles), state.history, sessionToolGroups());
+      const { suffixLine } = toolsForRequest(toggles, turnToolList(toggles), state.history, sessionToolGroups());
       pre.textContent = `${base}\n\n${toggleSuffix(toggles)}${suffixLine ? `\n\n${suffixLine}` : ''}`;
     })
     .catch(() => {
@@ -3379,36 +3622,147 @@ function drainQueuedBlocks(): ChatBlock[] {
   return drained;
 }
 
-// === Rewind / fast-forward ===
+// === Rewind transport ===
 
-/** Remove the last user-initiated turn (the last user message with actual
- *  typed content, plus everything that follows it) from history and IndexedDB.
- *  The removed slice is pushed onto rewindStack so fast-forward can restore it.
- *  Clears itself when the user sends a new message (conversation has diverged). */
-async function rewindTurn(): Promise<void> {
-  if (state.inFlight) return;
-  // Find the last message the user actually typed (has blocks — not a pure
-  // tool_result carrier which has toolResults but empty blocks).
-  let cutIndex = -1;
-  for (let i = state.history.length - 1; i >= 0; i--) {
-    if (state.history[i].role === 'user' && state.history[i].blocks.length > 0) {
-      cutIndex = i;
-      break;
+type TransportAction = 'skipBack' | 'stepBack' | 'stepForward' | 'skipForward';
+
+const TRANSPORT_SPECS: ReadonlyArray<{ action: TransportAction; icon: string; label: string; title: string }> = [
+  {
+    action: 'skipBack',
+    icon: '<svg viewBox="0 0 16 16" fill="currentColor" class="w-3.5 h-3.5"><rect x="2" y="3" width="2" height="10" rx="0.5"/><path d="M13 3.5v9a.5.5 0 0 1-.78.42L5.5 8.42a.5.5 0 0 1 0-.84l6.72-4.5A.5.5 0 0 1 13 3.5z"/></svg>',
+    label: 'Skip back to before your last message',
+    title: 'Skip back: undo your last message and every agent step after it. Use ◀ to go back one step at a time instead.',
+  },
+  {
+    action: 'stepBack',
+    icon: '<svg viewBox="0 0 16 16" fill="currentColor" class="w-3.5 h-3.5"><path d="M11 3.5v9a.5.5 0 0 1-.78.42L3.5 8.42a.5.5 0 0 1 0-.84l6.72-4.5A.5.5 0 0 1 11 3.5z"/></svg>',
+    label: 'Step back one agent step',
+    title: 'Step back: undo the agent\'s last step (one model reply plus its tool calls) — e.g. the step that just failed. Repeat to keep going back.',
+  },
+  {
+    action: 'stepForward',
+    icon: '<svg viewBox="0 0 16 16" fill="currentColor" class="w-3.5 h-3.5"><path d="M5 3.5v9a.5.5 0 0 0 .78.42l6.72-4.5a.5.5 0 0 0 0-.84L5.78 3.08A.5.5 0 0 0 5 3.5z"/></svg>',
+    label: 'Step forward one agent step',
+    title: 'Step forward: restore one rewound step.',
+  },
+  {
+    action: 'skipForward',
+    icon: '<svg viewBox="0 0 16 16" fill="currentColor" class="w-3.5 h-3.5"><path d="M3 3.5v9a.5.5 0 0 0 .78.42l6.72-4.5a.5.5 0 0 0 0-.84L3.78 3.08A.5.5 0 0 0 3 3.5z"/><rect x="12" y="3" width="2" height="10" rx="0.5"/></svg>',
+    label: 'Skip forward to your next message',
+    title: 'Skip forward: restore rewound steps up to your next message.',
+  },
+];
+
+/** The ⏮ ◀ ▶ ⏭ button group. Rewound steps can be re-applied until a new turn
+ *  starts (a send, Retry or Keep going continues from the rewound point). */
+function buildRewindTransport(): HTMLElement {
+  const group = document.createElement('div');
+  group.className = 'shrink-0 flex items-center rounded border border-zinc-700 bg-zinc-800/60 overflow-hidden';
+  group.setAttribute('role', 'group');
+  group.setAttribute('aria-label', 'Rewind chat history');
+  for (const spec of TRANSPORT_SPECS) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.dataset.rewind = spec.action;
+    btn.className = 'px-1.5 py-1.5 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-zinc-400 disabled:cursor-not-allowed transition-colors';
+    btn.innerHTML = spec.icon;
+    btn.title = spec.title;
+    btn.setAttribute('aria-label', spec.label);
+    btn.disabled = true;
+    btn.addEventListener('click', () => { void runTransportAction(spec.action); });
+    transportBtnRefs[spec.action] = btn;
+    group.appendChild(btn);
+  }
+  return group;
+}
+
+async function runTransportAction(action: TransportAction): Promise<void> {
+  switch (action) {
+    case 'skipBack': return withRewindLock(() => rewindHistory('chapter'));
+    case 'stepBack': return withRewindLock(() => rewindHistory('step'));
+    case 'stepForward': return withRewindLock(() => restoreRewound('step'));
+    case 'skipForward': return withRewindLock(() => restoreRewound('chapter'));
+  }
+}
+
+/** True while a rewind/restore is writing to IndexedDB. Sends, resumes and
+ *  further rewinds wait it out, so a turn can't start on a half-applied edit
+ *  (it would reuse the removed messages' seqs, and the stale entry would be
+ *  pushed after the turn cleared the stack). */
+let rewindBusy = false;
+
+/** Run one rewind/restore exclusively. Every edit writes IndexedDB before it
+ *  touches memory or the stack; if a write fails, memory is re-read from
+ *  IndexedDB (the stack only changes after its writes succeed). */
+async function withRewindLock(op: () => Promise<void>): Promise<void> {
+  if (rewindBusy || state.inFlight || !writeOwner) return;
+  rewindBusy = true;
+  updateRewindButtons();
+  try {
+    await op();
+  } catch (err) {
+    showToast(`Couldn't rewind the chat: ${err instanceof Error ? err.message : String(err)}`, { variant: 'warn', source: 'ai' });
+    try { await loadHistoryForCurrentSession(); } catch { /* keep what we have */ }
+  } finally {
+    rewindBusy = false;
+    afterRewindChange();
+  }
+}
+
+/** Remove the tail of the conversation from history and IndexedDB — one agent
+ *  step (`'step'`) or everything since the human's last message
+ *  (`'chapter'`). The removed slice is pushed onto rewindStack so step/skip
+ *  forward can restore it. */
+async function rewindHistory(kind: RewindKind): Promise<void> {
+  const plan = planRewind(state.history, kind);
+  if (!plan) return;
+  if (plan.toDeleteIds.length > 0) await deleteMessages(plan.toDeleteIds);
+  if (plan.toPut.length > 0) await putMessages(plan.toPut);
+  state.history = plan.kept;
+  const entry: RewindEntry = { messages: plan.entry };
+  state.rewindStack.push(entry);
+  // Belt and braces: every cut lands on a clean boundary, but if the exposed
+  // tail still breaks the tool_use/tool_result invariant (which would 400 the
+  // next send), repair it — and remember how to reverse that for a restore.
+  const undo = await persistToolHistoryRepair();
+  if (undo) entry.undo = undo;
+}
+
+/** Re-apply rewound history: one step (`'step'`), or steps up to the next
+ *  human-written message (`'chapter'`). */
+async function restoreRewound(kind: RewindKind): Promise<void> {
+  if (!(await restoreNextStep())) return;
+  if (kind === 'chapter') {
+    while (state.rewindStack.length > 0 && !isChapterStart(state.rewindStack[state.rewindStack.length - 1].messages[0])) {
+      await restoreNextStep();
     }
   }
-  if (cutIndex < 0) return;
-  const removed = state.history.splice(cutIndex);
-  state.rewindStack.push(removed);
-  await deleteMessages(removed.map(m => m.id));
-  // Cutting at the last *typed* user message can expose an earlier orphaned
-  // tool_use (mid-history tool calls whose results lived in the messages we
-  // just removed), which would 400 the very next send — so a rewind meant to
-  // "step back and start over" wouldn't actually recover. Repair the exposed
-  // history and persist it so the post-rewind state is always sendable.
-  await persistToolHistoryRepair();
+}
+
+/** Restore the first step of the top rewind entry (undoing the repair its cut
+ *  triggered first). False when there's nothing to restore. */
+async function restoreNextStep(): Promise<boolean> {
+  const top = state.rewindStack[state.rewindStack.length - 1];
+  if (!top) return false;
+  const { step, rest } = takeFirstStep(top.messages);
+  const removeIds = top.undo?.removeIds ?? [];
+  const restore = [...(top.undo?.restore ?? []), ...step];
+  if (removeIds.length > 0) await deleteMessages(removeIds);
+  if (restore.length > 0) await putMessages(restore);
+  const gone = new Set(removeIds);
+  state.history = mergeBySeq(state.history.filter(m => !gone.has(m.id)), restore);
+  state.rewindStack.pop();
+  if (rest.length > 0) state.rewindStack.push({ messages: rest });
+  return true;
+}
+
+function afterRewindChange(): void {
   // The transcript changed under the plan: re-read whether one is pending.
   syncPendingPlanFromHistory();
+  broadcastChatChanged();
   renderTranscript();
+  // The change happened at the tail — show it (and the rewind banner).
+  pinTranscriptToBottom();
   updateRewindButtons();
 }
 
@@ -3417,39 +3771,110 @@ async function rewindTurn(): Promise<void> {
  *  result) and no orphaned tool_result (its tool_use was dropped — what a
  *  compaction or rewind that severs a tool round leaves behind). Mirrors the
  *  explicit "Repair history" action but runs silently after a structural edit.
- *  No-op when the history is already clean. */
-async function persistToolHistoryRepair(): Promise<void> {
-  const repair = repairToolHistory(state.history);
-  if (!repair.changed) return;
+ *  No-op when the history is already clean. Returns how to reverse the repair
+ *  (undefined when nothing changed) for callers that may need to. */
+async function persistToolHistoryRepair(): Promise<RepairUndo | undefined> {
+  const before = state.history;
+  const repair = repairToolHistory(before);
+  if (!repair.changed) return undefined;
   if (repair.toPersist.length > 0) await putMessages(repair.toPersist);
   if (repair.toDelete.length > 0) await deleteMessages(repair.toDelete.map(m => m.id));
   state.history = repair.messages;
-}
-
-/** Restore the most recently rewound turn from the rewindStack back into
- *  history and IndexedDB. */
-async function fastForwardTurn(): Promise<void> {
-  if (state.inFlight) return;
-  const toRestore = state.rewindStack.pop();
-  if (!toRestore?.length) return;
-  await putMessages(toRestore);
-  for (const msg of toRestore) {
-    const insertAt = state.history.findIndex(m => m.seq > msg.seq);
-    if (insertAt === -1) state.history.push(msg);
-    else state.history.splice(insertAt, 0, msg);
-  }
-  // The transcript changed under the plan: re-read whether one is pending.
-  syncPendingPlanFromHistory();
-  renderTranscript();
-  updateRewindButtons();
+  return repairUndo(before, repair);
 }
 
 function updateRewindButtons(): void {
-  const canRewind = !state.inFlight &&
-    state.history.some(m => m.role === 'user' && m.blocks.length > 0);
-  const canForward = !state.inFlight && state.rewindStack.length > 0;
-  if (rewindBtnRef) rewindBtnRef.disabled = !canRewind;
-  if (forwardBtnRef) forwardBtnRef.disabled = !canForward;
+  const idle = !state.inFlight && !rewindBusy && writeOwner;
+  const canStepBack = idle && rewindCutIndex(state.history, 'step') >= 0;
+  const canSkipBack = idle && rewindCutIndex(state.history, 'chapter') >= 0;
+  const canForward = idle && state.rewindStack.length > 0;
+  const set = (a: TransportAction, enabled: boolean) => {
+    const btn = transportBtnRefs[a];
+    if (btn) btn.disabled = !enabled;
+  };
+  set('skipBack', canSkipBack);
+  set('stepBack', canStepBack);
+  set('stepForward', canForward);
+  set('skipForward', canForward);
+}
+
+/** Banner at the foot of the transcript while history is rewound: what's
+ *  hidden, and how to bring it back or carry on from here. */
+function renderRewindBanner(): HTMLElement {
+  // Count per entry: each entry's first message opens a step of its own.
+  const steps = state.rewindStack.reduce((n, e) => n + countSteps(e.messages), 0);
+  const chapters = state.rewindStack.reduce((n, e) => n + countChapters(e.messages), 0);
+  const card = document.createElement('div');
+  card.dataset.rewindBanner = 'true';
+  card.className = 'max-w-[95%] self-center rounded border border-sky-700/60 bg-sky-900/15 px-3 py-2 flex flex-col gap-2';
+
+  const head = document.createElement('div');
+  head.className = 'text-xs font-medium text-sky-200';
+  const msgPart = chapters > 0 ? ` (incl. ${chapters} of your message${chapters === 1 ? '' : 's'})` : '';
+  head.textContent = `⏪ Rewound ${steps} step${steps === 1 ? '' : 's'}${msgPart}`;
+  card.appendChild(head);
+
+  const body = document.createElement('div');
+  body.className = 'text-[12px] text-sky-100/90 leading-snug';
+  body.textContent = 'Use ▶ / ⏭ below to restore them. Sending a message or resuming continues from here and discards the rewound steps.';
+  card.appendChild(body);
+
+  const actions = document.createElement('div');
+  actions.className = 'flex flex-wrap items-center gap-2 pt-1';
+  // Resuming needs a user turn at the tail for the model to answer (a trailing
+  // assistant message would read as a prefill).
+  const tail = [...state.history].reverse().find(m => !isEphemeral(m));
+  if (tail?.role === 'user') {
+    const resumeBtn = document.createElement('button');
+    resumeBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-100 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600';
+    resumeBtn.textContent = '↻ Resume from here';
+    resumeBtn.title = 'Let the agent redo the next step from this point (the rewound steps are discarded).';
+    resumeBtn.addEventListener('click', () => { void resumeFromRewind(); });
+    actions.appendChild(resumeBtn);
+  }
+  const restoreAllBtn = document.createElement('button');
+  restoreAllBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800';
+  restoreAllBtn.textContent = 'Restore all';
+  restoreAllBtn.title = 'Put every rewound step back.';
+  restoreAllBtn.addEventListener('click', () => { void restoreAllRewound(); });
+  actions.appendChild(restoreAllBtn);
+  card.appendChild(actions);
+  return card;
+}
+
+async function restoreAllRewound(): Promise<void> {
+  await withRewindLock(async () => {
+    while (await restoreNextStep()) { /* restore every rewound step */ }
+  });
+}
+
+/** Toggles for a turn that continues the existing history (Resume / Keep
+ *  going / Retry) rather than sending a new prompt: with the Plan pill on,
+ *  only a run that's still planning keeps the read-only plan-mode tools — a
+ *  build run (its plan already approved) needs the full list, exactly as
+ *  approvePlan forces. */
+function continuationToggles(toggles: ChatToggles): ChatToggles {
+  return toggles.planFirst && derivePendingPlan(state.history) === null
+    ? { ...toggles, planFirst: false }
+    : toggles;
+}
+
+/** Continue the agent loop from the rewound point — like "Keep going", the
+ *  model answers the tail of the history with no new prompt. */
+async function resumeFromRewind(): Promise<void> {
+  if (state.inFlight || rewindBusy || !writeOwner) return;
+  const settings = loadSettings();
+  const sessionCap = SPEND_CAP_USD[settings.toggles.maxSpend];
+  if (Number.isFinite(sessionCap) && totalCost(state.history) >= sessionCap) {
+    setTransientStatus(`Session has spent ${formatUsd(totalCost(state.history))} — at or over the ${formatUsd(sessionCap)} cap. Raise the $ cap to continue.`);
+    return;
+  }
+  const apiKey = await preflightTurn(settings, () => { void resumeFromRewind(); });
+  if (apiKey === PREFLIGHT_ABORT) return;
+  progressState.retryCount = 0;
+  stalledByWatchdog = false;
+  pinTranscriptToBottom();
+  await runTurnWithStallRetry(apiKey, continuationToggles(settings.toggles), []);
 }
 
 // === Send message ===
@@ -3560,11 +3985,13 @@ const SLASH_HANDLERS: Record<SlashCommandName, () => void> = {
   repair: () => { void repairCurrentChat(); },
   review: () => { void launchReview(); },
   export: () => { exportCurrentChat(); },
+  trace: () => { void exportCurrentTrace(); },
   models: () => { void showAiSettingsModal({ onChange: afterAiSettingsChange }); },
   help: () => { openSlashHelp(); },
   portrait: () => { prefillAiInput(PHOTO_BUST_PROMPT); },
   reconstruct: () => { prefillAiInput(RECONSTRUCT_PROMPT); },
   parts: () => { prefillAiInput(PARTS_PROMPT); },
+  split: () => { prefillAiInput(SPLIT_PROMPT); },
 };
 
 /** Interpret the current input as a slash command. Returns true when it was a
@@ -3699,8 +4126,10 @@ function positionSlashMenu(): void {
   slashMenuEl.style.top = 'auto';
 }
 
-async function sendMessage(): Promise<void> {
+async function sendMessage(opts: { planStyle?: PlanStyle } = {}): Promise<void> {
   if (state.inFlight) return;
+  // A rewind/restore is mid-write — sending now would race it.
+  if (rewindBusy) return;
   // Another tab is the leader for this session — don't run a second chat loop
   // against the same transcript. The viewer overlay offers "Take control".
   if (!writeOwner) return;
@@ -3727,8 +4156,22 @@ async function sendMessage(): Promise<void> {
     }
   }
 
-  const apiKey = await preflightTurn(settings, () => { void sendMessage(); });
+  // A new plan request first asks how to plan (unless the user turned the
+  // question off): the picker re-sends with the chosen style.
+  const newPlanRequest = settings.toggles.planFirst && !state.pendingPlanApproval && pendingAskUser(state.history) === null;
+  if (newPlanRequest && settings.askPlanStyle && !opts.planStyle) {
+    showPlanStylePicker(settings.planStyle);
+    return;
+  }
+  const planStyle: PlanStyle = opts.planStyle ?? settings.planStyle;
+  hidePlanStylePicker();
+
+  const apiKey = await preflightTurn(settings, () => { void sendMessage({ planStyle }); });
   if (apiKey === PREFLIGHT_ABORT) return;
+
+  // A new request (not an answer to the AI's question card) ends the build of
+  // an approved plan: its round budget no longer applies.
+  if (buildBudget && pendingAskUser(state.history) === null) endBuildBudget(buildBudget.checkpoints > 0 ? 'accepted' : 'abandoned');
 
   // Capture content before clearing the input so plan mode can restore it on reject.
   const capturedText = text;
@@ -3754,9 +4197,6 @@ async function sendMessage(): Promise<void> {
   inputEl.value = '';
   state.pendingImages = [];
   renderPendingImages();
-  // Sending a new message commits to this branch of the conversation —
-  // any rewound turns can no longer be re-applied.
-  state.rewindStack = [];
   progressState.retryCount = 0;
   stalledByWatchdog = false;
   // Hitting send is an explicit "follow the new turn" gesture — re-pin to
@@ -3783,6 +4223,9 @@ async function sendMessage(): Promise<void> {
     };
 
     let planBlocks: ChatBlock[];
+    // "Assess first" inspects before planning — cap how many rounds that
+    // first look may take so the assessment itself stays cheap.
+    let planIterationLimit: number | undefined;
     if (state.pendingPlanApproval) {
       // Refinement turn: plain user message, no prefix. historyLengthBefore
       // stays fixed so Reject still removes all planning messages.
@@ -3796,8 +4239,17 @@ async function sendMessage(): Promise<void> {
       planBlocks = [...uiNoteBlocks, { type: 'text', text: PLAN_REFINE_PREFIX + textWithContext }];
       for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
     } else {
-      // First planning turn: prefix with the planning instruction.
-      planBlocks = [...uiNoteBlocks, { type: 'text', text: PLAN_FIRST_PREFIX + textWithContext }];
+      // First planning turn: prefix with the chosen style's instruction, and
+      // tell the planner how past estimates compared with what builds took.
+      const calibration = summarizeCalibration(loadCalibration(), getConfig().ai.planCalibrationMinBuilds);
+      const calibrationBlocks: ChatBlock[] = calibration
+        ? [{ type: 'text', text: `${UI_APPLIED_NOTE_PREFIX} ${calibration} Scale your round estimate by it.` }]
+        : [];
+      if (planStyle === 'assess') {
+        planIterationLimit = getConfig().ai.planAssessMaxRounds;
+        calibrationBlocks.push({ type: 'text', text: `${UI_APPLIED_NOTE_PREFIX} The assessment has ${planIterationLimit} tool rounds — leave the last one for the plan or your questions.` });
+      }
+      planBlocks = [...uiNoteBlocks, ...calibrationBlocks, { type: 'text', text: planRequestPrefix(planStyle) + textWithContext }];
       for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
       state.pendingPlanApproval = {
         originalText: capturedText,
@@ -3806,7 +4258,7 @@ async function sendMessage(): Promise<void> {
       };
     }
 
-    await runTurnWithStallRetry(apiKey, planToggles, planBlocks);
+    await runTurnWithStallRetry(apiKey, planToggles, planBlocks, { iterationLimit: planIterationLimit });
     syncPendingPlanFromHistory();
     return;
   }
@@ -3842,10 +4294,15 @@ function formatTurnOutcome(o: TurnOutcome): string {
     case 'empty_final':
       return `⚠ model exited without a final message · ${cost} · ${iters}${tools} — last visible content is above`;
     case 'iteration_cap':
+      if (o.detail === PLAN_ASSESS_CAP) return `⏸ the assessment used its ${o.iterations} rounds before planning · ${cost}${tools}`;
+      if (o.detail?.startsWith(PLAN_CHECKPOINT)) return `⏸ plan checkpoint — the build reached its estimated rounds · ${cost}${tools}`;
       return `⚠ stopped at agent iteration cap (${o.iterations}) — try a more focused prompt, click Compact, or raise the ⟲ cap · ${cost}${tools}`;
     case 'spend_cap':
       return `⚠ stopped at session spend cap${o.detail ? ` (${o.detail})` : ''} — raise the $ cap to continue · ${cost} · ${iters}${tools}`;
     case 'max_tokens': {
+      if (o.detail === MAX_TOKENS_WHILE_THINKING) {
+        return `⚠ ran out of room while thinking · ${cost} · ${iters}${tools} — lower the Thinking level or ask for a smaller step`;
+      }
       const isLocal = loadSettings().toggles.provider === 'local';
       const hint = isLocal
         ? 'try a shorter prompt, switch to a larger local model, or compact the chat'
@@ -3930,7 +4387,7 @@ async function runTurnWithStallRetry(
   apiKey: string | undefined,
   toggles: ChatToggles,
   userBlocks: ChatBlock[],
-  opts: { reviewRequest?: string } = {},
+  opts: { reviewRequest?: string; iterationLimit?: number } = {},
 ): Promise<void> {
   let attempt = 0;
   let lastTurnOutcome: TurnOutcome | null = null;
@@ -3964,6 +4421,9 @@ async function runTurnWithStallRetry(
   // makes both a normal send and the Retry/Keep-going buttons auto-recover
   // instead of looping on the same 400. This is the automatic counterpart to
   // the explicit /repair command and the error-bubble "Repair history" button.
+  // Any turn — a send, Retry, Keep going, plan approval — continues the
+  // conversation from here, so a rewound slice can no longer be re-applied.
+  state.rewindStack = [];
   await persistToolHistoryRepair();
 
   while (true) {
@@ -3988,6 +4448,8 @@ async function runTurnWithStallRetry(
       userBlocks: blocksForThisAttempt,
       signal: controller.signal,
       onDrainQueuedBlocks: drainQueuedBlocks,
+      // Building an approved plan: its round budget replaces the ⟲ cap.
+      iterationLimit: !toggles.planFirst && buildBudget ? remainingRounds(buildBudget) : opts.iterationLimit,
     }, {
       onUserPersisted: msg => {
         state.history.push(msg);
@@ -4146,6 +4608,17 @@ async function runTurnWithStallRetry(
           else void maybeAutoCompact();
         }
         lastTurnOutcome = { ...info, costUnknown: !hasKnownPricing(toggles.provider, activeModel(toggles) ?? '') };
+        // A capped planning look ("Assess first") ran out — say so, not "raise the ⟲ cap".
+        if (toggles.planFirst && opts.iterationLimit && info.reason === 'iteration_cap') lastTurnOutcome.detail = PLAN_ASSESS_CAP;
+        if (!toggles.planFirst && buildBudget) {
+          buildBudget.used += info.iterations;
+          buildBudget.spentUsd += info.totalCostUsd;
+          // The build reached the plan's estimate: a checkpoint, not the cap.
+          if (info.reason === 'iteration_cap') {
+            buildBudget.checkpoints++;
+            lastTurnOutcome.detail = checkpointDetail(buildBudget);
+          }
+        }
       },
     });
     } catch (err) {
@@ -4223,6 +4696,9 @@ async function runTurnWithStallRetry(
       // ghost bubble.
       await stripLastAbortedAssistant();
       stalledByWatchdog = false;
+      // The stalled round produced nothing and was just removed — don't bill
+      // it to the plan's round budget.
+      if (buildBudget && !toggles.planFirst) buildBudget.used = Math.max(0, buildBudget.used - 1);
       continue;
     }
 
@@ -4232,6 +4708,10 @@ async function runTurnWithStallRetry(
     // common case where the human queued a follow-up while the model was
     // streaming its final assistant turn (no tool_use → no drain seam).
     if (state.queuedBlocks.length > 0) {
+      // Queued while the build reached its checkpoint: the follow-up is the
+      // go-ahead, so it gets a fresh batch instead of the one round left.
+      const queuedCheckpoint = checkpointBudget(finalOutcome?.detail);
+      if (queuedCheckpoint) queuedCheckpoint.limit = queuedCheckpoint.used + buildCheckpointExtension(queuedCheckpoint);
       const next = drainQueuedBlocks();
       progressState.retryCount = 0;
       stalledByWatchdog = false;
@@ -4305,6 +4785,11 @@ async function runTurnWithStallRetry(
     if (deferredAutoCompact) {
       deferredAutoCompact = false;
       void maybeAutoCompact();
+    }
+    // An approved plan's build that finished on its own (not on a question
+    // card for the user) is done: record how it compared with the estimate.
+    if (buildBudget && !toggles.planFirst && finalOutcome?.reason === 'end_turn' && finalOutcome.detail !== ASK_USER_TOOL) {
+      endBuildBudget('completed');
     }
     broadcastChatChanged();
     // The turn truly ended (retries/queued follow-ups `continue` above and never
@@ -4440,7 +4925,16 @@ function pushStopNotice(outcome: TurnOutcome): void {
     blocks: [],
     createdAt: Date.now(),
     seq: (last?.seq ?? 0) + 1,
-    stopNotice: { reason: outcome.reason, detail: outcome.detail, iterations: outcome.iterations },
+    stopNotice: {
+      reason: outcome.reason,
+      detail: outcome.detail,
+      iterations: outcome.iterations,
+      // The level the step ran at, so the retry button doesn't follow later
+      // pill changes.
+      ...(outcome.reason === 'max_tokens' && outcome.detail === MAX_TOKENS_WHILE_THINKING
+        ? { ranAtThinking: loadSettings().toggles.thinking }
+        : {}),
+    },
   };
   state.history.push(msg);
   renderTranscript();
@@ -4672,7 +5166,7 @@ async function maybeAutoCompact(): Promise<void> {
     }
   }
 
-  await persistCompaction(proposal.drop, `[auto-compacted ${proposal.drop.length} turn(s)]\n${proposal.summary}`);
+  await persistCompaction(proposal.drop, `[auto-compacted ${proposal.drop.length} turn(s)]\n${proposal.summary}`, proposal);
   // Dropping the summarized tail can sever a tool round — leaving a kept
   // tool_result whose originating tool_use is now gone. Clear that dangling
   // reference so the very next turn doesn't 400 on an orphaned tool_use_id.
@@ -4748,7 +5242,7 @@ async function runCompact(): Promise<void> {
       }
     }
     // Replace the dropped tail with one synthetic summary message
-    await persistCompaction(proposal.drop, `[compacted summary]\n${summary}`);
+    await persistCompaction(proposal.drop, `[compacted summary]\n${summary}`, proposal);
     // Dropping the summarized tail can sever a tool round — leaving a kept
     // tool_result whose originating tool_use is now gone. Clear that dangling
     // reference so the very next turn doesn't 400 on an orphaned tool_use_id.

@@ -154,6 +154,11 @@ export interface BrushStroke {
    *  per triangle when the footprint is resolved, so back faces inside the
    *  brush volume (the far side of a thin part, an undercut) stay unpainted. */
   frontFacing?: { view: BrushView; cos: number };
+  /** Occlusion ("visible faces only"): true when a surface point is hidden
+   *  from the stroke's camera by other geometry. Applied at each triangle's
+   *  centroid when the footprint is resolved. Runtime-only — built from the
+   *  descriptor's `occlude` + `view` (see strokeOcclusion.ts), never persisted. */
+  occluded?: (x: number, y: number, z: number) => boolean;
 }
 
 export interface Aabb {
@@ -1235,13 +1240,16 @@ export function strokeFootprintTriangles(mesh: MeshData, stroke: BrushStroke): S
     if (triOutsideAabb([ax, ay, az], [bx, by, bz], [cx2, cy2, cz2], box)) continue;
     const cx = (ax + bx + cx2) / 3, cy = (ay + by + cy2) / 3, cz = (az + bz + cz2) / 3;
     if (stroke.frontFacing && !facesCamera(stroke, [ax, ay, az], [bx, by, bz], [cx2, cy2, cz2])) continue;
+    let paint: boolean;
     if (stroke.spray) {
       // Spray: dither coverage at the centroid's footprint depth.
       const sd = strokeSignedDist(cx, cy, cz, stroke);
-      if (sd < 0 && airbrushDither(cx, cy, cz, stroke.spray.seed) < sprayCoverage(sd, stroke)) out.add(t);
-    } else if (withinFootprint(cx, cy, cz, stroke)) {
-      out.add(t);
+      paint = sd < 0 && airbrushDither(cx, cy, cz, stroke.spray.seed) < sprayCoverage(sd, stroke);
+    } else {
+      paint = withinFootprint(cx, cy, cz, stroke);
     }
+    // Occlusion last: it's a ray cast, so only for triangles already in.
+    if (paint && !(stroke.occluded && stroke.occluded(cx, cy, cz))) out.add(t);
   }
   return out;
 }

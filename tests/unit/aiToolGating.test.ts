@@ -13,6 +13,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   ALL_TOOL_NAMES,
   CONFIRM_REQUIRED_TOOLS,
+  FOCUS_RETURNING_TOOLS,
   OBJECT_TARGETABLE_TOOLS,
   RETRY_SAFE_TOOLS,
   buildToolList,
@@ -299,6 +300,7 @@ describe('AI tool dispatch', () => {
       listAnnotations: () => [{ id: 's1', color: [1, 0, 0], width: 4, pointCount: 50, points, camera: { position: [0, 0, 1], target: [0, 0, 0], up: [0, 1, 0] } }],
       listTextAnnotations: () => [{ id: 't1', text: 'shorter here', anchor: [1, 2, 3] }],
       getAnnotationCount: () => 2,
+      listAnnotationViews: () => [{ id: 'av_1', title: 'View 1', summary: '1 stroke · on handle', createdAt: 5, attachedAt: 9, camera: {}, hits: [] }],
     });
     const r = await executeTool('listAnnotations', { maxPointsPerStroke: 5 });
     expect(r.isError).toBe(false);
@@ -312,6 +314,7 @@ describe('AI tool dispatch', () => {
     expect(s.points[4]).toEqual([49, 0, 98]);
     expect(s.bbox).toEqual({ min: [0, 0, 0], max: [49, 0, 98] });
     expect(s.centroid).toEqual([24.5, 0, 49]);
+    expect(out.views).toEqual([{ id: 'av_1', title: 'View 1', summary: '1 stroke · on handle', createdAt: 5, attached: true }]);
 
     const none = JSON.parse((await executeTool('listAnnotations', { maxPointsPerStroke: 0 })).content);
     expect(none.strokes[0].points).toBeUndefined();
@@ -628,5 +631,83 @@ describe('AI tool dispatch', () => {
     // A non-current target: listVersions() reads the current object, so the label is omitted.
     expect(await confirmToolLabel('deleteVersion', { index: 3, object: 'Lid' })).toBe('permanently delete version 3 of object Lid');
     expect(await confirmToolLabel('importImageAsRelief', {})).toBe('import an image as a 3D relief');
+  });
+});
+
+describe('object focus returns after a read-only targeted tool (#1197)', () => {
+  test('the focus-returning set is read-only and object-targetable', () => {
+    for (const name of FOCUS_RETURNING_TOOLS) {
+      expect(OBJECT_TARGETABLE_TOOLS.has(name), name).toBe(true);
+      expect(isModelChangingTool(name), name).toBe(false);
+    }
+  });
+
+  /** A two-object session whose focus moves with changeObject. */
+  function stubObjects(start: string) {
+    let current = start;
+    const calls = stubApi({
+      listObjects: () => ['A', 'B'].map((id, order) => ({ id, name: `Obj ${id}`, order, isCurrent: id === current })),
+      changeObject: (t) => {
+        const previous = { id: current, version: 3 };
+        current = t === 'Obj B' || t === 'B' || t === 1 ? 'B' : 'A';
+        return { id: current, name: `Obj ${current}`, previous };
+      },
+      getCode: () => `code of ${current}`,
+      runAndSave: () => ({ ok: true, savedTo: current }),
+    });
+    return { calls, current: () => current, move: (id: string) => { current = id; } };
+  }
+
+  test('a read-only tool on another object runs there, then switches back', async () => {
+    const s = stubObjects('A');
+    const r = await executeTool('getCode', { object: 'Obj B' });
+    expect(r.content).toContain('code of B');
+    expect(s.current()).toBe('A');
+    // Back to the exact version the user had open, and the result says so.
+    const back = s.calls.filter(c => c.method === 'changeObject').at(-1);
+    expect(back?.args).toEqual(['A', { version: 3 }]);
+    expect(r.content).toMatch(/Focus went back to the user's object "Obj A"\. Pass object: "Obj B"/);
+  });
+
+  test('a newer tool call stops a late switch-back', async () => {
+    let current = 'A';
+    let release!: () => void;
+    stubApi({
+      listObjects: () => ['A', 'B'].map((id, order) => ({ id, name: `Obj ${id}`, order, isCurrent: id === current })),
+      changeObject: (t) => { const previous = { id: current, version: 1 }; current = t === 'Obj B' || t === 'B' ? 'B' : 'A'; return { id: current, name: `Obj ${current}`, previous }; },
+      // A read that outlives the agent's tool timeout.
+      getCode: () => new Promise(r => { release = () => r('x'); }),
+      runAndSave: () => ({ ok: true }),
+    });
+    const slow = executeTool('getCode', { object: 'Obj B' });
+    await new Promise(r => setTimeout(r, 0));
+    await executeTool('runAndSave', { object: 'Obj B', code: 'return 1;' });
+    release();
+    await slow;
+    expect(current).toBe('B');
+  });
+
+  test('id-returning reads keep the target focused for the follow-up call', async () => {
+    const s = stubObjects('A');
+    await executeTool('findFaces', { object: 'Obj B', normal: [0, 0, 1] });
+    expect(s.current()).toBe('B');
+  });
+
+  test('a model-changing tool leaves the targeted object focused', async () => {
+    const s = stubObjects('A');
+    await executeTool('runAndSave', { object: 'Obj B', code: 'return 1;' });
+    expect(s.current()).toBe('B');
+  });
+
+  test('no switch back when focus moved during the call', async () => {
+    const s = stubObjects('A');
+    // The user (or a parallel call) moves focus while getCode runs.
+    stubApi({
+      listObjects: () => ['A', 'B', 'C'].map((id, order) => ({ id, name: `Obj ${id}`, order, isCurrent: id === s.current() })),
+      changeObject: (t) => { s.move(t === 'Obj B' ? 'B' : String(t)); return {}; },
+      getCode: () => { s.move('C'); return 'x'; },
+    });
+    await executeTool('getCode', { object: 'Obj B' });
+    expect(s.current()).toBe('C');
   });
 });

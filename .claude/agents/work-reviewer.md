@@ -72,6 +72,22 @@ file:line-cited list of findings the primary agent or a human will act on.
 - XSS in injected HTML / template strings; leaked API keys; weakened
   CSP/COEP/COOP headers (`public/_headers`); CSP regressions.
 
+**Copyright, licenses and trademarks** (CLAUDE.md § Copyright, licenses and
+trademarks — a must-fix, since the repo and its PRs are public)
+- A new or changed third-party file (model, STL/3MF, scan, photo, texture,
+  font, vendored code) without its source and license recorded next to it, or
+  under a license the rules don't allow (ND, NC, "personal use", none found).
+  Flag any file force-added under a gitignored path such as `.plans/`.
+- A character, brand, product or real person named in shipped content
+  (catalog, `examples/`, presets, ideas/starter prompts, docs, AI prompts) or in
+  file names, labels, commit messages or prompt logs; and a new model that
+  copies a specific character's or product's design under a generic name.
+- Pasted code carrying another project's license header or copied from a
+  copyleft or CC BY-SA source; a new dependency, font or WASM module whose
+  license is copyleft, noncommercial, custom or missing (read its license, not
+  just the `package.json` diff); license headers or NOTICE files stripped from
+  vendored code.
+
 **Config discipline**
 - Numeric tuning constants (timeouts, limits, thresholds, budgets, quality
   knobs) go through `src/config/appConfig.ts` + `advancedSettingsModal.tsx`,

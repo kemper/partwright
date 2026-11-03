@@ -95,7 +95,7 @@ too. The console, the AI tool schema, `help()` and the docs all get the op.
   `extraSwatches` option. The data lives in `src/color/naturalTones.ts`, so
   the paint layer doesn't import segmentation.
 
-**Measured on the Tsubasa figurine** (460k triangles): 9 parts plus the base
+**Measured on the figurine** (460k triangles): 9 parts plus the base
 in about 21 actions, versus 31 after #1054:
 - 9 chip keys, with "hair" already armed;
 - 11 pins, one per part plus a second eye;

@@ -15,10 +15,11 @@ tessellation floor.
 
 **Attribution / license:** all geometry described here derives from soozafone's
 Dummy 13, licensed CC-BY-4.0. Any redistribution of the reconstructions or
-derivatives must credit soozafone and carry the license. Source STLs live in
-`.plans/inverse-cad/target-stls/` (frame) and `.plans/inverse-cad/armor-stls/`
-(armor) — both sets are force-added to git despite the `.plans/` ignore rule,
-so re-verification works from a fresh clone.
+derivatives must credit soozafone and carry the license. The frame source STLs
+live in `.plans/inverse-cad/target-stls/` (force-added to git despite the
+`.plans/` ignore rule, so re-verification works from a fresh clone). The armor
+source STLs are not in the repo: their source and license were never recorded,
+so they were removed. To re-verify an armor part, supply its STL locally.
 
 **What this doc is for.** A future session should be able to (a) design a NEW
 part that mates with the kit — correct ball/socket/clip interfaces — without
@@ -454,8 +455,9 @@ clavicle (spherical body).
    `metrics.json`; attempt history: `state.json`.
 6. **To re-verify a candidate against its STL**:
    `node scripts/inverse-cad/eval.mjs .plans/inverse-cad/target-stls/<part>.stl scripts/inverse-cad/converged/dummy13/<part>/candidate.js`
-   (armor: `.plans/inverse-cad/armor-stls/` + `converged/dummy13-armor/`).
-   The STLs are checked in (force-added past the `.plans/` ignore rule).
+   (armor: your local copy of the part's STL + `converged/dummy13-armor/`).
+   The frame STLs are checked in (force-added past the `.plans/` ignore rule);
+   the armor STLs are not.
 7. **Working method** (probes, gates, tactics, traps — e.g. float32 revolve
    membranes, hull convexification, per-part-vs-assembled cut ordering):
    `scripts/inverse-cad/PLAYBOOK.md`, especially §5.18 (sibling transfer +

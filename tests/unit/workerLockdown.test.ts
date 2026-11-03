@@ -266,6 +266,7 @@ describe('toAppAssetPath', () => {
     expect(toAppAssetPath('/openscad-libs/BOSL2/_manifest.json', origin)).toBe('/openscad-libs/BOSL2/_manifest.json');
     expect(toAppAssetPath('/openscad-libs/fonts/LiberationSans-Bold.ttf', origin)).toBe('/openscad-libs/fonts/LiberationSans-Bold.ttf');
     expect(toAppAssetPath('/assets/replicad_single-AbC123.wasm', origin)).toBe('/assets/replicad_single-AbC123.wasm');
+    expect(toAppAssetPath('/human/hm08.bin', origin)).toBe('/human/hm08.bin');
     expect(toAppAssetPath('https://app.example/assets/x.wasm', origin)).toBe('/assets/x.wasm');
     // A /v1/ build's prefixes.
     expect(toAppAssetPath('https://app.example/v1/assets/x.wasm', origin, ['/v1/assets/'])).toBe('/v1/assets/x.wasm');

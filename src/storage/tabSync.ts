@@ -23,7 +23,9 @@ export type TabSyncMessage =
   /** The AI chat transcript for this session changed. */
   | { kind: 'chat'; sessionId: string }
   /** Session notes changed. */
-  | { kind: 'notes'; sessionId: string };
+  | { kind: 'notes'; sessionId: string }
+  /** The annotation-view history for this session changed. */
+  | { kind: 'annotation-views'; sessionId: string };
 
 type Handler = (msg: TabSyncMessage) => void;
 
