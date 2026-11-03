@@ -71,7 +71,7 @@ export interface ToolExecResult {
  *  from this so the schema can't silently omit a name the validator accepts
  *  (which previously schema-blocked the model from 5 valid subdocs). */
 export const SUBDOC_NAMES_LIST = [
-  'curves', 'bosl2', 'replicad', 'sdf', 'figure', 'creature', 'voxel', 'colors', 'print-safety',
+  'curves', 'bosl2', 'replicad', 'sdf', 'figure', 'creature', 'human', 'voxel', 'colors', 'print-safety',
   'fasteners', 'joints', 'gears', 'threads', 'reference-images', 'file-io', 'annotations',
   'printing', 'relief', 'textures', 'mechanisms', 'iteration-workflow', 'gotchas',
   'visual-verification', 'spending', 'manifold-api', 'reconstruction', 'deform', 'segmentation', 'ui-control',
@@ -344,7 +344,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'buildCharacter',
-    description: 'Build a posed, painted figure from a Character Creator SPEC and commit it as a version — the token-cheap way to make a person/toy figure: fill in parameters instead of writing + debugging figure code. Any subset of fields; missing ones take defaults; every field is validated (bad ones are listed in the error). Style: body.proportions "realistic" | "chibi" | "funko" (vinyl-pop: huge wide head; also set headsTall 3), body.headScale {x,y,z} to resize the head. body.headSink (≈0.4 = neckless toy), body.mittens. Face: eyeStyle "bead" (glossy toy eyes + glint), browThickness/browWidth (bold brows ≈ 3/1.5), jaw/chin/cheek. Hair: "anime" (flat swoopy ribbon locks: lockShape/chunk/spike/swoop/fringe/seed), "shag" (layered spiky jet-black mop: crown/layers/raggedness/flare/notched/crownSize/backWidth/tipWidth), "captured" (a captured shaggy mop: volume/length/capturedFringe/spikiness/smooth/tilt/windowScale/mirror) or "mop". pose.hold {kind:"ball", radius, cup, cupL?, cupR?, handScale} = both hands hold a soccer ball (colors.ball base + pose.hold.color panels). Clothing: top.trim {collar, cuffs} (colors.trim); top.print [{text, where:"chest"|"back", size, x, z, color}] = embossed letters/numbers (e.g. N on the chest, 10 on the back); pants.length "shorts" (knee-length, hem) | "briefs"; socks {on, height, stripes, stripeSpan} (colors.socks + colors.sockStripe); feet {style:"toy", size, height, cleats} = chunky vinyl sneakers with studs. Colors are "#rrggbb" per region (skin, hair, top, pants, feet, sole, eyes/iris/pupil, eyeHighlight, lips, brows, trim, socks, sockStripe, base, ball). Figure-from-a-photo loop: view the photo once → fill the spec → buildCharacter → photoMatch (text only) → adjust spec fields from worst[] → repeat; tweak with getCharacterSpec. Returns geometry stats + version (the generated code is NOT echoed — call getCode only if you must hand-edit something the spec cannot express).',
+    description: 'Build a posed, painted figure from a Character Creator SPEC and commit it as a version — the token-cheap way to make a person/toy figure: fill in parameters instead of writing + debugging figure code. Any subset of fields; missing ones take defaults; every field is validated (bad ones are listed in the error). Style: body.proportions "realistic" | "chibi" | "funko" (vinyl-pop: huge wide head; also set headsTall 3), body.headScale {x,y,z} to resize the head. body.headSink (≈0.4 = neckless toy), body.mittens. Face: eyeStyle "bead" (glossy toy eyes + glint), browThickness/browWidth (bold brows ≈ 3/1.5), jaw/chin/cheek. Hair: "anime" (flat swoopy ribbon locks: lockShape/chunk/spike/swoop/fringe/seed), "shag" (layered spiky jet-black mop: crown/layers/raggedness/flare/notched/crownSize/backWidth/tipWidth), "captured" (a captured shaggy mop: volume/length/capturedFringe/spikiness/smooth/tilt/windowScale/mirror) or "mop". pose.hold {kind:"ball", radius, cup, cupL?, cupR?, handScale} = both hands hold a soccer ball (colors.ball base + pose.hold.color panels). Clothing: top.trim {collar, cuffs} (colors.trim); top.print [{text, where:"chest"|"back", size, x, z, color}] = embossed letters/numbers (e.g. N on the chest, 10 on the back); pants.length "shorts" (knee-length, hem) | "briefs"; socks {on, height, stripes, stripeSpan} (colors.socks + colors.sockStripe); feet {style:"toy", size, height, cleats} = chunky vinyl sneakers with studs. Colors are "#rrggbb" per region (skin, hair, top, pants, feet, sole, eyes/iris/pupil, eyeHighlight, lips, brows, trim, socks, sockStripe, base, ball). From a photo: fill the spec, build, score with photoMatch, adjust from worst[], repeat. Returns geometry stats + version (the generated code is NOT echoed — call getCode only if you must hand-edit something the spec cannot express).',
     input_schema: {
       type: 'object',
       properties: {
@@ -380,7 +380,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'photoMatch',
-    description: 'TEXT-ONLY likeness check of the current model against a reference photo — call this INSTEAD of renderView/renderViews for routine "does it look like the photo yet?" passes, and keep image renders for checkpoints (e.g. every 3–5 edits, or before finishing). Renders the model flat from `view` (default front: azimuth 0, elevation 0, ortho — match the photo\'s camera; azimuth 0 = model front faces -Y, 90 = faces +X), segments the photo (backdrop estimated from its border, or pass `bg`), normalises both silhouettes to a common height and returns: silhouetteIoU (1 = identical outline), aspect (model vs photo w/h), bands[] (10 horizontal slices top→bottom: photo/model width as % of height, widthDiffPct, dx centre offset), regions[] (per api.label part: iou, areaRatio, widthRatio/heightRatio, dx/dy centroid offset in % of height, photoColor vs model colour) and worst[] — the 3–5 most actionable findings in plain words (e.g. "hair: model 27% narrower across bands 0–1", "shoes: model region 28% smaller"). Fix the worst[] items, re-run photoMatch, and watch silhouetteIoU climb. Exclude parts the photo does not show (e.g. a display base) with `exclude`. If warnings say the photo silhouette touches the crop edge, or the aspect differs wildly, pass `crop`, `bg`, `pixelAspect` (stretched video frames) or `fit: "box"` (compare proportions only). Needs labelled parts with colours for the region analysis (silhouette metrics work without). outline[] is a compact text diff of the outline ("photo-only at bands 2–4 left: up to 3.1% of height (hair) → grow"); bands also carry left/right edge offsets (outward-positive). Pass `bands: 20` for a finer profile once the coarse shape is right. Have photos from several angles? Pass `views: [{image, azimuth, elevation}, …]` to score them all in one call (returns the mean silhouetteIoU + per-view results). Parts the photo cannot tell apart (white ball on a white shirt) come back with `lowConfidence` and their size findings suppressed — `merge` them ([["jersey","ball"]]) or `ignore` them. Busy backdrop: the scorer auto-switches to a colour model; pass `mask` (attachment id of a white-on-black silhouette) if it still fails. warnings[] also flag a reference too small to judge fine detail.',
+    description: 'TEXT-ONLY likeness check of the current model against a reference photo — call this INSTEAD of renderView/renderViews for routine "does it look like the photo yet?" passes, and keep image renders for checkpoints (e.g. every 3–5 edits, or before finishing). Renders the model flat from `view` (default front: azimuth 0, elevation 0, ortho — match the photo\'s camera; azimuth 0 = model front faces -Y, 90 = faces +X), segments the photo (backdrop estimated from its border, or pass `bg`), normalises both silhouettes to a common height and returns silhouetteIoU (1 = identical outline), aspect, bands[] (width per horizontal slice), regions[] (per api.label part: iou, size ratios, centroid offset, colour) and worst[]: the 3–5 most actionable findings in plain words (e.g. "hair: model 27% narrower across bands 0–1"). Field details: /ai/reference-images.md#photo-match. Fix the worst[] items, re-run photoMatch, and watch silhouetteIoU climb. Exclude parts the photo does not show (e.g. a display base) with `exclude`. If warnings say the photo silhouette touches the crop edge, or the aspect differs wildly, pass `crop`, `bg`, `pixelAspect` (stretched video frames) or `fit: "box"` (compare proportions only). Needs labelled parts with colours for the region analysis (silhouette metrics work without). outline[] is a compact text diff of the outline. Pass `bands: 20` for a finer profile once the coarse shape is right. Have photos from several angles? Pass `views: [{image, azimuth, elevation}, …]` to score them all in one call (returns the mean silhouetteIoU + per-view results). Parts the photo cannot tell apart (white ball on a white shirt) come back with `lowConfidence` and their size findings suppressed — `merge` them ([["jersey","ball"]]) or `ignore` them. Busy backdrop: the scorer auto-switches to a colour model; pass `mask` (attachment id of a white-on-black silhouette) if it still fails. warnings[] also flag a reference too small to judge fine detail.',
     input_schema: {
       type: 'object',
       properties: {
@@ -424,6 +424,32 @@ const ALL_TOOLS: ToolDefinition[] = [
             },
           },
         },
+      },
+    },
+  },
+  {
+    name: 'fitHumanToPhoto',
+    description: 'Fit an api.human body (sliders + arm/leg spread) to a full-body photo\'s silhouette and save it as a version. Then style it in code; check with photoMatch. Read /ai/human.md#fit-to-a-photo first.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        image: { type: 'string', description: 'Front photo: attachment id or data URL.' },
+        views: {
+          type: 'array',
+          description: '1–4 photos instead of image.',
+          items: {
+            type: 'object',
+            properties: {
+              image: { type: 'string' },
+              azimuth: { type: 'number', description: '0 = front, 90 = left side.' },
+              elevation: { type: 'number' },
+              mask: { type: 'string', description: 'White = person.' },
+            },
+          },
+        },
+        baseJson: { type: 'string', description: 'api.human options to keep (JSON).' },
+        fit: { type: 'array', items: { type: 'string' }, description: 'Sliders to search.' },
+        budget: { type: 'integer', description: 'Candidate builds.' },
       },
     },
   },
@@ -2086,20 +2112,20 @@ const ALL_TOOLS: ToolDefinition[] = [
 
 **Routing — prefer the default.** mode 'auto' (default): in a manifold-js session the texture is written INTO THE CODE as an \`api.surface.<id>({…})\` call (inserted before the final return, or the existing call for that id is updated in place) — the model stays parametric, the texture recomputes when the code changes, and saved versions keep the computed result. In a SCAD/BREP/voxel session it falls back to BAKING the textured mesh (the parametric source is replaced — the returned warnings say so). mode 'code' forces the in-code path (errors off manifold-js); mode 'bake' forces the destructive bake. To fine-tune on manifold-js, just call again with new opts — the code call is edited in place, no undo round-trip needed.
 
-**opts by id** (all optional — size-relative defaults fill in; amplitude in world units, start ~1–3% of model diagonal; quality 1–5 mesh detail; seed for reproducibility):
-- fuzzy: amplitude, scale (feature size, ~4% of diagonal), octaves (1–5), seed, quality
-- knit: amplitude, stitchWidth, stitchHeight, rowOffset (0–1), roundness (0–1), grainAngleDeg, variation, seed, quality, algorithm ('bfs'|'lscm'|'harmonic')
+**opts by id** (all optional; size-relative defaults; amplitude in world units, start ~1–3% of the model diagonal; quality 1–5; seed). Meanings and good values: /ai/textures.md.
+- fuzzy: amplitude, scale, octaves, seed, quality
+- knit: amplitude, stitchWidth, stitchHeight, rowOffset, roundness, grainAngleDeg, variation, seed, quality, algorithm ('bfs'|'lscm'|'harmonic')
 - cable: amplitude, cableWidth, cablePitch, plyWidth, grainAngleDeg, variation, seed, quality
-- waffle: amplitude, cellWidth, cellHeight, sharpness (1=soft…8+=thin border), rowOffset (0.5=honeycomb), grainAngleDeg, seed, quality
+- waffle: amplitude, cellWidth, cellHeight, sharpness, rowOffset (0.5 = honeycomb), grainAngleDeg, seed, quality
 - fur: amplitude, fiberSpacing, fiberLength, octaves, grainAngleDeg, seed, quality
-- woven: amplitude, threadSpacing, threadWidth (0.1–0.9 fraction), underDepth (0–1), grainAngleDeg, seed, quality
-- knurl: amplitude (ridge height), cellWidth/cellHeight (ridge spacing), style ('diamond'|'straight'|'ribs'), profile ('round' soft cosine bumps | 'pyramid' straight-sided machinist diamonds), sharpness (1 soft … 6+ sharp peaks), grainAngleDeg, seed, quality — the machinist grip pattern (diamond cross-hatch, axial splines, or finger ribs)
-- voronoi: amplitude, cellSize, wallWidth (fraction), raised (false = engraved channels), jitter (0–1), grainAngleDeg, seed, quality
-- smooth: iterations (Taubin passes, ~5), subdivide (default true)
+- woven: amplitude, threadSpacing, threadWidth, underDepth, grainAngleDeg, seed, quality
+- knurl (machinist grip): amplitude, cellWidth, cellHeight, style ('diamond'|'straight'|'ribs'), profile ('round'|'pyramid'), sharpness, grainAngleDeg, seed, quality
+- voronoi: amplitude, cellSize, wallWidth, raised (false = engraved channels), jitter, grainAngleDeg, seed, quality
+- smooth: iterations (~5), subdivide (default true)
 Plus preserveColor (default true — bake path only; on the code path paint re-resolves against the textured mesh every run automatically).
 
 **Scoping (code path / manifold-js only).** By default the texture covers the whole skin. Add ONE of these to opts to limit it to part of the model:
-- label: 'name' — texture only the triangles of an \`api.label(shape, 'name', …)\` region. Lets you texture one shape of a union (e.g. a knurled grip on a smooth body): label that shape in the code, union it, then \`applySurfaceTexture('knurl', { label: 'grip' })\`.
+- label: 'name' — only an \`api.label(shape, 'name')\` region (e.g. a knurled grip on a smooth body: \`applySurfaceTexture('knurl', { label: 'grip' })\`).
 - region: { point: [x,y,z], radius } — texture every triangle whose surface is within \`radius\` of a world-space point. Use getGeometryData's bbox/centroid to pick a point on the model.
 (Scoping is ignored on the bake path; pass label/region only with mode 'auto'/'code'.)
 
@@ -3107,7 +3133,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams', 'setCurvatureQuality']);
-const SAVE_GATED = new Set(['runAndSave', 'forkVersion', 'loadVersion', 'saveVersion', 'resolveModelDrift', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts', 'partAction', 'undoPartEdit', 'splitIntoPieces']);
+const SAVE_GATED = new Set(['runAndSave', 'fitHumanToPhoto', 'forkVersion', 'loadVersion', 'saveVersion', 'resolveModelDrift', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts', 'partAction', 'undoPartEdit', 'splitIntoPieces']);
 /** SAVE_GATED tools that touch version history WITHOUT executing new code, so
  *  they only need the saveVersions scope (not runCode). */
 const SAVE_NON_RUNNING = new Set(['loadVersion', 'saveVersion', 'renameVersion', 'deleteVersion', 'saveAllObjects']);
@@ -4041,6 +4067,21 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.paintAlongBoundary(input);
     case 'photoMatch':
       return await api.photoMatch(input);
+    case 'fitHumanToPhoto': {
+      // Always commits (like buildCharacter) and drops the generated code from
+      // the result: the model only needs it to hand-edit, via getCode.
+      const { baseJson, ...rest } = input;
+      let base: unknown;
+      if (typeof baseJson === 'string' && baseJson.trim()) {
+        try { base = JSON.parse(baseJson); } catch { return { error: 'fitHumanToPhoto: baseJson is not valid JSON' }; }
+      }
+      const r = await api.fitHuman({ ...rest, ...(base !== undefined ? { base } : {}), save: true }) as Record<string, unknown>;
+      if (r && typeof r === 'object' && typeof r.code === 'string') {
+        const { code, ...rest } = r;
+        return { ...rest, codeChars: (code as string).length };
+      }
+      return r;
+    }
     case 'buildCharacter': {
       // Always commits (the chat AI's work should leave a version), and drops
       // the generated code from the result — it is a few KB the model only

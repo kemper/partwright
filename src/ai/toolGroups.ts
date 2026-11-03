@@ -91,8 +91,8 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
   },
   {
     id: 'character',
-    summary: 'the buildCharacter humanoid figure builder and its presets',
-    tools: ['buildCharacter', 'getCharacterSpec', 'listCharacterPresets', 'randomCharacter'],
+    summary: 'the buildCharacter humanoid figure builder and its presets; fit an api.human body to a photo',
+    tools: ['buildCharacter', 'getCharacterSpec', 'listCharacterPresets', 'randomCharacter', 'fitHumanToPhoto'],
   },
   {
     id: 'parts',

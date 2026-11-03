@@ -10,6 +10,7 @@
 import { getConfig } from '../config/appConfig';
 import { manifoldJsEngine } from '../geometry/engines/manifoldJs';
 import { preloadTextFonts, sourceUsesManifoldText } from '../geometry/textGlyphs';
+import { sourceUsesHuman, preloadHumanAsset } from '../human/humanAsset';
 import { parseSTL } from '../import/parsers/stl';
 import { computeMeshFeatures, toSegMesh } from '../segmentation/features';
 import { SegmentationRunner, type DetectRequest } from '../segmentation/runner';
@@ -77,6 +78,9 @@ export interface LabelledMesh {
 export async function labelledMeshFromCode(code: string): Promise<LabelledMesh> {
   await manifoldJsEngine.init();
   if (sourceUsesManifoldText(code)) await preloadTextFonts();
+  if (sourceUsesHuman(code)) {
+    try { await preloadHumanAsset(code); } catch { /* api.human reports the missing asset itself */ }
+  }
   const r = manifoldJsEngine.run(code, {}) as {
     error?: string;
     mesh?: { vertProperties: Float32Array; triVerts: Uint32Array; numTri: number; numProp: number } | null;
