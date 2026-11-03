@@ -44,7 +44,7 @@
     "knip": "^6.15.0",
     "madge": "^8.0.0",
     "typescript": "~5.8.3",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.12"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.92.0",
@@ -71,10 +71,19 @@
     "replicad": "^0.23.1",
     "replicad-opencascadejs": "^0.23.0",
     "ses": "2.3.0",
-    "sharp": "^0.34.5",
+    "sharp": "^0.35.5",
     "tailwindcss": "^4.2.1",
     "three": "^0.183.2",
     "three-mesh-bvh": "^0.9.10",
-    "vite": "^6.3.5"
+    "vite": "^6.4.5"
+  },
+  "overrides": {
+    "js-beautify": {
+      "glob": "^14.0.2",
+      "minimatch": "^11.0.1"
+    },
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "^11.0.1"
+    }
   }
 }
