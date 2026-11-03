@@ -250,3 +250,5 @@ Right-handed, Z-up. The XY plane is the ground, Z points up. Units are arbitrary
 ## License
 
 Partwright is **source-available** under the [PolyForm Noncommercial License 1.0.0](./LICENSE). It is **free for non-commercial use**. Commercial use is not permitted under this license — commercial rights are reserved by the copyright holder. See [LICENSE](./LICENSE) for the full terms.
+
+Contributions are accepted only under the terms in [CONTRIBUTING.md](./CONTRIBUTING.md), which grant the copyright holder the right to use and relicense them, including commercially.
