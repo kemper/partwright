@@ -277,7 +277,7 @@ function fallbackFigure(spec: CharacterSpec): HTMLElement {
   return wrap;
 }
 
-/** The same stand-in for a Realistic preset (no baked thumbnails yet). */
+/** The same stand-in for a Realistic preset whose baked image is missing. */
 function humanFallbackFigure(spec: HumanCharacterSpec): HTMLElement {
   const wrap = el('div', 'flex flex-col items-center gap-px');
   wrap.setAttribute('aria-hidden', 'true');
@@ -747,14 +747,22 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi, openOpts?: C
     card.setAttribute('aria-label', p.label);
     card.setAttribute('aria-pressed', 'false');
     card.title = `${p.label} — ${p.description}`;
-    const thumbWrap = el('div', 'relative h-14 bg-[#f4f4f6] flex items-center justify-center');
+    // Baked like the Avatar cards (`npm run bake:character-presets -- --family
+    // realistic`); the colour silhouette stands in if the image is missing.
+    const thumbWrap = el('div', 'relative h-20 bg-[#f4f4f6] flex items-center justify-center');
     const strip = el('div', 'absolute inset-x-0 bottom-0 h-1.5 flex');
     for (const hex of [preset.colors.skin, preset.colors.hair, preset.colors.top, preset.colors.bottom]) {
       const seg = el('span', 'flex-1');
       seg.style.background = hex;
       strip.appendChild(seg);
     }
-    thumbWrap.append(humanFallbackFigure(preset), strip);
+    const img = el('img', 'h-full w-full object-contain');
+    img.alt = '';
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.src = assetPath(`/character-presets/${p.id}.webp`);
+    img.addEventListener('error', () => { img.remove(); thumbWrap.prepend(humanFallbackFigure(preset)); });
+    thumbWrap.append(img, strip);
     const text = el('div', 'px-1.5 py-1');
     const name = el('div', 'text-[12px] text-zinc-100 font-medium leading-tight truncate');
     name.textContent = p.label;

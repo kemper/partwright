@@ -306,6 +306,33 @@ top, it reads as a dress), `briefs`. `shoes`: `none`, `shoes`, `sneakers`,
 `boots`. For anything the spec can't say (morph sliders, a custom pose, your
 own accessory), edit the generated `api.human` code by hand.
 
+### Realistic or Avatar: what each one has {#realistic-vs-avatar}
+
+The two families overlap but don't match: features stay in the family that has
+them unless someone ports them. In the Character Creator panel:
+
+| | Realistic (`api.human`) | Avatar (`api.sdf.figure`) |
+|---|---|---|
+| **Look** | MakeHuman anatomy; styles realistic, anime, chibi, vinyl toy, heroic | smooth and toy-like; body plans realistic, chibi, vinyl toy |
+| **Body** | gender blend, age 1–90, muscle, weight, stature, bust; shoulder taper, belly | sex, build, age, weight, muscle, bust, belly, heads tall; head size, neckless head, mitten hands |
+| **Face** | jaw, chin, cheekbones, nose width and length, mouth width, eye size, square head; eye colour | face shape, eye lids, gaze, nose type, lip shape, ears, brow shape, brow thickness, bead or iris eyes, eye size and spacing |
+| **Expression** | 11: neutral, smile, grin, laugh, frown, sad, angry, surprised, wink, sleepy, kiss | 7, from big smile to deep frown |
+| **Pose** | relaxed, wave, cheer, arms out, walking, A-pose | standing, T-pose, arms up, contrapposto, walking, waving, plus a slider per joint |
+| **Hair** | 11 styles (bald, buzz, short, bob, long, ponytail, pigtails, bun, afro, mohawk, spiky), fringe, length, volume | 17 styles including braids, locs, cornrows, box braids and the lock-style anime, shag and mop hair with their shape knobs |
+| **Beard** | stubble, mustache, goatee, short, full | — |
+| **Tops** | T-shirt, shirt, fitted top, sweater, jacket, coat; 6 sleeve lengths, 5 necklines | top with no, short or long sleeves; dress; collar and cuff trim; chest and back lettering |
+| **Bottoms** | pants, jeans, shorts, leggings, skirt (4 lengths), briefs | slim or cargo pants, rise, length, hem |
+| **Feet** | shoes, sneakers, boots; socks | shoes or boots, chunky toy shoes with cleats; striped socks |
+| **Armor** | breastplate, backplate, cuirass, pauldrons, vambraces, gauntlets, cuisses, greaves, sabatons, gorget, helmet, tassets | — |
+| **Held** | a prop in each hand: sword, dagger, axe, spear, staff, wand, torch, bow, shield | a ball in both hands |
+| **Accessories** | hats (top hat, cap, beanie, wizard hat, crown, tiara), glasses, sunglasses, necklace, backpack, cape, gloves, belt, scarf | — |
+| **From a photo** | `fitHuman` fits the body to a photo's silhouette | fill the spec by eye and score it with `photoMatch` |
+
+Both families have colours per part, a stand, 🎲 Random and presets. In code,
+`api.human` also takes every MakeHuman morph slider, any joint angle, the
+expression channels and your own accessory shapes (above); the Avatar code
+(`api.sdf.figure`) has its own deeper options in `/ai/figure.md`.
+
 ## Fit to a photo {#fit-to-a-photo}
 
 Fit the body sliders and arm/leg spread to a full-body photo's silhouette,
