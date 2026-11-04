@@ -71,6 +71,36 @@ test.describe('Character Creator: Realistic', () => {
     expect(out.avatarFamily).toBeNull();
   });
 
+  test('the chat AI tools build, list and roll Realistic characters', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+    const out = await page.evaluate(async () => {
+      await (window as unknown as { partwright: PW }).partwright.createSession('realistic-tools');
+      const tools = await import('/src/ai/tools.ts');
+      const run = async (name: string, input: Record<string, unknown>) => {
+        const r = await tools.executeTool(name, input);
+        return { isError: r.isError, out: JSON.parse(r.content) as Record<string, unknown> };
+      };
+      const built = await run('buildCharacter', { realisticJson: JSON.stringify({ body: { age: 30 }, hair: { style: 'bun' } }), label: 'From chat' });
+      const spec = await run('getCharacterSpec', {});
+      const listed = await run('listCharacterPresets', { family: 'realistic' });
+      const knight = await run('listCharacterPresets', { family: 'realistic', id: 'h-knight' });
+      const badJson = await run('buildCharacter', { realisticJson: '{oops' });
+      const rolled = await run('randomCharacter', { family: 'realistic', seed: 5 });
+      return { built, spec, listed, knight, badJson, rolled, code: (window as unknown as { partwright: PW }).partwright.getCode() };
+    });
+    expect(out.built.isError).toBe(false);
+    expect(out.built.out.code).toBeUndefined();
+    expect((out.built.out.version as { label?: string }).label).toBe('From chat');
+    expect(out.spec.out.family).toBe('realistic');
+    expect(((out.spec.out.spec as { hair: { style: string } }).hair.style)).toBe('bun');
+    expect(JSON.stringify(out.listed.out)).toContain('h-knight');
+    expect((out.knight.out.spec as { family: string }).family).toBe('realistic');
+    expect(String(out.badJson.out.error)).toMatch(/realisticJson/);
+    expect(out.rolled.out.seed).toBe(5);
+    expect(out.code).toMatch(/^\/\/ @human-character v1 /);
+  });
+
   test('the panel switches families, keeps shared settings, and restores the family on reopen', async ({ page }) => {
     await page.goto('/editor');
     await waitForEngine(page);

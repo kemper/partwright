@@ -146,6 +146,8 @@ export const DOC_TOOL_GROUPS: Readonly<Record<string, readonly string[]>> = {
   annotations: ['inspect'],
   textures: ['textures'],
   figure: ['character'],
+  // human: buildCharacter's realisticJson, fitHumanToPhoto.
+  human: ['character'],
   segmentation: ['parts'],
   relief: ['import'],
   reconstruction: ['import'],

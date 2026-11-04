@@ -28,6 +28,10 @@ const BUDGET = {
   allTools: 260_000,
   /** One tool's schema. Long guidance belongs in its readDoc topic. */
   perTool: 6_000,
+  /** A parameter description repeated on this many tools or more… */
+  sharedDescTools: 10,
+  /** …must fit in this many characters. */
+  sharedDescChars: 120,
 };
 
 /** Tools already over BUDGET.perTool. Shrink them (Phase 3) and delete the
@@ -71,6 +75,25 @@ describe('AI turn-0 context budget', () => {
       .map(t => ({ name: t.name, chars: JSON.stringify(t).length }))
       .filter(t => t.chars > BUDGET.perTool && !PER_TOOL_ALLOWLIST.has(t.name));
     expect(over, 'shorten these descriptions; move examples into the matching subdoc').toEqual([]);
+  });
+
+  test('a parameter description shared by many tools stays short', () => {
+    // One shared `object` description once rode on ~90 tools at ~330 chars
+    // each: 30K chars of the full list. Say the long version once (ai.md or a
+    // subdoc) and keep the repeated one to a line.
+    const uses = new Map<string, Set<string>>();
+    const walk = (tool: string, o: unknown): void => {
+      if (Array.isArray(o)) { o.forEach(x => walk(tool, x)); return; }
+      if (!o || typeof o !== 'object') return;
+      for (const [k, v] of Object.entries(o)) {
+        if (k === 'description' && typeof v === 'string') uses.set(v, (uses.get(v) ?? new Set()).add(tool));
+        else walk(tool, v);
+      }
+    };
+    for (const t of buildToolList(allOn, [])) walk(t.name, t.input_schema);
+    const long = [...uses].filter(([d, tools]) => tools.size >= BUDGET.sharedDescTools && d.length > BUDGET.sharedDescChars)
+      .map(([d, tools]) => `${tools.size} tools: ${d.slice(0, 60)}… (${d.length} chars)`);
+    expect(long).toEqual([]);
   });
 
   test('report', () => {

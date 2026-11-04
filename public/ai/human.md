@@ -276,7 +276,7 @@ character when `spec.family` is `'realistic'`, and the generated code carries
 the spec as a `// @human-character v1 {json}` header, so `getCharacterSpec()`
 and the panel can read it back. `listCharacterPresets('realistic')` and
 `randomCharacter({ family: 'realistic' })` work the same way. Any subset of
-fields works; the rest take defaults, and every field is validated.
+fields works; the rest take defaults, and every field is validated. The in-app chat's `buildCharacter` tool takes the same spec as a JSON string, `realisticJson`, and its `listCharacterPresets` / `randomCharacter` tools take `family: 'realistic'`.
 
 ```js
 await partwright.buildCharacter({
