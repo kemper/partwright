@@ -3,6 +3,7 @@
 //
 //   npm run bake:character-presets -- [--only id1,id2] [--size 360]
 //   npm run bake:character-presets -- --random 20 [--seed-start 1000]
+//   npm run bake:character-presets -- --family realistic [--only h-knight] [--random 20]
 //
 // For every entry in CHARACTER_PRESETS (src/figure/characterSpec.ts) this
 // generates the figure code (characterCodegen.ts), builds it with the real
@@ -19,6 +20,10 @@
 // Re-run after adding/changing a preset or a figure-builder change that alters
 // how presets look (thumbnails are baked snapshots — they don't refresh on
 // their own). SDF figures take ~10-20 s each to mesh.
+//
+// --family realistic does the same for the Realistic presets (HUMAN_PRESETS in
+// src/human/humanCharacter.ts, ids `h-…`) and the Realistic 🎲 Random, built
+// as api.human code (~2-5 s each).
 import { resolve, dirname } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -32,6 +37,8 @@ const OUT_DIR = resolve(ROOT, 'public/character-presets');
 // preview rasterizer (scripts/cli/views.mjs) az -90 looks from −Y; a spec with
 // `place: true` (the v2 default) faces +X, so its front is az 0.
 const viewFor = (spec) => [{ az: spec.place ? 22 : -68, el: 10 }];
+// api.human figures face −Y, like an unplaced Avatar.
+const HUMAN_VIEW = [{ az: -68, el: 10 }];
 
 // Minimum paintable triangles for a face label to count as visible (a buried
 // feature paints 0 to a few dozen; a visible one ~1,000+).
@@ -53,10 +60,21 @@ function faceLabelProblems(spec, labels) {
     .map((name) => `${name}=${counts.get(name) ?? 0} tris`);
 }
 
+/** A Realistic character's face: its eyes must be there (api.human's eye
+ *  meshes are coarse, so a few dozen triangles is normal — the bar is
+ *  presence, not the Avatar's buried-label count), and real or anime eyes need
+ *  their iris and pupil. A toy's eye is one bead. */
+function humanFaceProblems(spec, labels) {
+  const counts = new Map((labels || []).map((l) => [l.name, l.triangleCount]));
+  const required = spec.style === 'funko' ? ['eyes'] : ['eyes', 'iris', 'pupil'];
+  return required.filter((name) => !(counts.get(name) > 0)).map((name) => `${name}=${counts.get(name) ?? 0} tris`);
+}
+
 function parseArgs(argv) {
-  const a = { only: null, size: 360, random: 0, seedStart: 1 };
+  const a = { only: null, size: 360, random: 0, seedStart: 1, family: 'avatar' };
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--only') a.only = new Set(argv[++i].split(','));
+    if (argv[i] === '--family') a.family = argv[++i];
+    else if (argv[i] === '--only') a.only = new Set(argv[++i].split(','));
     else if (argv[i] === '--size') a.size = parseInt(argv[++i], 10);
     else if (argv[i] === '--random') a.random = parseInt(argv[++i], 10);
     else if (argv[i] === '--seed-start') a.seedStart = parseInt(argv[++i], 10);
@@ -66,19 +84,26 @@ function parseArgs(argv) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  if (args.family !== 'avatar' && args.family !== 'realistic') throw new Error(`--family must be avatar or realistic, not ${args.family}`);
+  const human = args.family === 'realistic';
   const server = await createServer({ configFile: false, server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent', optimizeDeps: { noDiscovery: true } });
   const { CHARACTER_PRESETS } = await server.ssrLoadModule('/src/figure/characterSpec.ts');
   const { specToCode } = await server.ssrLoadModule('/src/figure/characterCodegen.ts');
   const { randomSpec, seededRandom } = await server.ssrLoadModule('/src/figure/characterRandom.ts');
+  const { HUMAN_PRESETS, humanSpecToCode, randomHumanSpec } = await server.ssrLoadModule('/src/human/humanCharacter.ts');
   await server.close();
+  const toCode = human ? humanSpecToCode : specToCode;
+  const roll = human ? randomHumanSpec : randomSpec;
+  const faceProblems = human ? humanFaceProblems : faceLabelProblems;
+  const view = human ? () => HUMAN_VIEW : viewFor;
 
   // Either the presets (writing thumbnails) or N seeded random rolls (check only).
   const items = args.random > 0
     ? Array.from({ length: args.random }, (_, i) => {
       const seed = args.seedStart + i;
-      return { id: `seed ${seed}`, patch: () => randomSpec(seededRandom(seed)), check: true };
+      return { id: `seed ${seed}`, patch: () => roll(seededRandom(seed)), check: true };
     })
-    : CHARACTER_PRESETS.filter((p) => !args.only || args.only.has(p.id));
+    : (human ? HUMAN_PRESETS : CHARACTER_PRESETS).filter((p) => !args.only || args.only.has(p.id));
 
   mkdirSync(OUT_DIR, { recursive: true });
   const failures = [];
@@ -88,7 +113,7 @@ async function main() {
     // dozen heavy SDF figures ("table index is out of bounds").
     const session = await createPreviewSession();
     try {
-      const r = await session.preview(specToCode(p.patch()));
+      const r = await session.preview(toCode(p.patch()));
       const s = r.ok ? r.stats : null;
       if (!r.ok || !s.isManifold || s.componentCount !== 1 || !r.render) {
         failures.push(`${p.id}: ${r.ok ? `isManifold=${s.isManifold} components=${s.componentCount}` : r.error}`);
@@ -98,7 +123,7 @@ async function main() {
       // Face features must actually show: a buried label (lids swallowing the
       // pupil, a brow sunk under the ridge) still builds manifold but bakes a
       // blank face. Fail well below the ~1k+ triangles a visible one paints.
-      const problems = faceLabelProblems(p.patch(), s.labels);
+      const problems = faceProblems(p.patch(), s.labels);
       const warnOnly = p.check ? problems.filter((x) => RANDOM_WARN_ONLY.has(x.split('=')[0])) : [];
       if (warnOnly.length) console.error(`warn ${p.id}: buried ${warnOnly.join(', ')}`);
       const buried = problems.filter((x) => !warnOnly.includes(x));
@@ -109,11 +134,12 @@ async function main() {
       }
       if (p.check) {
         const sp = p.patch();
-        console.log(`ok   ${p.id}  ${((Date.now() - t0) / 1000).toFixed(1)}s  ${sp.body.proportions}/${sp.hair.style}/${sp.pose.preset}${sp.pose.hold.kind === 'ball' ? '+ball' : ''}`);
+        const what = human ? `${sp.style}/${sp.hair.style}/${sp.pose}` : `${sp.body.proportions}/${sp.hair.style}/${sp.pose.preset}${sp.pose.hold.kind === 'ball' ? '+ball' : ''}`;
+        console.log(`ok   ${p.id}  ${((Date.now() - t0) / 1000).toFixed(1)}s  ${what}`);
         continue;
       }
       const { positions, triVerts, triColors, bbox } = r.render;
-      const png = await composePng(positions, triVerts, triColors, bbox, args.size, viewFor(p.patch())).toBuffer();
+      const png = await composePng(positions, triVerts, triColors, bbox, args.size, view(p.patch())).toBuffer();
       const out = resolve(OUT_DIR, `${p.id}.webp`);
       // Trim the empty margin, then fit a fixed card size on the render's own
       // background so every thumbnail lines up.

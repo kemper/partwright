@@ -110,6 +110,9 @@ test.describe('Character Creator: Realistic', () => {
     const family = panel.getByRole('group', { name: 'Type', exact: true });
     // A fresh device opens on Realistic.
     await expect(family.getByRole('button', { name: 'Realistic' })).toHaveAttribute('aria-pressed', 'true');
+    // Preset cards show their baked thumbnails (public/character-presets/h-*.webp).
+    const firstThumb = panel.getByRole('list', { name: 'Realistic character presets', exact: true }).locator('img').first();
+    await expect.poll(() => firstThumb.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth), { timeout: 10_000 }).toBeGreaterThan(0);
 
     await panel.getByRole('list', { name: 'Realistic character presets', exact: true }).getByRole('button', { name: 'Knight' }).click();
     await page.getByRole('dialog', { name: 'Start a character' }).getByRole('button', { name: 'Replace', exact: true }).click();

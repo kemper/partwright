@@ -30,7 +30,8 @@ hair, clothing, colours, a held ball) you don't have to hand-write the recipe
 below — there's a no-code **Character Creator** panel (Tools ▸ 🧍 Character, or
 the command palette). Its **Avatar** family builds this `api.sdf.figure` look;
 its **Realistic** family builds an `api.human` body instead (spec:
-`/ai/human.md#character-creator-realistic`). The console twin is
+`/ai/human.md#character-creator-realistic`; what each family has:
+`/ai/human.md#realistic-vs-avatar`). The console twin is
 `partwright.buildCharacter(spec, { save })`, Avatar unless `spec.family` is
 `'realistic'`
 (in-app AI tool: `buildCharacter`). It generates exactly the kind of code shown
