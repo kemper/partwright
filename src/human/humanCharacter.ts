@@ -151,13 +151,19 @@ export function validateHumanSpec(spec: unknown): string[] {
   if (!isPlainObject(spec)) return ['spec must be an object'];
   const walkUnknown = (shape: Record<string, unknown>, given: Record<string, unknown>, prefix: string) => {
     for (const k of Object.keys(given)) {
-      if (k === 'version') continue;
+      if (k === 'version' && prefix === '') continue;
       if (!Object.prototype.hasOwnProperty.call(shape, k)) { problems.push(`${prefix}${k}: unknown key`); continue; }
       if (isPlainObject(shape[k]) && isPlainObject(given[k])) walkUnknown(shape[k] as Record<string, unknown>, given[k] as Record<string, unknown>, `${prefix}${k}.`);
     }
   };
   walkUnknown(DEFAULT_HUMAN_SPEC as unknown as Record<string, unknown>, spec, '');
   const s = normalizeHumanSpec(spec);
+  // A section given as null (or anything not an object) replaces the default
+  // wholesale; report it instead of reading fields off it.
+  for (const k of ['body', 'torso', 'face', 'hair', 'wear', 'hold', 'colors'] as const) {
+    if (!isPlainObject(s[k])) problems.push(`${k}: must be an object`);
+  }
+  if (problems.some(p => p.endsWith('must be an object'))) return problems;
   if (spec.family !== undefined && spec.family !== 'realistic') problems.push(`family: must be "realistic" here`);
   for (const [path, lo, hi] of NUMBERS) {
     const v = get(s, path);
@@ -282,12 +288,15 @@ export function encodeHumanSpecComment(spec: HumanCharacterSpec): string {
   return `// @human-character v${HUMAN_SPEC_VERSION} ${json}`;
 }
 
-/** The spec in a code's `// @human-character` header, or null. */
+/** The spec in a code's `// @human-character` header, or null — also when
+ *  the header is from an unknown version or (hand-edited) fails validation, so
+ *  a broken header reads as "not a character" instead of breaking the panel. */
 export function decodeHumanSpecComment(code: string): HumanCharacterSpec | null {
   const m = HEADER_RE.exec(code);
-  if (!m) return null;
+  if (!m || Number(m[1]) !== HUMAN_SPEC_VERSION) return null;
   try {
-    return normalizeHumanSpec(JSON.parse(m[2]));
+    const raw: unknown = JSON.parse(m[2]);
+    return validateHumanSpec(raw).length === 0 ? normalizeHumanSpec(raw) : null;
   } catch {
     return null;
   }
@@ -446,75 +455,122 @@ const HUMAN_TO_AVATAR_EXPRESSION: Record<string, string> = {
   surprised: 'neutral', sad: 'slightFrown', frown: 'frown', angry: 'deepFrown',
 };
 
-/** The Realistic character closest to an Avatar one: the settings both
- *  families have (height, body, style, expression, hair style, clothes, colours). */
+// Each shared setting maps both ways. A field keeps the target's current
+// value whenever that value already maps to the source's, so switching
+// families and back leaves both characters as they were (a "slight smile"
+// isn't rounded to "smile", anime hair isn't swapped for spikes).
+
+/** `cur` if it already maps (through `back`) to `src`, else `fwd(src)`. */
+function pick<T, S>(cur: T, back: (t: T) => S, src: S, fwd: (s: S) => T): T {
+  return back(cur) === src ? cur : fwd(src);
+}
+const id = <T>(x: T): T => x;
+const clamp = (lo: number, hi: number) => (x: number): number => Math.min(hi, Math.max(lo, x));
+/** '#abc' → '#aabbcc' (the Avatar spec accepts the short form; Realistic doesn't). */
+function hex6(c: string): string {
+  return /^#[0-9a-fA-F]{3}$/.test(c) ? `#${c[1]}${c[1]}${c[2]}${c[2]}${c[3]}${c[3]}` : c;
+}
+
+type Sex = CharacterSpec['body']['sex'];
+const genderToSex = (g: number): Sex => (g >= 0.7 ? 'male' : g <= 0.3 ? 'female' : 'neutral');
+const sexToGender = (x: Sex): number => (x === 'male' ? 0.95 : x === 'female' ? 0.05 : 0.5);
+const styleToProportions = (st: StylePreset): CharacterSpec['body']['proportions'] => (st === 'anime' || st === 'heroic' ? 'realistic' : st);
+const muscleToAvatar = (m: number): number => Math.max(0, (m - 0.5) * 2);
+const muscleToHuman = (m: number): number => Math.min(1, 0.5 + m / 2);
+type HumanSleeve = HumanCharacterSpec['wear']['sleeve'];
+type AvatarSleeve = CharacterSpec['clothing']['top']['sleeve'];
+const sleeveToAvatar = (sl: HumanSleeve): AvatarSleeve => (sl === 'none' || sl === 'short' || sl === 'long' ? sl : sl === 'cap' ? 'short' : 'long');
+
+/** What each family's legs and feet read as, in shared terms. */
+type Legs = 'none' | 'skirt' | 'shorts' | 'briefs' | 'long';
+const humanLegs = (b: HumanCharacterSpec['wear']['bottom']): Legs =>
+  b === 'none' || b === 'skirt' || b === 'shorts' || b === 'briefs' ? b : 'long';
+function avatarLegs(a: CharacterSpec): Legs {
+  const c = a.clothing;
+  if (c.top.on && c.top.length === 'dress') return 'skirt';
+  if (!c.pants.on) return 'none';
+  return c.pants.length === 'full' ? 'long' : c.pants.length;
+}
+type Feet = 'none' | 'boots' | 'shoes';
+const humanFeet = (sh: HumanCharacterSpec['wear']['shoes']): Feet => (sh === 'none' || sh === 'boots' ? sh : 'shoes');
+const avatarFeet = (a: CharacterSpec): Feet => (!a.clothing.feet.on ? 'none' : a.clothing.feet.kind === 'boots' ? 'boots' : 'shoes');
+const humanTopOn = (h: HumanCharacterSpec): boolean => h.wear.top !== 'none' || h.wear.bottom === 'skirt';
+
+/** The Realistic character for an Avatar one: `start` with the settings both
+ *  families share (height, body, style, expression, hair style, clothes,
+ *  colours) brought in line with `a`. */
 export function humanSpecFromAvatar(a: CharacterSpec, start: HumanCharacterSpec = DEFAULT_HUMAN_SPEC): HumanCharacterSpec {
   const s = cloneHumanSpec(start);
-  s.height = a.body.height;
-  s.style = a.body.proportions;
-  s.body = {
-    ...s.body,
-    gender: a.body.sex === 'male' ? 0.95 : a.body.sex === 'female' ? 0.05 : 0.5,
-    age: Math.min(90, Math.max(1, a.body.age)),
-    weight: a.body.weight,
-    muscle: Math.min(1, 0.5 + a.body.muscle / 2),
-    breast: a.body.bust,
-  };
-  s.torso = { ...s.torso, belly: a.body.belly };
-  s.expression = AVATAR_TO_HUMAN_EXPRESSION[a.face.expression] ?? s.expression;
-  s.hair = { ...s.hair, style: AVATAR_TO_HUMAN_HAIR[a.hair.style] ?? s.hair.style };
+  const b = a.body;
+  s.height = pick(s.height, id, b.height, clamp(5, 2000));
+  s.style = pick(s.style, styleToProportions, b.proportions, id);
+  s.body.gender = pick(s.body.gender, genderToSex, b.sex, sexToGender);
+  s.body.age = pick(s.body.age, Math.round, b.age, clamp(1, 90));
+  s.body.weight = pick(s.body.weight, id, b.weight, clamp(0, 1));
+  s.body.muscle = pick(s.body.muscle, muscleToAvatar, b.muscle, muscleToHuman);
+  s.body.breast = pick(s.body.breast, id, b.bust, clamp(0, 1));
+  s.torso.belly = pick(s.torso.belly, x => Math.max(0, x), b.belly, clamp(0, 1));
+  s.expression = pick(s.expression, x => HUMAN_TO_AVATAR_EXPRESSION[x], a.face.expression, x => AVATAR_TO_HUMAN_EXPRESSION[x] ?? s.expression);
+  s.hair.style = pick(s.hair.style, x => HUMAN_TO_AVATAR_HAIR[x], a.hair.style, x => AVATAR_TO_HUMAN_HAIR[x] ?? s.hair.style);
   const c = a.clothing;
-  s.wear = {
-    ...s.wear,
-    top: c.top.on ? (s.wear.top === 'none' ? 'tshirt' : s.wear.top) : 'none',
-    sleeve: c.top.sleeve,
-    bottom: c.top.on && c.top.length === 'dress' ? 'skirt'
-      : !c.pants.on ? 'none'
-        : c.pants.length === 'shorts' ? 'shorts' : c.pants.length === 'briefs' ? 'briefs'
-          : (s.wear.bottom === 'none' || s.wear.bottom === 'shorts' || s.wear.bottom === 'briefs' || s.wear.bottom === 'skirt' ? 'pants' : s.wear.bottom),
-    shoes: !c.feet.on ? 'none' : c.feet.kind === 'boots' ? 'boots' : (s.wear.shoes === 'none' || s.wear.shoes === 'boots' ? 'shoes' : s.wear.shoes),
-    socks: c.socks.on,
-  };
-  s.colors = {
-    ...s.colors,
-    skin: a.colors.skin, iris: a.colors.iris, lips: a.colors.lips, hair: a.colors.hair,
-    top: a.colors.top, bottom: c.top.on && c.top.length === 'dress' ? a.colors.top : a.colors.pants, shoes: a.colors.feet,
-  };
+  const w = s.wear;
+  w.bottom = pick(w.bottom, humanLegs, avatarLegs(a), legs => (legs === 'long' ? (w.bottom === 'none' || humanLegs(w.bottom) !== 'long' ? 'pants' : w.bottom) : legs));
+  if (humanTopOn(s) !== c.top.on) w.top = c.top.on ? 'tshirt' : 'none';
+  w.sleeve = pick(w.sleeve, sleeveToAvatar, c.top.sleeve, id);
+  w.shoes = pick(w.shoes, humanFeet, avatarFeet(a), id);
+  w.socks = c.socks.on;
+  const k = s.colors;
+  k.skin = pick(k.skin, id, a.colors.skin, hex6);
+  k.iris = pick(k.iris, id, a.colors.iris, hex6);
+  k.lips = pick(k.lips, id, a.colors.lips, hex6);
+  k.hair = pick(k.hair, id, a.colors.hair, hex6);
+  k.top = pick(k.top, id, a.colors.top, hex6);
+  k.bottom = pick(k.bottom, id, a.colors.pants, hex6);
+  k.shoes = pick(k.shoes, id, a.colors.feet, hex6);
   s.base = a.base;
   return s;
 }
 
-/** Copy the settings both families have from a Realistic character onto an
- *  Avatar one (`start` keeps everything the Realistic spec has no say in). */
+/** The Avatar character for a Realistic one: `start` with the shared settings
+ *  brought in line with `h` (everything the Realistic spec has no say in, like
+ *  bead eyes or a held ball, is kept). */
 export function applyHumanToAvatar(h: HumanCharacterSpec, start: CharacterSpec): CharacterSpec {
   const a = JSON.parse(JSON.stringify(start)) as CharacterSpec;
-  a.body.height = h.height;
-  a.body.proportions = h.style === 'anime' || h.style === 'heroic' ? 'realistic' : h.style;
-  a.body.sex = h.body.gender >= 0.7 ? 'male' : h.body.gender <= 0.3 ? 'female' : 'neutral';
-  a.body.age = Math.round(h.body.age);
-  a.body.weight = h.body.weight;
-  a.body.muscle = Math.max(0, (h.body.muscle - 0.5) * 2);
-  a.body.bust = h.body.breast;
-  a.body.belly = Math.max(0, h.torso.belly);
-  a.face.expression = (HUMAN_TO_AVATAR_EXPRESSION[h.expression] ?? a.face.expression) as CharacterSpec['face']['expression'];
-  a.hair.style = HUMAN_TO_AVATAR_HAIR[h.hair.style] as CharacterSpec['hair']['style'];
-  const w = h.wear;
-  a.clothing.top.on = w.top !== 'none' || w.bottom === 'skirt';
-  if (w.sleeve === 'none' || w.sleeve === 'short' || w.sleeve === 'long') a.clothing.top.sleeve = w.sleeve;
-  else a.clothing.top.sleeve = w.sleeve === 'cap' ? 'short' : 'long';
-  a.clothing.top.length = w.bottom === 'skirt' ? 'dress' : 'shirt';
-  a.clothing.pants.on = w.bottom !== 'none' && w.bottom !== 'skirt';
-  if (a.clothing.pants.on) a.clothing.pants.length = w.bottom === 'shorts' ? 'shorts' : w.bottom === 'briefs' ? 'briefs' : 'full';
-  a.clothing.feet.on = w.shoes !== 'none';
-  if (a.clothing.feet.on) a.clothing.feet.kind = w.shoes === 'boots' ? 'boots' : 'shoes';
-  a.clothing.socks.on = w.socks;
-  a.colors.skin = h.colors.skin;
-  a.colors.iris = h.colors.iris;
-  a.colors.lips = h.colors.lips;
-  a.colors.hair = h.colors.hair;
-  a.colors.top = w.bottom === 'skirt' && w.top === 'none' ? h.colors.bottom : h.colors.top;
-  a.colors.pants = h.colors.bottom;
-  a.colors.feet = h.colors.shoes;
+  const b = a.body;
+  b.height = pick(b.height, clamp(5, 2000), h.height, id);
+  b.proportions = pick(b.proportions, id, styleToProportions(h.style), id);
+  b.sex = pick(b.sex, sexToGender, h.body.gender, genderToSex);
+  b.age = pick(b.age, clamp(1, 90), h.body.age, Math.round);
+  b.weight = pick(b.weight, clamp(0, 1), h.body.weight, id);
+  b.muscle = pick(b.muscle, muscleToHuman, h.body.muscle, muscleToAvatar);
+  b.bust = pick(b.bust, clamp(0, 1), h.body.breast, id);
+  b.belly = pick(b.belly, clamp(0, 1), h.torso.belly, x => Math.max(0, x));
+  a.face.expression = pick(a.face.expression, x => AVATAR_TO_HUMAN_EXPRESSION[x], h.expression,
+    x => (HUMAN_TO_AVATAR_EXPRESSION[x] ?? a.face.expression) as CharacterSpec['face']['expression']);
+  a.hair.style = pick(a.hair.style, x => AVATAR_TO_HUMAN_HAIR[x], h.hair.style, x => HUMAN_TO_AVATAR_HAIR[x as HairStyle] as CharacterSpec['hair']['style']);
+  const c = a.clothing;
+  const legs = humanLegs(h.wear.bottom);
+  if (avatarLegs(a) !== legs) {
+    c.top.length = legs === 'skirt' ? 'dress' : 'shirt';
+    c.pants.on = legs !== 'none' && legs !== 'skirt';
+    if (c.pants.on) c.pants.length = legs === 'long' ? 'full' : legs as 'shorts' | 'briefs';
+  }
+  c.top.on = pick(c.top.on, id, humanTopOn(h), id);
+  c.top.sleeve = pick(c.top.sleeve, id, sleeveToAvatar(h.wear.sleeve), id);
+  const feet = humanFeet(h.wear.shoes);
+  if (avatarFeet(a) !== feet) {
+    c.feet.on = feet !== 'none';
+    if (c.feet.on) c.feet.kind = feet === 'boots' ? 'boots' : 'shoes';
+  }
+  c.socks.on = h.wear.socks;
+  const k = a.colors;
+  k.skin = pick(k.skin, hex6, h.colors.skin, id);
+  k.iris = pick(k.iris, hex6, h.colors.iris, id);
+  k.lips = pick(k.lips, hex6, h.colors.lips, id);
+  k.hair = pick(k.hair, hex6, h.colors.hair, id);
+  k.top = pick(k.top, hex6, h.colors.top, id);
+  k.pants = pick(k.pants, hex6, h.colors.bottom, id);
+  k.feet = pick(k.feet, hex6, h.colors.shoes, id);
   a.base = h.base;
   return a;
 }

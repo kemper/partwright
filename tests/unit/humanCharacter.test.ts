@@ -118,3 +118,61 @@ describe('switching families', () => {
     }
   });
 });
+
+describe('switching families and back loses nothing', () => {
+  it('Avatar → Realistic → Avatar leaves every Avatar preset unchanged', () => {
+    for (const p of [{ id: 'default', patch: () => cloneSpec(DEFAULT_SPEC) }, ...CHARACTER_PRESETS]) {
+      const a = p.patch();
+      const h = humanSpecFromAvatar(a);
+      expect(applyHumanToAvatar(h, a), p.id).toEqual(a);
+    }
+  });
+
+  it('Realistic → Avatar → Realistic leaves every Realistic preset unchanged', () => {
+    for (const p of [{ id: 'default', patch: () => cloneHumanSpec(DEFAULT_HUMAN_SPEC) }, ...HUMAN_PRESETS]) {
+      const h = p.patch();
+      const a = applyHumanToAvatar(h, cloneSpec(DEFAULT_SPEC));
+      expect(humanSpecFromAvatar(a, h), p.id).toEqual(h);
+    }
+  });
+
+  it('an edit made on one side does carry over', () => {
+    const h = HUMAN_PRESETS.find(p => p.id === 'h-anime')!.patch();
+    const a = applyHumanToAvatar(h, cloneSpec(DEFAULT_SPEC));
+    a.face.expression = 'deepFrown';
+    a.hair.style = 'afro';
+    const back = humanSpecFromAvatar(a, h);
+    expect(back.expression).toBe('angry');
+    expect(back.hair.style).toBe('afro');
+    expect(back.style).toBe('anime');
+  });
+
+  it('Avatar values outside the Realistic ranges are clamped, short colours expanded', () => {
+    const a = cloneSpec(DEFAULT_SPEC);
+    a.body.bust = 1.5;
+    a.body.belly = 1.8;
+    a.body.height = 2;
+    a.colors.skin = '#fff';
+    const h = humanSpecFromAvatar(a);
+    expect(validateHumanSpec(h)).toEqual([]);
+    expect(h.colors.skin).toBe('#ffffff');
+    // …and switching back keeps the Avatar's own values.
+    expect(applyHumanToAvatar(h, a)).toEqual(a);
+  });
+});
+
+describe('broken input', () => {
+  it('reports a null section instead of throwing', () => {
+    expect(validateHumanSpec({ colors: null })).toContain('colors: must be an object');
+    expect(validateHumanSpec({ body: null, hold: 3 })).toEqual(expect.arrayContaining(['body: must be an object', 'hold: must be an object']));
+    expect(validateHumanSpec({ body: { version: 2 } }).join()).toMatch(/body\.version: unknown key/);
+  });
+
+  it('a header that fails validation or has an unknown version reads as no header', () => {
+    const good = humanSpecToCode(cloneHumanSpec(DEFAULT_HUMAN_SPEC));
+    expect(decodeHumanSpecComment(good)).not.toBeNull();
+    expect(decodeHumanSpecComment(good.replace('"colors":{', '"colors":null,"x":{'))).toBeNull();
+    expect(decodeHumanSpecComment(good.replace('"age":25', '"age":200'))).toBeNull();
+    expect(decodeHumanSpecComment(good.replace('@human-character v1', '@human-character v2'))).toBeNull();
+  });
+});

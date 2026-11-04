@@ -43,3 +43,22 @@ catalog work, which the owner reviews first.
 **Only the active family's controls exist.** Hidden duplicates ("Hair",
 "Fringe") confused the Avatar tests' text queries, and would confuse screen
 readers too.
+
+## Review fixes (same PR)
+
+A review pass found that switching Type and back changed the character: each
+direction overwrote shared fields with a lossy map (a "slight smile" became
+"smile", anime hair became spikes, gender snapped to 0.95). Each field now
+keeps the target's current value whenever it already maps to the source's, so
+a round trip with no edits is a no-op in both directions. A unit test checks
+every preset of both families. Edits made on one side still carry over.
+
+Also fixed:
+- A `null` section (a hand-edited header, or `{...spec, colors: undefined}`)
+  crashed validation. It is now reported.
+- A header that fails validation, or has an unknown version, reads as no
+  header, so it can't break the panel.
+- Avatar values outside the Realistic ranges (bust and belly to 2, a tiny
+  height, `#rgb` colours) are clamped or expanded on the way in.
+- A preview that can't build now says why, in one toast per distinct error.
+- The family preference is per tab (perTabPref), like other app preferences.

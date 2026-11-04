@@ -24,6 +24,7 @@ import { getConfig } from '../config/appConfig';
 import { createSliderEntry } from './sliderEntry';
 import { registerTool, openTool, createToolNote, type ToolOpenContext, type ToolOpenResult } from './toolRegistry';
 import { assetPath } from '../deployment';
+import { readPerTabPref, writePerTabPref } from '../storage/perTabPref';
 import {
   type CharacterSpec,
   type CustomControlId,
@@ -94,18 +95,11 @@ export interface CharacterCreatorApi {
 let openClose: (() => void) | null = null;
 let currentSpec: (() => CharacterSpec | HumanCharacterSpec) | null = null;
 
-/** The family a fresh panel opens on: the user's last pick on this device. */
+/** The family a fresh panel opens on: this tab's last pick (a new tab starts
+ *  from the most recent pick anywhere; see perTabPref). */
 const FAMILY_KEY = 'partwright-character-family';
-function storedFamily(): CharacterFamily {
-  try {
-    return localStorage.getItem(FAMILY_KEY) === 'avatar' ? 'avatar' : 'realistic';
-  } catch {
-    return 'realistic';
-  }
-}
-function storeFamily(f: CharacterFamily): void {
-  try { localStorage.setItem(FAMILY_KEY, f); } catch { /* private mode: not remembered */ }
-}
+const storedFamily = (): CharacterFamily => (readPerTabPref(FAMILY_KEY) === 'avatar' ? 'avatar' : 'realistic');
+const storeFamily = (f: CharacterFamily): void => writePerTabPref(FAMILY_KEY, f);
 
 interface CharacterOpenOpts {
   /** A Character Creator spec (same shape as `buildCharacter`, partial specs
@@ -356,6 +350,7 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi, openOpts?: C
   // save's build); an edit made meanwhile queues one preview for after it.
   let saving = false;
   let previewAfterSave = false;
+  let lastPreviewError: string | null = null;
 
   const shell = createToolPanelShell({
     title: 'Character Creator',
@@ -408,7 +403,11 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi, openOpts?: C
       if (saving) { previewAfterSave = true; return; }
       if (!(await confirmClobber())) return;
       if (closed) return; // panel was dismissed while the confirm dialog was open
-      void api.buildCharacter(activeSpec(), { save: false });
+      const r = await api.buildCharacter(activeSpec(), { save: false });
+      // Say why a preview didn't build (once per distinct error, so a slider
+      // drag doesn't stack toasts); the viewport otherwise just stays stale.
+      if (r.error && r.error !== lastPreviewError) showToast(r.error, { variant: 'warn', source: 'character' });
+      lastPreviewError = r.error ?? null;
     };
     if (opts?.immediate) { void fire(); return; }
     timer = window.setTimeout(fire, getConfig().ui.characterPreviewDebounceMs);
