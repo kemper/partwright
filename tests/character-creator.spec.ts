@@ -29,7 +29,11 @@ test.describe('Character Creator', () => {
   test.describe.configure({ timeout: 180_000 });
 
   test.beforeEach(async ({ page }) => {
-    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
+    await page.addInitScript(() => {
+      localStorage.setItem('partwright-tour-completed', '1');
+      // These tests drive the Avatar family; a fresh panel opens on Realistic.
+      localStorage.setItem('partwright-character-family', 'avatar');
+    });
   });
 
   test('buildCharacter generates a manifold figure and round-trips the spec', async ({ page }) => {

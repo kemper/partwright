@@ -28,7 +28,11 @@ It is not a photoreal-human generator — lean into the clean, simplified look.
 For a **standard humanoid or vinyl/chibi toy** (body proportions, pose, face,
 hair, clothing, colours, a held ball) you don't have to hand-write the recipe
 below — there's a no-code **Character Creator** panel (Tools ▸ 🧍 Character, or
-the command palette) whose console twin is `partwright.buildCharacter(spec, { save })`
+the command palette). Its **Avatar** family builds this `api.sdf.figure` look;
+its **Realistic** family builds an `api.human` body instead (spec:
+`/ai/human.md#character-creator-realistic`). The console twin is
+`partwright.buildCharacter(spec, { save })`, Avatar unless `spec.family` is
+`'realistic'`
 (in-app AI tool: `buildCharacter`). It generates exactly the kind of code shown
 below from a plain spec object and (with `save: true`) commits a version. Every
 field is validated — a bad one comes back in `{ error }` with its path — and
