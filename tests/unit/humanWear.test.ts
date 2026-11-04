@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { parseHumanAsset, buildHumanMesh, type HumanAssetMeta } from '../../src/human/humanModel';
+import { parseHumanAsset, buildHumanMesh, EXPRESSION_PRESETS, type HumanAssetMeta } from '../../src/human/humanModel';
 import { buildWear, BodyContext, WEAR_ITEMS, ARMOR_ITEMS, type ShellMesh } from '../../src/human/humanWear';
 import { buildHairField, HAIR_STYLES } from '../../src/human/humanHair';
 import { computeSockets } from '../../src/human/humanGear';
@@ -215,6 +215,45 @@ describe('human hair', () => {
     }
     expect(n).toBeGreaterThan(5);
     expect(worst).toBeLessThan(H * 0.006);
+  }, HEAVY);
+
+  it('a smile carries the mustache with the lip: skin that moves keeps the same mustache over it', () => {
+    // kemper/partwright#1168: the smile pulls the mouth corners and upper lip
+    // out from under a mustache modelled on the rest face.
+    const still = buildHumanMesh(asset, { height: H, body: { gender: 1 } });
+    const laugh = buildHumanMesh(asset, { height: H, body: { gender: 1 }, expression: EXPRESSION_PRESETS.laugh });
+    const field = (m: typeof laugh) => {
+      const r = buildHairField(asset, m, { style: 'bald', beard: 'mustache' }, H, H / 200);
+      return makeTrilinearSampler(r.beard!, r.spec);
+    };
+    const fStill = field(still), fLaugh = field(laugh);
+    const inHead = (m: typeof laugh, p: number[]) => {
+      const head = computeSockets(asset, m, H).sockets.get('head')!;
+      const d = [0, 1, 2].map((c) => p[c] - head.origin[c]);
+      return [head.x, head.y, head.z].map((a) => a[0] * d[0] + a[1] * d[1] + a[2] * d[2]) as [number, number, number];
+    };
+    const isSkin = new Uint8Array(asset.nV);
+    for (let t = 0; t < asset.nT; t++) if (asset.triLabel[t] === 0) for (let c = 0; c < 3; c++) isSkin[asset.triVerts[t * 3 + c]] = 1;
+    // Skin the laugh moves, sampled just in front of it where the still face
+    // has mustache: the mustache over each such point must be about the same
+    // once the face moves. (Before the fix the mean gap was ~0.0011 H and the
+    // worst ~0.0022 H: the lifted upper lip split the mustache into two drips.)
+    let worst = 0, sum = 0, n = 0;
+    for (let v = 0; v < asset.nV; v++) {
+      if (!isSkin[v]) continue;
+      const ps = inHead(still, [0, 1, 2].map((c) => still.posed[v * 3 + c]));
+      const pl = inHead(laugh, [0, 1, 2].map((c) => laugh.posed[v * 3 + c]));
+      if (Math.hypot(pl[0] - ps[0], pl[1] - ps[1], pl[2] - ps[2]) < H * 0.001) continue;
+      for (const off of [0.001, 0.002, 0.003]) {
+        const a = fStill(ps[0], ps[1] - H * off, ps[2]);
+        if (!(a < 0)) continue;
+        const gap = Math.abs(a - fLaugh(pl[0], pl[1] - H * off, pl[2]));
+        worst = Math.max(worst, gap); sum += gap; n++;
+      }
+    }
+    expect(n).toBeGreaterThan(20);
+    expect(sum / n).toBeLessThan(H * 0.0005);
+    expect(worst).toBeLessThan(H * 0.0012);
   }, HEAVY);
 
   it('a full beard covers the chin, not the lips', () => {
