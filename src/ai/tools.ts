@@ -71,7 +71,7 @@ export interface ToolExecResult {
  *  from this so the schema can't silently omit a name the validator accepts
  *  (which previously schema-blocked the model from 5 valid subdocs). */
 export const SUBDOC_NAMES_LIST = [
-  'curves', 'bosl2', 'replicad', 'sdf', 'figure', 'creature', 'voxel', 'colors', 'print-safety',
+  'curves', 'bosl2', 'replicad', 'sdf', 'figure', 'creature', 'human', 'voxel', 'colors', 'print-safety',
   'fasteners', 'joints', 'gears', 'threads', 'reference-images', 'file-io', 'annotations',
   'printing', 'relief', 'textures', 'mechanisms', 'iteration-workflow', 'gotchas',
   'visual-verification', 'spending', 'manifold-api', 'reconstruction', 'deform', 'segmentation', 'ui-control',
@@ -127,6 +127,9 @@ const normalConeSchema = (description: string) => ({
 });
 const AXIS_SCHEMA = { type: 'string', enum: ['x', 'y', 'z'] };
 /** renderView/renderViews zoom keys; probePixel views repeat them to match. */
+/** `withinPart` on the committing paint tools (shared so the ~10 copies stay short). */
+const WITHIN_PART_DESC = 'Part (label) to clip the paint to, so it cannot bleed past its edge (listLabels; an import\'s accepted parts).';
+
 const VIEW_FOCUS_PROPS = {
   focus: {
     type: 'object',
@@ -272,7 +275,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r, g, b] in 0..1.' },
         name: { type: 'string', description: 'Optional human-readable region name. Defaults to "Component <index>".' },
         topOnly: { type: 'boolean', description: 'If true, only paint upward-facing triangles (skip side walls + bottom). Same shortcut as paintInBox.topOnly.' },
-        withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
+        withinPart: { type: 'string', description: WITHIN_PART_DESC },
       },
       required: ['index', 'color'],
     },
@@ -344,19 +347,19 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'buildCharacter',
-    description: 'Build a posed, painted figure from a Character Creator SPEC and commit it as a version — the token-cheap way to make a person/toy figure: fill in parameters instead of writing + debugging figure code. Any subset of fields; missing ones take defaults; every field is validated (bad ones are listed in the error). Style: body.proportions "realistic" | "chibi" | "funko" (vinyl-pop: huge wide head; also set headsTall 3), body.headScale {x,y,z} to resize the head. body.headSink (≈0.4 = neckless toy), body.mittens. Face: eyeStyle "bead" (glossy toy eyes + glint), browThickness/browWidth (bold brows ≈ 3/1.5), jaw/chin/cheek. Hair: "anime" (flat swoopy ribbon locks: lockShape/chunk/spike/swoop/fringe/seed), "shag" (layered spiky jet-black mop: crown/layers/raggedness/flare/notched/crownSize/backWidth/tipWidth), "captured" (a captured shaggy mop: volume/length/capturedFringe/spikiness/smooth/tilt/windowScale/mirror) or "mop". pose.hold {kind:"ball", radius, cup, cupL?, cupR?, handScale} = both hands hold a soccer ball (colors.ball base + pose.hold.color panels). Clothing: top.trim {collar, cuffs} (colors.trim); top.print [{text, where:"chest"|"back", size, x, z, color}] = embossed letters/numbers (e.g. N on the chest, 10 on the back); pants.length "shorts" (knee-length, hem) | "briefs"; socks {on, height, stripes, stripeSpan} (colors.socks + colors.sockStripe); feet {style:"toy", size, height, cleats} = chunky vinyl sneakers with studs. Colors are "#rrggbb" per region (skin, hair, top, pants, feet, sole, eyes/iris/pupil, eyeHighlight, lips, brows, trim, socks, sockStripe, base, ball). Figure-from-a-photo loop: view the photo once → fill the spec → buildCharacter → photoMatch (text only) → adjust spec fields from worst[] → repeat; tweak with getCharacterSpec. Returns geometry stats + version (the generated code is NOT echoed — call getCode only if you must hand-edit something the spec cannot express).',
+    description: 'Build a posed, painted figure from a Character Creator SPEC and commit it as a version — the token-cheap way to make a person/toy figure: fill in parameters instead of writing + debugging figure code. Any subset of fields; missing ones take defaults; every field is validated (bad ones are listed in the error). Style: body.proportions "realistic" | "chibi" | "funko" (vinyl-pop: huge wide head; also set headsTall 3), body.headScale {x,y,z} to resize the head. body.headSink (≈0.4 = neckless toy), body.mittens. Face: eyeStyle "bead" (glossy toy eyes + glint), browThickness/browWidth (bold brows ≈ 3/1.5), jaw/chin/cheek. Hair: "anime" (flat swoopy ribbon locks: lockShape/chunk/spike/swoop/fringe/seed), "shag" (layered spiky jet-black mop: crown/layers/raggedness/flare/notched/crownSize/backWidth/tipWidth), "captured" (a captured shaggy mop: volume/length/capturedFringe/spikiness/smooth/tilt/windowScale/mirror) or "mop". pose.hold {kind:"ball", radius, cup, cupL?, cupR?, handScale} = both hands hold a soccer ball (colors.ball base + pose.hold.color panels). Clothing: top.trim {collar, cuffs} (colors.trim); top.print [{text, where:"chest"|"back", size, x, z, color}] = embossed letters/numbers (e.g. N on the chest, 10 on the back); pants.length "shorts" (knee-length, hem) | "briefs"; socks {on, height, stripes, stripeSpan} (colors.socks + colors.sockStripe); feet {style:"toy", size, height, cleats} = chunky vinyl sneakers with studs. Colors are "#rrggbb" per region (skin, hair, top, pants, feet, sole, eyes/iris/pupil, eyeHighlight, lips, brows, trim, socks, sockStripe, base, ball). From a photo: fill the spec, build, score with photoMatch, adjust from worst[], repeat. Returns geometry stats + version (the generated code is NOT echoed — call getCode only if you must hand-edit something the spec cannot express).',
     input_schema: {
       type: 'object',
       properties: {
         spec: specJsonSchema(),
+        realisticJson: { type: 'string', description: 'Build a Realistic (api.human) character instead of spec: its spec as JSON (readDoc human: Character Creator: Realistic).' },
         label: { type: 'string', description: 'Version label (default "Character").' },
       },
-      required: ['spec'],
     },
   },
   {
     name: 'getCharacterSpec',
-    description: 'Read the Character Creator spec embedded in the current code (its `// @character` header; older v1 specs are migrated). Returns {spec, version} — the full normalized spec, every detail field included (trim, print, socks, toy shoes, bead eyes, head sink, hair knobs) — or {error} when the code was not generated by buildCharacter. Edit fields and pass the spec back to buildCharacter.',
+    description: 'Read the Character Creator spec embedded in the current code (its `// @character` header, or `// @human-character` for a Realistic one; older v1 specs are migrated). Returns {spec, version, family} — the full normalized spec, every detail field included (trim, print, socks, toy shoes, bead eyes, head sink, hair knobs) — or {error} when the code was not generated by buildCharacter. Edit fields and pass the spec back to buildCharacter.',
     input_schema: { type: 'object', properties: {} },
   },
   {
@@ -364,7 +367,10 @@ const ALL_TOOLS: ToolDefinition[] = [
     description: 'List the Character Creator starting characters (the panel\'s preset cards: child, elder, chibi, Funko soccer star, vinyl toy, anime hero, elf, mannequin, …) as [{id, label, description}]. Pass id to get that preset\'s full spec — a ready starting point to tweak and hand to buildCharacter.',
     input_schema: {
       type: 'object',
-      properties: { id: { type: 'string', description: 'A preset id from the list; returns {id, label, description, spec}.' } },
+      properties: {
+        id: { type: 'string', description: 'A preset id from the list; returns {id, label, description, spec}.' },
+        family: { type: 'string', enum: ['avatar', 'realistic'], description: 'Default avatar; realistic = api.human presets (pass their spec as buildCharacter realisticJson).' },
+      },
     },
   },
   {
@@ -374,13 +380,14 @@ const ALL_TOOLS: ToolDefinition[] = [
       type: 'object',
       properties: {
         seed: { type: 'integer', minimum: 0, maximum: 4294967295, description: 'Reproducible roll (omit for a fresh one).' },
+        family: { type: 'string', enum: ['avatar', 'realistic'], description: 'Default avatar (api.sdf.figure); realistic = api.human.' },
         label: { type: 'string', description: 'Version label (default "Random character").' },
       },
     },
   },
   {
     name: 'photoMatch',
-    description: 'TEXT-ONLY likeness check of the current model against a reference photo — call this INSTEAD of renderView/renderViews for routine "does it look like the photo yet?" passes, and keep image renders for checkpoints (e.g. every 3–5 edits, or before finishing). Renders the model flat from `view` (default front: azimuth 0, elevation 0, ortho — match the photo\'s camera; azimuth 0 = model front faces -Y, 90 = faces +X), segments the photo (backdrop estimated from its border, or pass `bg`), normalises both silhouettes to a common height and returns: silhouetteIoU (1 = identical outline), aspect (model vs photo w/h), bands[] (10 horizontal slices top→bottom: photo/model width as % of height, widthDiffPct, dx centre offset), regions[] (per api.label part: iou, areaRatio, widthRatio/heightRatio, dx/dy centroid offset in % of height, photoColor vs model colour) and worst[] — the 3–5 most actionable findings in plain words (e.g. "hair: model 27% narrower across bands 0–1", "shoes: model region 28% smaller"). Fix the worst[] items, re-run photoMatch, and watch silhouetteIoU climb. Exclude parts the photo does not show (e.g. a display base) with `exclude`. If warnings say the photo silhouette touches the crop edge, or the aspect differs wildly, pass `crop`, `bg`, `pixelAspect` (stretched video frames) or `fit: "box"` (compare proportions only). Needs labelled parts with colours for the region analysis (silhouette metrics work without). outline[] is a compact text diff of the outline ("photo-only at bands 2–4 left: up to 3.1% of height (hair) → grow"); bands also carry left/right edge offsets (outward-positive). Pass `bands: 20` for a finer profile once the coarse shape is right. Have photos from several angles? Pass `views: [{image, azimuth, elevation}, …]` to score them all in one call (returns the mean silhouetteIoU + per-view results). Parts the photo cannot tell apart (white ball on a white shirt) come back with `lowConfidence` and their size findings suppressed — `merge` them ([["jersey","ball"]]) or `ignore` them. Busy backdrop: the scorer auto-switches to a colour model; pass `mask` (attachment id of a white-on-black silhouette) if it still fails. warnings[] also flag a reference too small to judge fine detail.',
+    description: 'TEXT-ONLY likeness check of the current model against a reference photo — call this INSTEAD of renderView/renderViews for routine "does it look like the photo yet?" passes, and keep image renders for checkpoints (e.g. every 3–5 edits, or before finishing). Renders the model flat from `view` (default front: azimuth 0, elevation 0, ortho — match the photo\'s camera; azimuth 0 = model front faces -Y, 90 = faces +X), segments the photo (backdrop estimated from its border, or pass `bg`), normalises both silhouettes to a common height and returns silhouetteIoU (1 = identical outline), aspect, bands[] (width per horizontal slice), regions[] (per api.label part: iou, size ratios, centroid offset, colour) and worst[]: the 3–5 most actionable findings in plain words (e.g. "hair: model 27% narrower across bands 0–1"). Field details: /ai/reference-images.md#photo-match. Fix the worst[] items, re-run photoMatch, and watch silhouetteIoU climb. Exclude parts the photo does not show (e.g. a display base) with `exclude`. If warnings say the photo silhouette touches the crop edge, or the aspect differs wildly, pass `crop`, `bg`, `pixelAspect` (stretched video frames) or `fit: "box"` (compare proportions only). Needs labelled parts with colours for the region analysis (silhouette metrics work without). outline[] is a compact text diff of the outline. Pass `bands: 20` for a finer profile once the coarse shape is right. Have photos from several angles? Pass `views: [{image, azimuth, elevation}, …]` to score them all in one call (returns the mean silhouetteIoU + per-view results). Parts the photo cannot tell apart (white ball on a white shirt) come back with `lowConfidence` and their size findings suppressed — `merge` them ([["jersey","ball"]]) or `ignore` them. Busy backdrop: the scorer auto-switches to a colour model; pass `mask` (attachment id of a white-on-black silhouette) if it still fails. warnings[] also flag a reference too small to judge fine detail.',
     input_schema: {
       type: 'object',
       properties: {
@@ -424,6 +431,32 @@ const ALL_TOOLS: ToolDefinition[] = [
             },
           },
         },
+      },
+    },
+  },
+  {
+    name: 'fitHumanToPhoto',
+    description: 'Fit an api.human body (sliders + arm/leg spread) to a full-body photo\'s silhouette and save it as a version. Then style it in code; check with photoMatch. Read /ai/human.md#fit-to-a-photo first.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        image: { type: 'string', description: 'Front photo: attachment id or data URL.' },
+        views: {
+          type: 'array',
+          description: '1–4 photos instead of image.',
+          items: {
+            type: 'object',
+            properties: {
+              image: { type: 'string' },
+              azimuth: { type: 'number', description: '0 = front, 90 = left side.' },
+              elevation: { type: 'number' },
+              mask: { type: 'string', description: 'White = person.' },
+            },
+          },
+        },
+        baseJson: { type: 'string', description: 'api.human options to keep (JSON).' },
+        fit: { type: 'array', items: { type: 'string' }, description: 'Sliders to search.' },
+        budget: { type: 'integer', description: 'Candidate builds.' },
       },
     },
   },
@@ -489,7 +522,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         maxDeviationDeg: { type: 'number', description: 'Maximum angle (degrees) a neighbor\'s normal may deviate from the seed normal. Default 30. Use larger values to follow curved features; smaller values to stay on a single facet.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
-        withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
+        withinPart: { type: 'string', description: WITHIN_PART_DESC },
         withinBox: {
           type: 'object',
           description: 'Spatial clamp {min?: [x,y,z], max?: [x,y,z]} — the flood never walks into a triangle whose centroid is outside this box. Use it to stop a fill leaking across a crease-less join (sleeve→hand, collar→neck, sock→leg). Either side may be omitted.',
@@ -714,7 +747,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         normal: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Optional normal hint to disambiguate at edges. Omit to use the nearest face\'s normal.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r, g, b] in 0..1.' },
         name: { type: 'string', description: 'Optional human-readable region name.' },
-        withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
+        withinPart: { type: 'string', description: WITHIN_PART_DESC },
         toleranceDeg: { type: 'number', description: 'Max bend angle in DEGREES (0–180) the flood may cross between ADJACENT faces. Default ≈1.8 (flat faces only); ~12 follows a 32-sided cylinder; 180 floods the whole connected mesh. On smooth/organic meshes this is all-or-nothing — use paintConnected instead.' },
         smooth: { type: 'boolean', description: 'Smooth the fill boundary (cut the mesh along a blurred fill edge instead of stopping on whole triangles). Same as paintConnected.smooth.' },
         smoothness: { type: 'integer', description: 'With smooth: blur passes (0–32, default 4).' },
@@ -792,7 +825,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         maxTriangleArea: { type: 'number', description: 'Skip triangles larger than this. Use to filter out the long radial triangles that cylinder/revolve produce.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
-        withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
+        withinPart: { type: 'string', description: WITHIN_PART_DESC },
       },
       required: ['point', 'radius', 'color'],
     },
@@ -813,9 +846,10 @@ const ALL_TOOLS: ToolDefinition[] = [
         align: { type: 'string', enum: ['surface', 'area', 'view'], description: 'Slab prism direction. surface (default): normal of the triangle under each point. area: normal averaged over the brush (steadier on bumpy meshes). view: down the camera ray (viewDir, or the live camera) — paints what is under the brush as seen from that view.' },
         viewDir: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Camera forward direction (camera → model) for align "view" / frontFacesOnly, e.g. [0,1,0] for the front view. Omit to use the live viewport camera.' },
         frontFacesOnly: { type: 'boolean', description: 'Only paint triangles facing the camera (viewDir or the live camera), so the stroke never reaches the far side of a thin part.' },
+        occlude: { type: 'boolean', description: 'Only paint triangles the camera can see: skip ones hidden behind other geometry (e.g. a cheek just behind a nose, inside the brush). Pair with frontFacesOnly for "paint what this view shows".' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
-        withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
+        withinPart: { type: 'string', description: WITHIN_PART_DESC },
         depth: { type: 'number', minimum: 0, description: 'Slab depth in mesh units (surface "slab" only; 0 = auto).' },
       },
       required: ['points', 'radius', 'color'],
@@ -856,7 +890,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         maxTriangleArea: { type: 'number', description: 'Skip triangles larger than this. Use to filter out the long radial triangles that cylinder/revolve produce.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
-        withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
+        withinPart: { type: 'string', description: WITHIN_PART_DESC },
       },
       required: ['box', 'color'],
     },
@@ -879,7 +913,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
-        withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
+        withinPart: { type: 'string', description: WITHIN_PART_DESC },
         smooth: { type: 'boolean', description: 'Smooth the painted edge by subdividing the mesh near the box faces. Default true; pass false for the raw (blocky) tessellation.' },
         resolution: { type: 'number', description: 'Smoothing detail: target boundary edge = model bbox diagonal / resolution. Higher = smoother + more triangles. Default 256, range 2–1024.' },
         maxEdge: { type: 'number', description: 'Optional absolute override for the target boundary edge length (mesh units). Takes precedence over resolution.' },
@@ -901,7 +935,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         maxTriangleArea: { type: 'number', description: 'Skip triangles larger than this.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
-        withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
+        withinPart: { type: 'string', description: WITHIN_PART_DESC },
         smooth: { type: 'boolean', description: 'Smooth the slab edges by subdividing the mesh along them. Default true; pass false for the raw (blocky) tessellation.' },
         resolution: { type: 'number', description: 'Smoothing detail: target boundary edge = model bbox diagonal / resolution. Higher = smoother + more triangles. Default 256, range 2–1024.' },
         maxEdge: { type: 'number', description: 'Optional absolute override for the target boundary edge length (mesh units). Takes precedence over resolution.' },
@@ -953,7 +987,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         searchRadius: { type: 'number', description: 'How far to look for a face. Default ~1.0.' },
         name: { type: 'string' },
-        withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
+        withinPart: { type: 'string', description: WITHIN_PART_DESC },
         tolerance: { type: 'number', minimum: -1, maximum: 1, description: 'Coplanar-flood tolerance as a COSINE (like paintRegion\'s console tolerance). Default 0.9995 ≈ 1.8°.' },
       },
       required: ['point', 'color'],
@@ -1902,7 +1936,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         zMax: { type: 'number', description: 'End of the band along the chosen axis.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r, g, b] in 0..1.' },
         name: { type: 'string', description: 'Optional region name.' },
-        withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge. Use the parts of an imported mesh after detectParts → acceptParts, or any api.label region (listLabels).' },
+        withinPart: { type: 'string', description: WITHIN_PART_DESC },
         normalCone: {
           type: 'object',
           description: 'Further restrict to triangles whose normal is within angleDeg of the given axis.',
@@ -2085,20 +2119,20 @@ const ALL_TOOLS: ToolDefinition[] = [
 
 **Routing — prefer the default.** mode 'auto' (default): in a manifold-js session the texture is written INTO THE CODE as an \`api.surface.<id>({…})\` call (inserted before the final return, or the existing call for that id is updated in place) — the model stays parametric, the texture recomputes when the code changes, and saved versions keep the computed result. In a SCAD/BREP/voxel session it falls back to BAKING the textured mesh (the parametric source is replaced — the returned warnings say so). mode 'code' forces the in-code path (errors off manifold-js); mode 'bake' forces the destructive bake. To fine-tune on manifold-js, just call again with new opts — the code call is edited in place, no undo round-trip needed.
 
-**opts by id** (all optional — size-relative defaults fill in; amplitude in world units, start ~1–3% of model diagonal; quality 1–5 mesh detail; seed for reproducibility):
-- fuzzy: amplitude, scale (feature size, ~4% of diagonal), octaves (1–5), seed, quality
-- knit: amplitude, stitchWidth, stitchHeight, rowOffset (0–1), roundness (0–1), grainAngleDeg, variation, seed, quality, algorithm ('bfs'|'lscm'|'harmonic')
+**opts by id** (all optional; size-relative defaults; amplitude in world units, start ~1–3% of the model diagonal; quality 1–5; seed). Meanings and good values: /ai/textures.md.
+- fuzzy: amplitude, scale, octaves, seed, quality
+- knit: amplitude, stitchWidth, stitchHeight, rowOffset, roundness, grainAngleDeg, variation, seed, quality, algorithm ('bfs'|'lscm'|'harmonic')
 - cable: amplitude, cableWidth, cablePitch, plyWidth, grainAngleDeg, variation, seed, quality
-- waffle: amplitude, cellWidth, cellHeight, sharpness (1=soft…8+=thin border), rowOffset (0.5=honeycomb), grainAngleDeg, seed, quality
+- waffle: amplitude, cellWidth, cellHeight, sharpness, rowOffset (0.5 = honeycomb), grainAngleDeg, seed, quality
 - fur: amplitude, fiberSpacing, fiberLength, octaves, grainAngleDeg, seed, quality
-- woven: amplitude, threadSpacing, threadWidth (0.1–0.9 fraction), underDepth (0–1), grainAngleDeg, seed, quality
-- knurl: amplitude (ridge height), cellWidth/cellHeight (ridge spacing), style ('diamond'|'straight'|'ribs'), profile ('round' soft cosine bumps | 'pyramid' straight-sided machinist diamonds), sharpness (1 soft … 6+ sharp peaks), grainAngleDeg, seed, quality — the machinist grip pattern (diamond cross-hatch, axial splines, or finger ribs)
-- voronoi: amplitude, cellSize, wallWidth (fraction), raised (false = engraved channels), jitter (0–1), grainAngleDeg, seed, quality
-- smooth: iterations (Taubin passes, ~5), subdivide (default true)
+- woven: amplitude, threadSpacing, threadWidth, underDepth, grainAngleDeg, seed, quality
+- knurl (machinist grip): amplitude, cellWidth, cellHeight, style ('diamond'|'straight'|'ribs'), profile ('round'|'pyramid'), sharpness, grainAngleDeg, seed, quality
+- voronoi: amplitude, cellSize, wallWidth, raised (false = engraved channels), jitter, grainAngleDeg, seed, quality
+- smooth: iterations (~5), subdivide (default true)
 Plus preserveColor (default true — bake path only; on the code path paint re-resolves against the textured mesh every run automatically).
 
 **Scoping (code path / manifold-js only).** By default the texture covers the whole skin. Add ONE of these to opts to limit it to part of the model:
-- label: 'name' — texture only the triangles of an \`api.label(shape, 'name', …)\` region. Lets you texture one shape of a union (e.g. a knurled grip on a smooth body): label that shape in the code, union it, then \`applySurfaceTexture('knurl', { label: 'grip' })\`.
+- label: 'name' — only an \`api.label(shape, 'name')\` region (e.g. a knurled grip on a smooth body: \`applySurfaceTexture('knurl', { label: 'grip' })\`).
 - region: { point: [x,y,z], radius } — texture every triangle whose surface is within \`radius\` of a world-space point. Use getGeometryData's bbox/centroid to pick a point on the model.
 (Scoping is ignored on the bake path; pass label/region only with mode 'auto'/'code'.)
 
@@ -2397,6 +2431,7 @@ Returns { ok, stats, metrics, version } or { error }.`,
         align: { type: 'string', enum: ['surface', 'area', 'view'], description: 'Slab direction, as for paintStroke: surface (default), area (averaged normal), view (down the camera ray).' },
         viewDir: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Camera forward direction for align "view" / frontFacesOnly; omit for the live camera.' },
         frontFacesOnly: { type: 'boolean', description: 'Only spray triangles facing the camera.' },
+        occlude: { type: 'boolean', description: 'Only spray triangles the camera can see (not hidden behind other geometry).' },
         name: { type: 'string' },
         withinPart: { type: 'string', description: 'Optional part (label) name: clip the paint to that part so it cannot bleed across its edge.' },
       },
@@ -2405,7 +2440,7 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: 'exportModel',
-    description: "Download the model as a file — the toolbar Export menu. REQUIRES USER CONFIRMATION (it saves a file to the user's computer): only call it when the user asked to export or download. format: 'stl' | 'obj' | 'glb' | '3mf' (one file of the current object, or of several objects with `objects`), '3mf-objects' (a Bambu Studio / OrcaSlicer project with each object on its own plate and colours bound to filaments; default all objects), 'step' (BREP / replicad sessions only), 'vox' (MagicaVoxel, voxel sessions only). `objects` (names or ids from listObjects) bundles several objects into one download; STEP and VOX export only the current object. `split` writes an object as one file object per separate piece ('pieces') or per labelled part ('parts'; parts fused into one solid stay together), keeping each piece's modelled orientation; `exclude` leaves split items out by name (\"<object> · <item>\"). Painted colours are kept where the format supports them (3MF, OBJ, GLB). Returns { ok, format, filename?, objects?, items? } or { error }.",
+    description: "Download the model as a file — the toolbar Export menu. REQUIRES USER CONFIRMATION (it saves a file to the user's computer): only call it when the user asked to export or download. format: 'stl' | 'obj' | 'glb' | '3mf' (one file of the current object, or of several objects with `objects`), '3mf-objects' (a Bambu Studio / OrcaSlicer project with each object on its own plate and colours bound to filaments; default all objects), 'step' (BREP / replicad sessions only), 'vox' (MagicaVoxel, voxel sessions only). `objects` (names or ids from listObjects) bundles several objects into one download; STEP and VOX export only the current object. `split` writes an object as one file object per separate piece ('pieces') or per labelled part ('parts'; parts fused into one solid stay together), keeping each piece's modelled orientation; `exclude` leaves split items out by name (\"<object> · <item>\"). listExportItems (tool group \"objects\") lists what each object splits into. Painted colours are kept where the format supports them (3MF, OBJ, GLB). Returns { ok, format, filename?, objects?, items? } or { error }.",
     input_schema: {
       type: 'object',
       properties: {
@@ -2815,7 +2850,10 @@ let toolCallGeneration = 0;
 // description stays in one place. Typeless on purpose — it accepts a name/id
 // string OR a 0-based index number (resolvePartTarget in main.ts handles both).
 const OBJECT_TARGET_PROP = {
-  description: 'Optional. The OBJECT to act on — its name, id (from listObjects), or 0-based index. Defaults to the current object. Pass it instead of relying on the current selection or a separate changeObject call. Read-only tools (renders, queries) switch back to the user\'s object afterwards; tools that change the object leave it focused.',
+  // Kept short: it rides on ~90 tools. The full rule (prefer it over
+  // changeObject; reads switch back, edits stay focused) is said once in
+  // ai.md's in-app tool note.
+  description: 'Object to act on: name, id or 0-based index. Default: the current one.',
 };
 for (const tool of ALL_TOOLS) {
   if (OBJECT_TARGETABLE_TOOLS.has(tool.name) && !('object' in tool.input_schema.properties)) {
@@ -3105,7 +3143,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams', 'setCurvatureQuality']);
-const SAVE_GATED = new Set(['runAndSave', 'forkVersion', 'loadVersion', 'saveVersion', 'resolveModelDrift', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts', 'partAction', 'undoPartEdit', 'splitIntoPieces']);
+const SAVE_GATED = new Set(['runAndSave', 'fitHumanToPhoto', 'forkVersion', 'loadVersion', 'saveVersion', 'resolveModelDrift', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts', 'partAction', 'undoPartEdit', 'splitIntoPieces']);
 /** SAVE_GATED tools that touch version history WITHOUT executing new code, so
  *  they only need the saveVersions scope (not runCode). */
 const SAVE_NON_RUNNING = new Set(['loadVersion', 'saveVersion', 'renameVersion', 'deleteVersion', 'saveAllObjects']);
@@ -4039,12 +4077,36 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.paintAlongBoundary(input);
     case 'photoMatch':
       return await api.photoMatch(input);
+    case 'fitHumanToPhoto': {
+      // Always commits (like buildCharacter) and drops the generated code from
+      // the result: the model only needs it to hand-edit, via getCode.
+      const { baseJson, ...rest } = input;
+      let base: unknown;
+      if (typeof baseJson === 'string' && baseJson.trim()) {
+        try { base = JSON.parse(baseJson); } catch { return { error: 'fitHumanToPhoto: baseJson is not valid JSON' }; }
+      }
+      const r = await api.fitHuman({ ...rest, ...(base !== undefined ? { base } : {}), save: true }) as Record<string, unknown>;
+      if (r && typeof r === 'object' && typeof r.code === 'string') {
+        const { code, ...rest } = r;
+        return { ...rest, codeChars: (code as string).length };
+      }
+      return r;
+    }
     case 'buildCharacter': {
       // Always commits (the chat AI's work should leave a version), and drops
       // the generated code from the result — it is a few KB the model only
       // needs if it falls back to hand-editing (getCode), which keeps the
       // spec → build → photoMatch loop token-cheap.
-      const r = await api.buildCharacter(input.spec, { save: true, label: (input.label as string | undefined) ?? 'Character' }) as Record<string, unknown>;
+      let spec = input.spec;
+      if (input.realisticJson !== undefined) {
+        if (typeof input.realisticJson !== 'string') return { error: 'buildCharacter: realisticJson must be a JSON string' };
+        try { spec = JSON.parse(input.realisticJson); } catch { return { error: 'buildCharacter: realisticJson is not valid JSON' }; }
+        if (!spec || typeof spec !== 'object' || Array.isArray(spec)) return { error: 'buildCharacter: realisticJson must hold a spec object' };
+        spec = { ...(spec as Record<string, unknown>), family: 'realistic' };
+      } else if (spec === undefined) {
+        return { error: 'buildCharacter: pass spec (Avatar) or realisticJson (Realistic)' };
+      }
+      const r = await api.buildCharacter(spec, { save: true, label: (input.label as string | undefined) ?? 'Character' }) as Record<string, unknown>;
       if (r && typeof r === 'object' && typeof r.code === 'string') {
         const { code, ...rest } = r;
         return { ...rest, codeChars: (code as string).length };
@@ -4054,14 +4116,16 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     case 'getCharacterSpec':
       return api.getCharacterSpec();
     case 'listCharacterPresets': {
-      const presets = api.listCharacterPresets() as Array<{ id: string; label: string; description: string; spec: unknown }>;
+      const listed = api.listCharacterPresets(input.family) as Array<{ id: string; label: string; description: string; spec: unknown }> | { error: string };
+      if (!Array.isArray(listed)) return listed;
+      const presets = listed;
       if (input.id === undefined) return presets.map(({ id, label, description }) => ({ id, label, description }));
       const hit = presets.find(p => p.id === input.id);
       return hit ?? { error: `listCharacterPresets: unknown id ${JSON.stringify(input.id)} — one of ${presets.map(p => p.id).join(', ')}` };
     }
     case 'randomCharacter': {
       // Commits like buildCharacter and drops the generated code (token-cheap).
-      const r = await api.randomCharacter({ seed: input.seed, save: true, label: input.label }) as Record<string, unknown>;
+      const r = await api.randomCharacter({ seed: input.seed, save: true, label: input.label, ...(input.family !== undefined ? { family: input.family } : {}) }) as Record<string, unknown>;
       if (r && typeof r === 'object' && typeof r.code === 'string') {
         const { code, ...rest } = r;
         return { ...rest, codeChars: (code as string).length };

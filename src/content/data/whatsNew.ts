@@ -26,6 +26,89 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'November 3, 2026',
+    headline: 'Partwright 1.13 — split into pieces, AI cost controls, big-session fixes',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.13.0',
+            body: 'A backward-compatible release — existing sessions and exported files all keep working.',
+          },
+        ],
+      },
+      {
+        label: 'Fixes',
+        items: [
+          {
+            title: 'Large sessions import and export reliably',
+            body: 'Session files too big to read as one string now import, and large sessions export without hitting the maximum string length.',
+          },
+          {
+            title: '3MF imports no longer freeze the page',
+            body: 'Big 3MF files are parsed in a background worker, so the page stays responsive while they load.',
+          },
+        ],
+      },
+      {
+        label: 'Modeling',
+        items: [
+          {
+            title: 'Split a model into printable pieces',
+            body: 'Cut an imported model into separate printable pieces along its detected parts.',
+          },
+          {
+            title: 'Parametric human figures (experimental)',
+            body: 'A new api.human builds a watertight, printable person from a few numbers: body and face sliders, pose, hair and beards, clothing, hats and props, plus anime, chibi, toy and comic-hero styles. A photo-fit helper can match body proportions to a photo.',
+          },
+          {
+            title: 'Head form for wearable fit',
+            body: 'A new api.headform provides a metric adult head so hats, masks and glasses can be fitted to real dimensions.',
+          },
+          {
+            title: 'Visible-faces-only paint brush',
+            body: 'The paint brush can skip surfaces hidden behind other geometry.',
+          },
+        ],
+      },
+      {
+        label: 'AI assistant',
+        items: [
+          {
+            title: 'Delegate sub-tasks to a cheaper model',
+            body: 'The in-app AI can hand measurable sub-tasks to a cheaper model from the same provider to save spend.',
+          },
+          {
+            title: 'Cost controls and step-by-step rewind',
+            body: 'New controls limit cost on long thinking turns, and rewind controls let you step back through the chat.',
+          },
+          {
+            title: 'Plan-mode estimates and downloadable session trace',
+            body: 'Plan mode gives feasibility estimates, planning styles and a build checkpoint, and you can download a trace of an AI session to analyze spend, caching and agent steps.',
+          },
+          {
+            title: 'Annotation views',
+            body: 'Snapshot annotation views with camera and history, open them in a lightbox, redraw marks, and attach them to the AI.',
+          },
+          {
+            title: 'Richer renders for agents',
+            body: 'Zoomed and clipped renders and ray queries in model code help agents inspect geometry.',
+          },
+        ],
+      },
+      {
+        label: 'Interface',
+        items: [
+          {
+            title: 'Model console collapses to a corner pill',
+            body: 'The console can be tucked away into a small pill in the corner of the viewport.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'October 29, 2026',
     headline: 'Partwright 1.12.2 — Anthropic chat reliability fix',
     groups: [
