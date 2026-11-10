@@ -70,10 +70,13 @@ function capsule(p: Vec3, a: Vec3, b: Vec3, ra: number, rb: number): number {
 const THICKNESS: Record<HairStyle, number> = {
   bald: 0, buzz: 0.0035, short: 0.011, bob: 0.012, long: 0.012, ponytail: 0.007, pigtails: 0.008, bun: 0.007, afro: 0.012, mohawk: 0.003, spiky: 0.012,
 };
-/** The jaw-weight field: lattice coarsening, and the light blur that
- *  smooths its seams once the skin's weights are carried outward. */
-const JAW_FIELD_COARSEN = 2;
-const JAW_FIELD_BLURS = 2;
+/** The face-motion field under a beard: lattice coarsening, and the light
+ *  blur that smooths its seams once the skin's motion is carried outward. */
+const FACE_FIELD_COARSEN = 2;
+const FACE_FIELD_BLURS = 2;
+/** Skin counts as face (moved by the face rig, not the neck) when at least
+ *  this much of its skinning weight is on the head and the bones it carries. */
+const FACE_ONLY_WEIGHT = 0.99;
 /** The bare patch round the lips, in lip half-heights. */
 const LIP_CLEAR = 1.35;
 
@@ -325,70 +328,66 @@ export function buildHairField(asset: HumanAsset, mesh: HumanMesh, o: HairOption
     return b;
   };
 
-  // The jaw moves on its own bone (expression.jawOpen): carry the beard
-  // below the mouth with it. For a sample at head-frame q, the rest point it
-  // came from is the jaw's motion relative to the head, undone; the sample
-  // blends toward it below the mouth line. (Bone transforms are world =
-  // R·(k·rest) + T; the head frame is the head socket's.)
-  const bi = new Map(asset.bones.map((b, i) => [b.name, i]));
-  const Rh = mesh.bones.R[bi.get('head')!], Rj = mesh.bones.R[bi.get('jaw')!];
-  const Th = mesh.bones.T[bi.get('head')!], Tj = mesh.bones.T[bi.get('jaw')!];
-  // A = Rhᵀ·Rj, c = Rhᵀ·(Tj − Th), so posed head-frame q = A·X + c − k·h.
-  const A = [0, 1, 2].flatMap((r) => [0, 1, 2].map((col) => Rh[r] * Rj[col] + Rh[3 + r] * Rj[3 + col] + Rh[6 + r] * Rj[6 + col]));
-  const dT = [Tj[0] - Th[0], Tj[1] - Th[1], Tj[2] - Th[2]];
-  const cJ = [0, 1, 2].map((r) => Rh[r] * dT[0] + Rh[3 + r] * dT[1] + Rh[6 + r] * dT[2]);
-  const kh = [head[0] * k, head[1] * k, head[2] * k];
-  const jawMoves = A.some((v, i) => Math.abs(v - (i % 4 === 0 ? 1 : 0)) > 1e-6);
-  // How much each point rides the jaw: the skin's own jaw weights (the jaw
-  // and the bones it carries), splatted onto a coarse lattice and carried out
-  // into the space the beard fills, so the beard follows the skin the way
-  // skinning moves it (a height cut tore the mouth corners).
-  let jawW: ((x: number, y: number, z: number) => number) | null = null;
-  if (jawMoves && beardStyle !== 'none') {
-    const jawBones = new Set<number>();
-    asset.bones.forEach((b, i) => { if (b.name === 'jaw' || (b.parent >= 0 && jawBones.has(b.parent))) jawBones.add(i); });
-    const cs: GridSpec = {
-      nx: Math.ceil(spec.nx / JAW_FIELD_COARSEN) + 1, ny: Math.ceil(spec.ny / JAW_FIELD_COARSEN) + 1, nz: Math.ceil(spec.nz / JAW_FIELD_COARSEN) + 1,
-      origin: min, voxel: voxel * JAW_FIELD_COARSEN,
-    };
-    const num = new Float32Array(cs.nx * cs.ny * cs.nz), den = new Float32Array(num.length);
-    // Splatted where the skin IS (posed, in the head's frame), since a sample
-    // asks how much the skin around it now rides the jaw.
+  // The face moves under the beard: an open jaw drops the chin, a smile pulls
+  // the mouth corners and upper lip out and up (the jaw, oris, risorius, …
+  // bones). The beard is modelled on the rest face, so a posed sample is
+  // mapped back to where that skin was before it moved: each face vertex's
+  // displacement relative to the head is splatted where the skin now is (in
+  // the head's frame), carried out into the space the beard fills, and
+  // subtracted. Skin that rides the head rigidly moves 0, so the scalp and
+  // a still face are unchanged.
+  let unPose: ((p: Vec3) => Vec3) | null = null;
+  if (beardStyle !== 'none') {
+    const bi = new Map(asset.bones.map((b, i) => [b.name, i]));
+    const Rh = mesh.bones.R[bi.get('head')!];
     const Ph = mesh.joints.get('head____head')!;
+    // The head and the bones it carries (the face rig). Skin weighted to the
+    // neck as well moves with the head's pose, not the face, so it is left out.
+    const faceBones = new Set<number>();
+    asset.bones.forEach((b, i) => { if (b.name === 'head' || (b.parent >= 0 && faceBones.has(b.parent))) faceBones.add(i); });
+    const cs: GridSpec = {
+      nx: Math.ceil(spec.nx / FACE_FIELD_COARSEN) + 1, ny: Math.ceil(spec.ny / FACE_FIELD_COARSEN) + 1, nz: Math.ceil(spec.nz / FACE_FIELD_COARSEN) + 1,
+      origin: min, voxel: voxel * FACE_FIELD_COARSEN,
+    };
+    const n = cs.nx * cs.ny * cs.nz;
+    const sum = [new Float32Array(n), new Float32Array(n), new Float32Array(n)], cnt = new Float32Array(n);
+    let moved = 0;
     for (const v of used) {
+      if (boneWeight(asset, v, (_n, b) => faceBones.has(b)) < FACE_ONLY_WEIGHT) continue;
       const d = [mesh.posed[v * 3] - Ph[0], mesh.posed[v * 3 + 1] - Ph[1], mesh.posed[v * 3 + 2] - Ph[2]];
       const q = [0, 1, 2].map((r) => Rh[r] * d[0] + Rh[3 + r] * d[1] + Rh[6 + r] * d[2]);
       const ix = Math.round((q[0] - min[0]) / cs.voxel), iy = Math.round((q[1] - min[1]) / cs.voxel), iz = Math.round((q[2] - min[2]) / cs.voxel);
       if (ix < 0 || iy < 0 || iz < 0 || ix >= cs.nx || iy >= cs.ny || iz >= cs.nz) continue;
+      const r0 = toLocal(v);
       const c = ix + iy * cs.nx + iz * cs.nx * cs.ny;
-      num[c] += boneWeight(asset, v, (_n, b) => jawBones.has(b)); den[c] += 1;
+      for (let a = 0; a < 3; a++) { sum[a][c] += q[a] - r0[a]; moved = Math.max(moved, Math.abs(q[a] - r0[a])); }
+      cnt[c] += 1;
     }
-    // Cells with skin take its mean weight; every other cell takes the weight
-    // of the nearest skin (a breadth-first fill outward), then a light blur.
-    let wgt = new Float32Array(num.length);
-    const queue: number[] = [];
-    const done = new Uint8Array(num.length);
-    for (let c = 0; c < num.length; c++) if (den[c] > 0) { wgt[c] = num[c] / den[c]; done[c] = 1; queue.push(c); }
-    const sx = 1, sy = cs.nx, sz = cs.nx * cs.ny;
-    for (let qi = 0; qi < queue.length; qi++) {
-      const c = queue[qi];
-      const x = c % cs.nx, y = Math.floor(c / sy) % cs.ny, z = Math.floor(c / sz);
-      for (const [d, ok] of [[-sx, x > 0], [sx, x < cs.nx - 1], [-sy, y > 0], [sy, y < cs.ny - 1], [-sz, z > 0], [sz, z < cs.nz - 1]] as [number, boolean][]) {
-        if (!ok || done[c + d]) continue;
-        done[c + d] = 1; wgt[c + d] = wgt[c]; queue.push(c + d);
+    if (moved > voxel * 0.05) {
+      // Cells with skin take its mean displacement; every other cell takes
+      // that of the nearest skin (a breadth-first fill outward), then a light
+      // blur smooths the seams.
+      const disp = [new Float32Array(n), new Float32Array(n), new Float32Array(n)];
+      const queue: number[] = [];
+      const done = new Uint8Array(n);
+      for (let c = 0; c < n; c++) if (cnt[c] > 0) { for (let a = 0; a < 3; a++) disp[a][c] = sum[a][c] / cnt[c]; done[c] = 1; queue.push(c); }
+      const sx = 1, sy = cs.nx, sz = cs.nx * cs.ny;
+      for (let qi = 0; qi < queue.length; qi++) {
+        const c = queue[qi];
+        const x = c % cs.nx, y = Math.floor(c / sy) % cs.ny, z = Math.floor(c / sz);
+        for (const [dd, ok] of [[-sx, x > 0], [sx, x < cs.nx - 1], [-sy, y > 0], [sy, y < cs.ny - 1], [-sz, z > 0], [sz, z < cs.nz - 1]] as [number, boolean][]) {
+          if (!ok || done[c + dd]) continue;
+          done[c + dd] = 1; for (let a = 0; a < 3; a++) disp[a][c + dd] = disp[a][c]; queue.push(c + dd);
+        }
       }
+      const samplers = disp.map((f) => {
+        let g = f;
+        for (let it = 0; it < FACE_FIELD_BLURS; it++) g = blurField(g, cs);
+        return makeTrilinearSampler(g, cs);
+      });
+      unPose = (p) => p.map((v, a) => { const d = samplers[a](p[0], p[1], p[2]); return d < 1e5 ? v - d : v; }) as Vec3;
     }
-    for (let it = 0; it < JAW_FIELD_BLURS; it++) wgt = blurField(wgt, cs);
-    const ws = makeTrilinearSampler(wgt, cs);
-    jawW = (x, y, z) => { const w = ws(x, y, z); return w < 1e5 ? clamp(w, 0, 1) : 0; };
   }
-  const toRest = (p: Vec3, w: number): Vec3 => {
-    const r = [p[0] + kh[0] - cJ[0], p[1] + kh[1] - cJ[1], p[2] + kh[2] - cJ[2]];
-    // X = Aᵀ·r, back in the head-local frame.
-    const q = [0, 1, 2].map((col) => A[col] * r[0] + A[3 + col] * r[1] + A[6 + col] * r[2] - kh[col]);
-    return [p[0] + (q[0] - p[0]) * w, p[1] + (q[1] - p[1]) * w, p[2] + (q[2] - p[2]) * w];
-  };
-  const unJaw = (p: Vec3): Vec3 => toRest(p, jawW!(p[0], p[1], p[2]));
 
   const field = style === 'bald' ? null : new Float32Array(occ.length);
   const beard = beardStyle === 'none' ? null : new Float32Array(occ.length);
@@ -481,8 +480,8 @@ export function buildHairField(asset: HumanAsset, mesh: HumanMesh, o: HairOption
     if (cover) f = Math.max(f, d - cover.keep - Math.max(0, cover.edge(x, y) - z) * COVER_FLARE);
     if (field) field[i] = f;
     if (beard) {
-      if (jawW) {
-        const q = unJaw(p);
+      if (unPose) {
+        const q = unPose(p);
         beard[i] = beardAt(q, bodyAt(q[0], q[1], q[2]), Math.abs(Math.atan2(q[0], -(q[1] - yc))));
       } else beard[i] = beardAt(p, d, a);
     }
