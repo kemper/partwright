@@ -602,11 +602,61 @@
           "cache_write": 6.25
         }
       },
-      "claude-sonnet-5-5": {
-        "id": "claude-sonnet-5-5",
-        "name": "Claude Sonnet 5.5",
-        "description": "Fast Claude model for everyday coding, agents, and knowledge work",
+      "claude-sonnet-4-6": {
+        "id": "claude-sonnet-4-6",
+        "name": "Claude Sonnet 4.6",
+        "description": "Claude workhorse for coding agents, careful analysis, and production cost control",
         "family": "claude-sonnet",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "max"
+            ]
+          },
+          {
+            "type": "budget_tokens",
+            "min": 1024
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "knowledge": "2025-08-31",
+        "release_date": "2026-02-17",
+        "last_updated": "2026-03-13",
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "open_weights": false,
+        "limit": {
+          "context": 1000000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 3,
+          "output": 15,
+          "cache_read": 0.3,
+          "cache_write": 3.75
+        }
+      },
+      "claude-opus-5": {
+        "id": "claude-opus-5",
+        "name": "Claude Opus 5",
+        "description": "Strongest Claude Opus model for coding, agents, and professional work",
+        "family": "claude-opus",
         "attachment": true,
         "reasoning": true,
         "reasoning_options": [
@@ -624,9 +674,9 @@
         "tool_call": true,
         "structured_output": true,
         "temperature": false,
-        "knowledge": "2026-06",
-        "release_date": "2026-09-28",
-        "last_updated": "2026-09-28",
+        "knowledge": "2026-05",
+        "release_date": "2026-07-24",
+        "last_updated": "2026-07-24",
         "modalities": {
           "input": [
             "text",
@@ -643,12 +693,12 @@
           "output": 128000
         },
         "cost": {
-          "input": 2,
-          "output": 10,
-          "cache_read": 0.1,
-          "cache_write": 2.5
+          "input": 5,
+          "output": 25,
+          "cache_read": 0.5,
+          "cache_write": 6.25
         },
-        "canonical_model_id": "anthropic/claude-sonnet-5-5"
+        "canonical_model_id": "anthropic/claude-opus-5"
       },
       "claude-sonnet-4-6": {
         "id": "claude-sonnet-4-6",
@@ -1980,16 +2030,12 @@
           "output": 128000
         },
         "cost": {
-          "input": 1,
-          "output": 5,
-          "cache_read": 0.05,
-          "cache_write": 1.25,
+          "input": 30,
+          "output": 180,
           "tiers": [
             {
-              "input": 2,
-              "output": 7.5,
-              "cache_read": 0.1,
-              "cache_write": 2.5,
+              "input": 60,
+              "output": 270,
               "tier": {
                 "type": "context",
                 "size": 272000
@@ -1997,10 +2043,8 @@
             }
           ],
           "context_over_200k": {
-            "input": 2,
-            "output": 7.5,
-            "cache_read": 0.1,
-            "cache_write": 2.5
+            "input": 60,
+            "output": 270
           }
         },
         "canonical_model_id": "openai/gpt-6.1-terra"

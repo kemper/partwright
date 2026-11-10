@@ -192,6 +192,10 @@ import { isFusedPiecesDraft } from './segmentation/labelPresets';
 import { specToCode } from './figure/characterCodegen';
 import { normalizeSpec, validateSpec, decodeSpecComment, SPEC_VERSION, CHARACTER_PRESETS } from './figure/characterSpec';
 import { randomSpec, seededRandom } from './figure/characterRandom';
+import {
+  validateHumanSpec, normalizeHumanSpec, humanSpecToCode, decodeHumanSpecComment, randomHumanSpec,
+  HUMAN_PRESETS, HUMAN_SPEC_VERSION,
+} from './human/humanCharacter';
 import { initResizeUI } from './ui/resizeModal';
 import { initConvertToCodeUI, openConvertToCodeModal } from './ui/convertToCodeModal';
 import { initSplitPiecesUI } from './ui/splitPiecesModal';
@@ -293,6 +297,7 @@ import { startProgress, updateProgress, endProgress, __setProgressModalDelayForT
 import { startExportProgress } from './ui/exportProgressModal';
 import { buildInPool, disposeEnginePool, setEnginePoolSize } from './geometry/enginePool';
 import { setEngineTrustDomain, getEngineTrustDomain } from './geometry/trustDomain';
+import { FIT_DIMS, DEFAULT_FIT, applyDims, startValues, humanCode, fitCoordinateDescent, fitSilhouetteIoU, photoSilhouetteWarnings, fitScoreWarnings } from './human/humanFit';
 import { syncLockState, disableRun, enableRun } from './color/editorLock';
 import { setReadOnlyReason } from './editor/editorAccess';
 import { asLanguage } from './storage/languageFallback';
@@ -1277,6 +1282,9 @@ async function decodeImageToRgba(src: string): Promise<{ width: number; height: 
   const id = ctx.getImageData(0, 0, canvas.width, canvas.height);
   return { width: id.width, height: id.height, data: id.data };
 }
+
+/** Most photos one fitHuman call scores per candidate (structural cap). */
+const HUMAN_FIT_MAX_VIEWS = 4;
 
 /** Most reference views one photoMatch call scores (each is a full render +
  *  score; structural cap, not a tuning knob). */
@@ -16943,6 +16951,127 @@ async function main() {
       return { silhouetteIoU: combined.silhouetteIoU, minIoU: combined.minIoU, worst: combined.worst, warnings: combined.warnings, views: results };
     },
 
+    /** Fit api.human's body sliders (and arm/leg spread) to a full-body
+     *  photo's silhouette — the in-browser twin of `npm run human:fit`. Builds
+     *  each candidate in the engine Worker (never touching the viewport),
+     *  scores its silhouette against the photo(s) with the photo-match
+     *  segmentation (IoU re-aligned sideways so one raised arm doesn't move
+     *  the whole outline), and runs a bounded coordinate descent. The result
+     *  is ordinary api.human code; by default it is committed as a version.
+     *  `base` = api.human options to keep (hair, wear, style …); `fit` = which
+     *  dimensions to search (FIT_DIMS names); `views` = several photos with
+     *  their camera (a side photo separates gender / bust / belly). */
+    async fitHuman(options?: {
+      image?: string; views?: Array<{ image?: string; azimuth?: number; elevation?: number; mask?: string }>;
+      base?: Record<string, unknown>; fit?: string[]; budget?: number; save?: boolean; label?: string;
+    }) {
+      const parsed = guard(() => {
+        const o = (options === undefined ? {} : assertObject(options, 'fitHuman(options)')!) as Record<string, unknown>;
+        assertNoUnknownKeys(o, ['image', 'views', 'base', 'fit', 'budget', 'save', 'label'], 'fitHuman(options)');
+        let views: { image?: string; azimuth: number; elevation: number; mask?: string }[];
+        if (o.views !== undefined) {
+          if (o.image !== undefined) throw new ValidationError('fitHuman(options): pass image OR views, not both.');
+          const arr = assertArray(o.views, 'fitHuman(options).views') as unknown[];
+          if (arr.length < 1 || arr.length > HUMAN_FIT_MAX_VIEWS) throw new ValidationError(`fitHuman(options).views must hold 1–${HUMAN_FIT_MAX_VIEWS} photos.`);
+          views = arr.map((raw, i) => {
+            const v = assertObject(raw, `fitHuman(options).views[${i}]`)!;
+            assertNoUnknownKeys(v, ['image', 'azimuth', 'elevation', 'mask'], `fitHuman(options).views[${i}]`);
+            return {
+              image: assertString(v.image, `fitHuman(options).views[${i}].image`, { optional: true }),
+              azimuth: assertNumber(v.azimuth, `fitHuman(options).views[${i}].azimuth`, { optional: true }) ?? 0,
+              elevation: assertNumber(v.elevation, `fitHuman(options).views[${i}].elevation`, { optional: true, min: -90, max: 90 }) ?? 0,
+              mask: assertString(v.mask, `fitHuman(options).views[${i}].mask`, { optional: true }),
+            };
+          });
+        } else {
+          views = [{ image: assertString(o.image, 'fitHuman(options).image', { optional: true }), azimuth: 0, elevation: 0 }];
+        }
+        const base = (o.base === undefined ? {} : assertObject(o.base, 'fitHuman(options).base')!) as Record<string, unknown>;
+        const names = o.fit === undefined ? DEFAULT_FIT : (assertArray(o.fit, 'fitHuman(options).fit') as unknown[]).map((n, i) => assertString(n, `fitHuman(options).fit[${i}]`)!);
+        const unknown = names.filter(n => !FIT_DIMS[n]);
+        if (unknown.length) throw new ValidationError(`fitHuman(options).fit: unknown dimension(s) ${unknown.join(', ')}. Known: ${Object.keys(FIT_DIMS).join(', ')}.`);
+        if (!names.length) throw new ValidationError('fitHuman(options).fit must name at least one dimension.');
+        const budget = assertNumber(o.budget, 'fitHuman(options).budget', { optional: true, min: 2, max: 1000, integer: true }) ?? getConfig().import.humanFitBudget;
+        return {
+          views, base, dims: names.map(n => FIT_DIMS[n]), budget,
+          save: assertBoolean(o.save, 'fitHuman(options).save', { optional: true }) ?? true,
+          label: assertString(o.label, 'fitHuman(options).label', { optional: true }) ?? 'Human fit',
+        };
+      });
+      if ('error' in parsed) return parsed;
+      if (getActiveLanguage() !== 'manifold-js') return { error: 'fitHuman builds api.human code — switch the session to JS first (setActiveLanguage("manifold-js")).' };
+      const photos: { rgba: { width: number; height: number; data: Uint8ClampedArray }; mask: { width: number; height: number; data: Uint8ClampedArray } | null; azimuth: number; elevation: number }[] = [];
+      for (const v of parsed.views) {
+        const img = resolvePhotoMatchImage(v.image);
+        if ('error' in img) return { error: img.error.replace(/^photoMatch:/, 'fitHuman:') };
+        let mask = null;
+        try {
+          if (v.mask !== undefined) {
+            const m = resolvePhotoMatchImage(v.mask);
+            if ('error' in m) return { error: m.error.replace(/^photoMatch:/, 'fitHuman mask:') };
+            mask = await decodeImageToRgba(m.src);
+          }
+          photos.push({ rgba: await decodeImageToRgba(img.src), mask, azimuth: v.azimuth, elevation: v.elevation });
+        } catch (e) {
+          return { error: `fitHuman: could not decode the photo (${e instanceof Error ? e.message : String(e)}). Attach the photo or pass a data URL.` };
+        }
+      }
+      // Every build belongs to this session: a session switch mid-fit refuses
+      // the remaining builds instead of running in the next session (#1090).
+      const domain = getEngineTrustDomain();
+      const size = getConfig().import.photoMatchRenderSize;
+      const tuning = photoMatchTuningFromConfig(getConfig().import);
+      let buildError: string | null = null;
+      // Warnings about each photo's silhouette, checked on the first build.
+      const warnings = new Set<string>();
+      const checked = new Set<unknown>();
+      const evaluate = async (values: number[]): Promise<number> => {
+        const code = humanCode(applyDims(parsed.base, parsed.dims, values));
+        let r: MeshResult;
+        try {
+          r = await executeCodeAsync(code, 'manifold-js', undefined, undefined, undefined, undefined, { domain });
+        } catch (e) {
+          buildError = e instanceof Error ? e.message : String(e);
+          throw e;
+        }
+        if (r.error || !r.mesh) { buildError = r.error ?? 'no mesh produced'; return -1; }
+        let total = 0;
+        for (const ph of photos) {
+          const render = renderRegionLabels(r.mesh, new Int32Array(r.mesh.numTri), { azimuth: ph.azimuth, elevation: ph.elevation, ortho: true, size });
+          const res = scorePhotoMatch({
+            reference: ph.rgba, mask: ph.mask, bgMode: 'auto',
+            model: { width: render.width, height: render.height, data: new Uint8ClampedArray(render.width * render.height * 4) },
+            modelLabels: render.labels, regions: [{ name: 'body', color: '#5a5a5a' }],
+            fit: 'height', debug: true, tuning,
+          });
+          if (res.debug && !checked.has(ph)) { checked.add(ph); for (const w of photoSilhouetteWarnings(res.debug)) warnings.add(w); }
+          total += res.debug ? fitSilhouetteIoU(res.debug) : 0;
+        }
+        return total / photos.length;
+      };
+      const t0 = performance.now();
+      showToast(`Fitting the body to the photo… (up to ${parsed.budget} builds)`, { variant: 'neutral', source: 'character' });
+      let result: Awaited<ReturnType<typeof fitCoordinateDescent>>;
+      try {
+        result = await fitCoordinateDescent(parsed.dims, startValues(parsed.base, parsed.dims), evaluate, { budget: parsed.budget });
+      } catch {
+        return { error: `fitHuman stopped: ${buildError ?? 'the engine run failed'}` };
+      }
+      if (result.score < 0) return { error: `fitHuman: the starting body did not build — ${buildError ?? 'unknown error'}. Check base (it must be valid api.human options).` };
+      for (const w of fitScoreWarnings(result.score)) warnings.add(w);
+      const fitted = Object.fromEntries(parsed.dims.map((d, i) => [d.key, Math.round(result.values[i] * 1000) / 1000]));
+      const code = humanCode(applyDims(parsed.base, parsed.dims, result.values));
+      const summary = {
+        silhouetteIoU: Number(result.score.toFixed(4)), fitted, evaluations: result.evaluations, seconds: Math.round((performance.now() - t0) / 1000),
+        ...(warnings.size ? { warnings: [...warnings] } : {}),
+      };
+      if (warnings.size) showToast([...warnings][0], { variant: 'warn', source: 'character' });
+      showToast(`Body fitted to the photo (silhouette match ${(result.score * 100).toFixed(0)}%)`, { variant: 'success', source: 'character' });
+      if (!parsed.save) return { code, ...summary };
+      const saved = await partwrightAPI.runAndSave(code, parsed.label);
+      return { code, ...summary, ...(saved as Record<string, unknown>) };
+    },
+
     /** Render multiple angles of the current model laid out in a single
      *  labeled grid, returned as one PNG data URL. The killer use case
      *  is "did this paint operation land where I thought" — a single
@@ -18640,6 +18769,12 @@ async function main() {
       if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
         return { error: 'buildCharacter(spec): spec must be a Character Creator spec object. See src/figure/characterSpec.ts / public/ai/figure.md.' };
       }
+      // `family` picks the builder: 'avatar' (default, api.sdf.figure) or
+      // 'realistic' (api.human, src/human/humanCharacter.ts).
+      const family = (spec as { family?: unknown }).family;
+      if (family !== undefined && family !== 'avatar' && family !== 'realistic') {
+        return { error: 'buildCharacter(spec): spec.family must be "avatar" (default, the api.sdf.figure builder) or "realistic" (api.human). See /ai/human.md#character-creator-realistic.' };
+      }
       const optCheck = guard(() => {
         if (opts !== undefined) {
           assertObject(opts, 'buildCharacter(opts)');
@@ -18650,12 +18785,22 @@ async function main() {
         return true;
       });
       if (typeof optCheck === 'object' && optCheck !== null && 'error' in optCheck) return optCheck;
-      const normalized = normalizeSpec(spec);
-      const problems = validateSpec(normalized);
-      if (problems.length > 0) {
-        return { error: `buildCharacter(spec): ${problems.length} invalid field${problems.length === 1 ? '' : 's'} — ${problems.join('; ')}. See /ai/figure.md#shortcut-buildcharacterspec--the--character-panel` };
+      let code: string;
+      if (family === 'realistic') {
+        const problems = validateHumanSpec(spec);
+        if (problems.length > 0) {
+          return { error: `buildCharacter(spec): ${problems.length} invalid field${problems.length === 1 ? '' : 's'} — ${problems.join('; ')}. See /ai/human.md#character-creator-realistic` };
+        }
+        code = humanSpecToCode(normalizeHumanSpec(spec));
+      } else {
+        const { family: _family, ...avatar } = spec as Record<string, unknown>;
+        const normalized = normalizeSpec(avatar);
+        const problems = validateSpec(normalized);
+        if (problems.length > 0) {
+          return { error: `buildCharacter(spec): ${problems.length} invalid field${problems.length === 1 ? '' : 's'} — ${problems.join('; ')}. See /ai/figure.md#shortcut-buildcharacterspec--the--character-panel` };
+        }
+        code = specToCode(normalized);
       }
-      const code = specToCode(normalized);
       if (opts?.save) {
         const r = await partwrightAPI.runAndSave(code, opts.label ?? 'Character');
         return { code, ...(r as Record<string, unknown>) };
@@ -18678,28 +18823,35 @@ async function main() {
      *  Returns `{ spec, version }` or `{ error }` when the code has no header. */
     getCharacterSpec() {
       const code = getValue();
+      const human = decodeHumanSpecComment(code);
+      if (human) return { spec: human, version: HUMAN_SPEC_VERSION, family: 'realistic' };
       const spec = decodeSpecComment(code);
       if (!spec) {
-        return { error: 'getCharacterSpec(): the current code has no `// @character` header — it was not generated by buildCharacter / the 🧍 Character panel. Build one with buildCharacter(spec) first.' };
+        return { error: 'getCharacterSpec(): the current code has no `// @character` or `// @human-character` header — it was not generated by buildCharacter / the 🧍 Character panel. Build one with buildCharacter(spec) first.' };
       }
-      return { spec, version: SPEC_VERSION };
+      return { spec, version: SPEC_VERSION, family: 'avatar' };
     },
 
     /** The Character Creator's built-in starting characters (same list as the
      *  panel's preset picker). Each entry carries its full spec, ready to pass
      *  to buildCharacter (optionally tweaked first). */
-    listCharacterPresets() {
+    listCharacterPresets(family?: 'avatar' | 'realistic') {
+      if (family !== undefined && family !== 'avatar' && family !== 'realistic') {
+        return { error: 'listCharacterPresets(family?): family must be "avatar" (default) or "realistic"' };
+      }
+      if (family === 'realistic') return HUMAN_PRESETS.map(p => ({ id: p.id, label: p.label, description: p.description, spec: p.patch() }));
       return CHARACTER_PRESETS.map(p => ({ id: p.id, label: p.label, description: p.description, spec: p.patch() }));
     },
 
     /** Roll a random, coherent character (the panel's 🎲 Random button) and build
      *  it. Pass `seed` for a reproducible result; the seed used is returned so
      *  a roll you like can be re-created. `save:true` commits a version. */
-    async randomCharacter(opts?: { seed?: number; save?: boolean; label?: string }) {
+    async randomCharacter(opts?: { seed?: number; save?: boolean; label?: string; family?: 'avatar' | 'realistic' }) {
       const parsed = guard(() => {
         const o = assertObject(opts, 'randomCharacter(opts)', { optional: true }) ?? {};
-        assertNoUnknownKeys(o, ['seed', 'save', 'label'], 'randomCharacter(opts)');
+        assertNoUnknownKeys(o, ['seed', 'save', 'label', 'family'], 'randomCharacter(opts)');
         return {
+          family: o.family === undefined ? 'avatar' : assertEnum(o.family, ['avatar', 'realistic'] as const, 'randomCharacter(opts).family'),
           seed: assertNumber(o.seed, 'randomCharacter(opts).seed', { optional: true, integer: true, min: 0, max: 2 ** 32 - 1 }),
           save: assertBoolean(o.save, 'randomCharacter(opts).save', { optional: true }),
           label: assertString(o.label, 'randomCharacter(opts).label', { optional: true }),
@@ -18707,7 +18859,7 @@ async function main() {
       });
       if ('error' in parsed) return parsed;
       const seed = parsed.seed ?? Math.floor(Math.random() * 2 ** 31);
-      const spec = randomSpec(seededRandom(seed));
+      const spec = parsed.family === 'realistic' ? randomHumanSpec(seededRandom(seed)) : randomSpec(seededRandom(seed));
       const r = await partwrightAPI.buildCharacter(spec, { save: parsed.save, label: parsed.label ?? 'Random character' });
       return { seed, spec, ...r };
     },
@@ -23844,10 +23996,10 @@ async function main() {
         'createSession':   { signature: 'await createSession(name?) -- Create session -> {id, url, galleryUrl}', docs: '/ai.md#console-api--windowpartwright' },
         'createSessionWithVersions': { signature: 'await createSessionWithVersions(name, [{code, label?}, ...]) -- New session (active language) with one saved version per entry -> {session: {id, name}, versions: [{version, geometry, error?}], galleryUrl} or {error}', docs: '/ai.md#batch-session-creation' },
         'runAndSave':      { signature: 'await runAndSave(code, label?, assertions?) -- Assert + save version in one call (+ logs?: the model code console output)', docs: '/ai.md#assert--save-in-one-call' },
-        'buildCharacter':  { signature: 'await buildCharacter(spec, {save?, label?}) -- Generate a posed, painted figure from a Character Creator spec (body {proportions:"realistic"|"chibi"|"funko", headScale, headSink, mittens} / pose {hold:{kind:"ball", cupL, cupR, handScale}} / face {layout, eyeStyle:"bead", browThickness, jaw} / hair {style:"anime"|"shag"|"captured"|"mop"|...} / clothing {top {trim, print:[{text, where}]}, pants {length:"shorts"}, socks {stripes}, feet {style:"toy", cleats}} / colors). Every field validated -> {error} lists each bad one. save:true commits a version. Same engine as the 🧍 Character panel; the token-cheap photo -> figure path.', docs: '/ai/figure.md' },
-        'getCharacterSpec': { signature: 'getCharacterSpec() -- Read the spec from the current code\'s // @character header (v1 headers migrate to v2; every detail field is filled) -> {spec, version} | {error}. Tweak a field, then buildCharacter(spec).', docs: '/ai/figure.md' },
-        'listCharacterPresets': { signature: 'listCharacterPresets() -- The Character Creator starting characters -> [{id, label, description, spec}] (pass a spec to buildCharacter)', docs: '/ai/figure.md' },
-        'randomCharacter': { signature: 'await randomCharacter({seed?, save?, label?}) -- Build a random, coherent figure (any body-plan style) (the panel\'s Random button) -> {seed, spec, code, ...}. Same seed = same character.', docs: '/ai/figure.md' },
+        'buildCharacter':  { signature: 'await buildCharacter(spec, {save?, label?}) -- Generate a posed, painted figure from a Character Creator spec (body {proportions:"realistic"|"chibi"|"funko", headScale, headSink, mittens} / pose {hold:{kind:"ball", cupL, cupR, handScale}} / face {layout, eyeStyle:"bead", browThickness, jaw} / hair {style:"anime"|"shag"|"captured"|"mop"|...} / clothing {top {trim, print:[{text, where}]}, pants {length:"shorts"}, socks {stripes}, feet {style:"toy", cleats}} / colors). Every field validated -> {error} lists each bad one. save:true commits a version. Same engine as the 🧍 Character panel; the token-cheap photo -> figure path. spec.family: "realistic" builds an api.human character instead (spec in /ai/human.md#character-creator-realistic).', docs: '/ai/figure.md' },
+        'getCharacterSpec': { signature: 'getCharacterSpec() -- Read the spec from the current code\'s // @character (Avatar; v1 headers migrate to v2) or // @human-character (Realistic) header -> {spec, version, family} | {error}. Tweak a field, then buildCharacter(spec).', docs: '/ai/figure.md' },
+        'listCharacterPresets': { signature: 'listCharacterPresets(family?: "avatar"|"realistic") -- The Character Creator starting characters (default Avatar) -> [{id, label, description, spec}] (pass a spec to buildCharacter)', docs: '/ai/figure.md' },
+        'randomCharacter': { signature: 'await randomCharacter({seed?, save?, label?, family?: "avatar"|"realistic"}) -- Build a random, coherent character (the panel\'s Random button; default Avatar) -> {seed, spec, code, ...}. Same seed = same character.', docs: '/ai/figure.md' },
         'saveVersion':     { signature: 'await saveVersion(label?) -- Save current state as version', docs: '/ai.md#console-api--windowpartwright' },
         'getModelDrift':   { signature: 'getModelDrift() -- Does the open version build differently than saved? -> {changed:false} | {changed:true, version, label, savedWith, running, differences[], canRestore, dismissed}', docs: '/ai/file-io.md#built-differently-than-saved' },
         'restoreSavedModel': { signature: 'await restoreSavedModel() -- Commit the open version\'s saved mesh as a new version (newest versions only; see getModelDrift().canRestore) -> {ok, label, geometry} | {error}', docs: '/ai/file-io.md#built-differently-than-saved' },
@@ -23969,6 +24121,7 @@ async function main() {
         'healCurrent':     { signature: 'healCurrent({tolerance?}) -- Simplify + apply: collapses near-degenerate edges, re-runs cleanup -> {ok, volumeDelta, triangleDelta, componentCountBefore, componentCountAfter}. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
         'renderView':      { signature: 'renderView({elevation?, azimuth?, ortho?, size?, edges?: "none"|"crease"|"wireframe", reference?, focus?, padding?, clip?}) -- Render from any angle -> data URL (default/cap size follows spending mode; edges default "crease"; reference draws the setReferenceGeometry ghost, default on when one is set; focus zooms onto a part name / {piece} / {min,max} box, padding is its margin, clip hides everything outside it)', docs: '/ai.md#visual-verification' },
         'photoMatch':      { signature: 'photoMatch({image?, view?: {azimuth, elevation, ortho?}, crop?: {x,y,w,h}, bg?, bgTolerance?, bgMode?: "auto"|"border"|"grabcut", mask?, exclude?: [part], merge?: [[part,…]], ignore?: [part], bands?, fit?: "height"|"box", pixelAspect?, size?, overlay?, views?: [{image, azimuth, elevation, crop?, bg?, mask?, pixelAspect?, label?}]}) -- TEXT-ONLY likeness score of the current model vs a reference photo (data URL or attachment id): silhouetteIoU, aspect, band widths + left/right edge offsets, outline[] diff ("photo-only at bands 2–4 left … → grow"), per-part IoU/area/offset/colour (lowConfidence when the photo cannot separate parts), worst[] findings. views[] scores several photos/angles at once (mean silhouetteIoU + per-view results). mask = manual silhouette (white = subject); bgMode grabcut for busy backdrops; merge/ignore parts the photo cannot tell apart. Use instead of renderView for routine likeness checks', docs: '/ai/reference-images.md#photo-match' },
+        'fitHuman':        { signature: 'fitHuman({image?, views?: [{image, azimuth?, elevation?, mask?}], base?: {api.human options}, fit?: [dimension], budget?, save?, label?}) -- Fit api.human\'s body sliders + arm/leg spread to a full-body photo\'s silhouette (builds candidates in the engine Worker, ~0.5–1 s each). Returns {silhouetteIoU, fitted, evaluations, seconds, code} and commits a version unless save:false. base keeps hair/wear/style; a side photo (views, azimuth 90) separates gender/bust/belly', docs: '/ai/human.md#fit-to-a-photo' },
         'renderViews':     { signature: 'await renderViews({views?: "auto"|"tri"|"all"|"box", angles?, size?, edges?: "none"|"crease"|"wireframe", reference?, focus?, padding?, clip?}) -- labeled multi-angle composite -> data URL (reference: draw the setReferenceGeometry ghost; default on when one is set; focus/padding/clip as renderView). Use for verification when one angle could hide errors.', docs: '/ai.md#visual-verification' },
         'setThumbnailCamera': { signature: "await setThumbnailCamera({azimuth, elevation} | 'current' | null) -- Pin the session thumbnail/catalog-tile camera (degrees; az 0 = front -Y, el -90..90); 'current' pins the live viewport angle; null clears -> {thumbCamera} or {error}", docs: '/ai.md#console-api--windowpartwright' },
         'getThumbnailCamera': { signature: 'getThumbnailCamera() -- Pinned thumbnail camera -> {azimuth, elevation} or null (unpinned = default iso)', docs: '/ai.md#console-api--windowpartwright' },

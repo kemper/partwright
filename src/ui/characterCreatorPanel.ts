@@ -1,8 +1,14 @@
-// Character Creator — a no-code GUI over the SDF figure system. Sliders,
-// dropdowns and colour swatches edit a CharacterSpec; the panel generates
-// self-contained `api.sdf.figure` code (characterCodegen.ts), previews it live,
-// and commits it as a saved version. The generated code embeds the spec as a
-// header comment, so re-opening the panel restores every control.
+// Character Creator — a no-code GUI over the two character builders, picked
+// at the top of the panel (kemper/partwright#1170):
+//   - Realistic: `api.human`, the MakeHuman-based body (HumanCharacterSpec,
+//     src/human/humanCharacter.ts);
+//   - Avatar: the smooth, toy-like `api.sdf.figure` (CharacterSpec,
+//     src/figure/characterSpec.ts + characterCodegen.ts).
+// Sliders, dropdowns and colour swatches edit the active family's spec; the
+// panel generates self-contained code, previews it live, and commits it as a
+// saved version. The generated code embeds the spec as a header comment, so
+// re-opening the panel restores the family and every control. Switching
+// families carries the settings both have (body, hair, clothes, colours).
 //
 // Follows the shared viewport tool-panel conventions (createToolPanelShell) and
 // the command-palette + Tools-menu registration pattern used by the Surface and
@@ -18,6 +24,7 @@ import { getConfig } from '../config/appConfig';
 import { createSliderEntry } from './sliderEntry';
 import { registerTool, openTool, createToolNote, type ToolOpenContext, type ToolOpenResult } from './toolRegistry';
 import { assetPath } from '../deployment';
+import { readPerTabPref, writePerTabPref } from '../storage/perTabPref';
 import {
   type CharacterSpec,
   type CustomControlId,
@@ -47,23 +54,58 @@ import {
   humanize,
 } from '../figure/characterPanelLayout';
 import { randomSpec, seededRandom } from '../figure/characterRandom';
+import {
+  type CharacterFamily,
+  type HumanCharacterSpec,
+  DEFAULT_HUMAN_SPEC,
+  HUMAN_PRESETS,
+  HUMAN_POSES,
+  HUMAN_POSE_LABELS,
+  HUMAN_EXPRESSIONS,
+  HUMAN_TOPS,
+  HUMAN_SLEEVES,
+  HUMAN_NECKLINES,
+  HUMAN_BOTTOMS,
+  HUMAN_SKIRT_LENGTHS,
+  HUMAN_SHOES,
+  HUMAN_HATS,
+  HUMAN_EYEWEAR,
+  HUMAN_PROPS,
+  HUMAN_ARMOR,
+  cloneHumanSpec,
+  normalizeHumanSpec,
+  validateHumanSpec,
+  decodeHumanSpecComment,
+  randomHumanSpec,
+  humanSpecFromAvatar,
+  applyHumanToAvatar,
+} from '../human/humanCharacter';
+import { STYLE_PRESETS } from '../human/humanStyle';
+import { HAIR_STYLES, HAIR_FRINGES, BEARD_STYLES } from '../human/humanHair';
 
 /** The slice of the console API the panel drives. */
 export interface CharacterCreatorApi {
   /** Generate figure code from a spec, run it (and, when `save`, commit a
    *  version). Returns the generated code plus the run/save result. */
-  buildCharacter(spec: CharacterSpec, opts?: { save?: boolean }): Promise<{ code: string; error?: string; version?: unknown }>;
+  buildCharacter(spec: CharacterSpec | HumanCharacterSpec, opts?: { save?: boolean }): Promise<{ code?: string; error?: string; version?: unknown }>;
   /** Current editor code (to restore the spec when re-opening). */
   getCode(): string;
 }
 
 let openClose: (() => void) | null = null;
-let currentSpec: (() => CharacterSpec) | null = null;
+let currentSpec: (() => CharacterSpec | HumanCharacterSpec) | null = null;
+
+/** The family a fresh panel opens on: this tab's last pick (a new tab starts
+ *  from the most recent pick anywhere; see perTabPref). */
+const FAMILY_KEY = 'partwright-character-family';
+const storedFamily = (): CharacterFamily => (readPerTabPref(FAMILY_KEY) === 'avatar' ? 'avatar' : 'realistic');
+const storeFamily = (f: CharacterFamily): void => writePerTabPref(FAMILY_KEY, f);
 
 interface CharacterOpenOpts {
   /** A Character Creator spec (same shape as `buildCharacter`, partial specs
-   *  merge onto the default) to show in the controls — UNBUILT: the editor is
-   *  untouched until the user edits, presses Preview, or saves. */
+   *  merge onto the default; `family: 'realistic'` for an api.human one) to
+   *  show in the controls — UNBUILT: the editor is untouched until the user
+   *  edits, presses Preview, or saves. */
   spec?: unknown;
   note?: string;
   source?: ToolOpenContext['source'];
@@ -235,6 +277,21 @@ function fallbackFigure(spec: CharacterSpec): HTMLElement {
   return wrap;
 }
 
+/** The same stand-in for a Realistic preset whose baked image is missing. */
+function humanFallbackFigure(spec: HumanCharacterSpec): HTMLElement {
+  const wrap = el('div', 'flex flex-col items-center gap-px');
+  wrap.setAttribute('aria-hidden', 'true');
+  const head = el('span', 'w-5 h-5 rounded-full border-t-4');
+  head.style.background = spec.colors.skin;
+  head.style.borderTopColor = spec.hair.style === 'bald' ? spec.colors.skin : spec.colors.hair;
+  const torso = el('span', 'w-7 h-6 rounded-t-md');
+  torso.style.background = spec.armor.includes('cuirass') ? spec.colors.armor : spec.wear.top !== 'none' ? spec.colors.top : spec.colors.skin;
+  const legs = el('span', 'w-5 h-5');
+  legs.style.background = spec.wear.bottom !== 'none' ? spec.colors.bottom : spec.colors.skin;
+  wrap.append(head, torso, legs);
+  return wrap;
+}
+
 /** A collapsible group (native <details>) for the less-used knobs, so the panel
  *  stays short. `open` holds the ids the user expanded — it survives the
  *  wholesale control rebuilds. */
@@ -262,15 +319,25 @@ const round3 = (v: number): number => Math.round(v * 1000) / 1000;
 export function openCharacterCreatorPanel(api: CharacterCreatorApi, openOpts?: CharacterOpenOpts): ToolOpenResult {
   // Validate a handed-in spec before touching any open panel.
   let initialSpec: CharacterSpec | null = null;
+  let initialHuman: HumanCharacterSpec | null = null;
   if (openOpts?.spec !== undefined) {
     if (!openOpts.spec || typeof openOpts.spec !== 'object' || Array.isArray(openOpts.spec)) {
-      return { error: 'spec must be a Character Creator spec object (see /ai/figure.md)' };
+      return { error: 'spec must be a Character Creator spec object (see /ai/figure.md, or /ai/human.md for family: "realistic")' };
     }
-    const normalized = normalizeSpec(openOpts.spec);
-    const problems = validateSpec(normalized);
-    if (problems.length > 0) return { error: `spec: ${problems.join('; ')}` };
-    initialSpec = normalized;
+    if ((openOpts.spec as { family?: unknown }).family === 'realistic') {
+      const problems = validateHumanSpec(openOpts.spec);
+      if (problems.length > 0) return { error: `spec: ${problems.join('; ')}` };
+      initialHuman = normalizeHumanSpec(openOpts.spec);
+    } else {
+      const { family, ...rest } = openOpts.spec as Record<string, unknown>;
+      if (family !== undefined && family !== 'avatar') return { error: 'spec.family must be "realistic" or "avatar"' };
+      const normalized = normalizeSpec(rest);
+      const problems = validateSpec(normalized);
+      if (problems.length > 0) return { error: `spec: ${problems.join('; ')}` };
+      initialSpec = normalized;
+    }
   }
+  const handedIn = initialSpec !== null || initialHuman !== null;
   if (openClose) { openClose(); openClose = null; }
 
   // Live-preview debounce state — declared before the shell so onClose can
@@ -283,6 +350,7 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi, openOpts?: C
   // save's build); an edit made meanwhile queues one preview for after it.
   let saving = false;
   let previewAfterSave = false;
+  let lastPreviewError: string | null = null;
 
   const shell = createToolPanelShell({
     title: 'Character Creator',
@@ -293,16 +361,26 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi, openOpts?: C
 
   // Restore the spec from the current code if it was made here; otherwise start
   // from the default (and remember whether it's safe to auto-preview on open).
-  // A handed-in spec (AI / API) wins, shown unbuilt.
-  const existing = decodeSpecComment(api.getCode());
-  let spec: CharacterSpec = initialSpec ?? (existing ? existing : cloneSpec(DEFAULT_SPEC));
-  currentSpec = () => spec;
-  const currentCodeEmpty = api.getCode().trim() === '';
+  // A handed-in spec (AI / API) wins, shown unbuilt. Each family keeps its own
+  // spec; the inactive one is seeded from the active one, so a switch starts
+  // from the settings both share.
+  const code0 = api.getCode();
+  const existing = decodeSpecComment(code0);
+  const existingHuman = existing ? null : decodeHumanSpecComment(code0);
+  let family: CharacterFamily = initialHuman ? 'realistic' : initialSpec ? 'avatar'
+    : existingHuman ? 'realistic' : existing ? 'avatar' : storedFamily();
+  let spec: CharacterSpec = initialSpec ?? existing
+    ?? (existingHuman ? applyHumanToAvatar(existingHuman, cloneSpec(DEFAULT_SPEC)) : cloneSpec(DEFAULT_SPEC));
+  let hspec: HumanCharacterSpec = initialHuman ?? existingHuman
+    ?? ((initialSpec ?? existing) ? humanSpecFromAvatar(initialSpec ?? existing!) : cloneHumanSpec(DEFAULT_HUMAN_SPEC));
+  const activeSpec = (): CharacterSpec | HumanCharacterSpec => (family === 'realistic' ? hspec : spec);
+  currentSpec = activeSpec;
+  const currentCodeEmpty = code0.trim() === '';
 
   // Generating overwrites the editor buffer. When the panel opens over
   // unrelated hand-written code (not a character, not empty), confirm once
   // before the first destructive build so a stray slider can't silently wipe it.
-  let needsConfirm = !existing && !currentCodeEmpty;
+  let needsConfirm = !existing && !existingHuman && !currentCodeEmpty;
   const confirmClobber = async (): Promise<boolean> => {
     if (!needsConfirm) return true;
     const ok = await confirmDialog(
@@ -325,7 +403,11 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi, openOpts?: C
       if (saving) { previewAfterSave = true; return; }
       if (!(await confirmClobber())) return;
       if (closed) return; // panel was dismissed while the confirm dialog was open
-      void api.buildCharacter(spec, { save: false });
+      const r = await api.buildCharacter(activeSpec(), { save: false });
+      // Say why a preview didn't build (once per distinct error, so a slider
+      // drag doesn't stack toasts); the viewport otherwise just stays stale.
+      if (r.error && r.error !== lastPreviewError) showToast(r.error, { variant: 'warn', source: 'character' });
+      lastPreviewError = r.error ?? null;
     };
     if (opts?.immediate) { void fire(); return; }
     timer = window.setTimeout(fire, getConfig().ui.characterPreviewDebounceMs);
@@ -352,8 +434,42 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi, openOpts?: C
     preview({ immediate: true });
   };
 
-  const body = shell.body;
-  if (openOpts?.note) body.appendChild(createToolNote(openOpts.note, openOpts.source));
+  if (openOpts?.note) shell.body.appendChild(createToolNote(openOpts.note, openOpts.source));
+
+  // --- Family: Realistic (api.human) or Avatar (api.sdf.figure) ---
+  const familyHost = el('div', 'mt-1');
+  shell.body.appendChild(familyHost);
+  const avatarRoot = el('div', 'flex flex-col gap-1.5');
+  const humanRoot = el('div', 'flex flex-col gap-1.5');
+  shell.body.append(avatarRoot, humanRoot);
+  const body = avatarRoot;
+  function renderFamily(): void {
+    const row = segmentedRow('Type', family, [['realistic', 'Realistic'], ['avatar', 'Avatar']], v => switchFamily(v as CharacterFamily));
+    row.title = 'Realistic: a MakeHuman-based body (anatomy, real proportions). Avatar: a smooth, toy-like figure (Mii / VR-avatar look). Switching keeps the settings both share.';
+    row.dataset.testid = 'character-family';
+    familyHost.replaceChildren(row);
+    avatarRoot.hidden = family !== 'avatar';
+    humanRoot.hidden = family !== 'realistic';
+    // Only the active family's controls exist, so the page never holds two
+    // "Hair" or "Fringe" rows (switchFamily rebuilds the other on the way in).
+    (family === 'avatar' ? hControls : controls).replaceChildren();
+  }
+  function switchFamily(next: CharacterFamily): void {
+    if (next === family) return;
+    if (next === 'realistic') {
+      hspec = humanSpecFromAvatar(spec, hspec);
+      markHumanActive(null);
+      rebuildHuman();
+    } else {
+      spec = applyHumanToAvatar(hspec, spec);
+      markActive(null);
+      rebuild();
+    }
+    family = next;
+    storeFamily(next);
+    renderFamily();
+    preview({ immediate: true });
+  }
 
   // --- Start from a preset (scrollable pick-list) or roll a random one ---
   // Each card shows a baked thumbnail (public/character-presets/<id>.webp, see
@@ -584,6 +700,192 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi, openOpts?: C
 
   rebuild();
 
+  // --- Realistic (api.human) ---------------------------------------------------
+  // Hand-written controls over HumanCharacterSpec. Value edits re-preview after
+  // the debounce; choices that show or hide other controls re-render too.
+  const onEditH = (mutate: (s: HumanCharacterSpec) => void, opts?: { rerender?: boolean; immediate?: boolean }): void => {
+    mutate(hspec);
+    markHumanActive(null);
+    if (opts?.rerender) rebuildHuman();
+    preview({ immediate: opts?.immediate });
+  };
+
+  const hPresetHeader = el('div', 'flex items-center justify-between gap-2');
+  const hPresetTitle = sectionTitle('Start from a preset');
+  hPresetTitle.classList.remove('mt-1');
+  const hRandomBtn = el('button', `${BUTTON_SMALL_SECONDARY} ${TOUCH}`);
+  hRandomBtn.textContent = '🎲 Random';
+  hRandomBtn.title = RANDOM_TITLE;
+  hRandomBtn.addEventListener('click', () => {
+    const keepBase = hspec.base;
+    const seed = Math.floor(Math.random() * 2 ** 31);
+    hspec = randomHumanSpec(seededRandom(seed));
+    hspec.base = keepBase;
+    hRandomBtn.title = `${RANDOM_TITLE} — last roll: seed ${seed}`;
+    markHumanActive(null);
+    rebuildHuman();
+    preview({ immediate: true });
+  });
+  hPresetHeader.append(hPresetTitle, hRandomBtn);
+  const hPresetList = el('div', 'grid grid-cols-2 gap-1.5 max-h-[15rem] shrink-0 overflow-y-auto pr-0.5');
+  hPresetList.setAttribute('role', 'list');
+  hPresetList.setAttribute('aria-label', 'Realistic character presets');
+  const hCards = new Map<string, HTMLButtonElement>();
+  function markHumanActive(id: string | null): void {
+    for (const [cid, card] of hCards) {
+      const on = cid === id;
+      card.classList.toggle('border-blue-500', on);
+      card.classList.toggle('border-zinc-700', !on);
+      card.setAttribute('aria-pressed', String(on));
+    }
+  }
+  for (const p of HUMAN_PRESETS) {
+    const preset = p.patch();
+    const item = el('div');
+    item.setAttribute('role', 'listitem');
+    const card = el('button', 'w-full h-full flex flex-col items-stretch text-left rounded border border-zinc-700 bg-zinc-800/60 [@media(hover:hover)]:hover:bg-zinc-700/70 overflow-hidden transition-colors');
+    card.setAttribute('aria-label', p.label);
+    card.setAttribute('aria-pressed', 'false');
+    card.title = `${p.label} — ${p.description}`;
+    // Baked like the Avatar cards (`npm run bake:character-presets -- --family
+    // realistic`); the colour silhouette stands in if the image is missing.
+    const thumbWrap = el('div', 'relative h-20 bg-[#f4f4f6] flex items-center justify-center');
+    const strip = el('div', 'absolute inset-x-0 bottom-0 h-1.5 flex');
+    for (const hex of [preset.colors.skin, preset.colors.hair, preset.colors.top, preset.colors.bottom]) {
+      const seg = el('span', 'flex-1');
+      seg.style.background = hex;
+      strip.appendChild(seg);
+    }
+    const img = el('img', 'h-full w-full object-contain');
+    img.alt = '';
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.src = assetPath(`/character-presets/${p.id}.webp`);
+    img.addEventListener('error', () => { img.remove(); thumbWrap.prepend(humanFallbackFigure(preset)); });
+    thumbWrap.append(img, strip);
+    const text = el('div', 'px-1.5 py-1');
+    const name = el('div', 'text-[12px] text-zinc-100 font-medium leading-tight truncate');
+    name.textContent = p.label;
+    const desc = el('div', 'text-[10px] text-zinc-400 leading-tight line-clamp-2');
+    desc.textContent = p.description;
+    text.append(name, desc);
+    card.append(thumbWrap, text);
+    card.addEventListener('click', () => { hspec = p.patch(); markHumanActive(p.id); rebuildHuman(); preview({ immediate: true }); });
+    hCards.set(p.id, card);
+    item.appendChild(card);
+    hPresetList.appendChild(item);
+  }
+  const hControls = el('div', 'flex flex-col gap-1.5');
+  humanRoot.append(hPresetHeader, hPresetList, hControls);
+  const hOpen = new Set<string>();
+
+  const opt = (values: readonly string[], labels: Record<string, string> = {}): [string, string][] =>
+    values.map(v => [v, labels[v] ?? humanize(v)] as [string, string]);
+  /** A select whose choice may show or hide other controls. */
+  const hSelect = (label: string, value: string, values: readonly string[], set: (s: HumanCharacterSpec, v: string) => void, labels?: Record<string, string>) =>
+    selectRow(label, value, opt(values, labels), v => onEditH(s => set(s, v), { rerender: true, immediate: true }));
+  const hSlider = (label: string, value: number, min: number, max: number, step: number, set: (s: HumanCharacterSpec, v: number) => void, hard?: { min?: number; max?: number }) =>
+    sliderRow(label, value, min, max, step, v => onEditH(s => set(s, v)), hard);
+  const hToggle = (label: string, value: boolean, set: (s: HumanCharacterSpec, v: boolean) => void) =>
+    toggleRow(label, value, v => onEditH(s => set(s, v), { rerender: true }));
+  const hColor = (label: string, value: string, set: (s: HumanCharacterSpec, v: string) => void) =>
+    colorRow(label, value, v => onEditH(s => set(s, v)));
+  const NONE = { none: 'None' };
+
+  function rebuildHuman(): void {
+    const h = hspec;
+    const w = h.wear;
+    hControls.replaceChildren();
+    const section = (title: string, rows: HTMLElement[]) => { hControls.append(sectionTitle(title), ...rows); };
+    const folded = (id: string, title: string, rows: HTMLElement[]) => {
+      const c = collapsible(id, title, hOpen);
+      c.body.append(...rows);
+      hControls.append(c.wrap);
+    };
+    section('Look', [
+      hSelect('Proportions', h.style, STYLE_PRESETS, (s, v) => { s.style = v as HumanCharacterSpec['style']; }, { funko: 'Vinyl toy' }),
+      hSelect('Expression', h.expression, HUMAN_EXPRESSIONS, (s, v) => { s.expression = v; }),
+      hSelect('Pose', h.pose, HUMAN_POSES, (s, v) => { s.pose = v as HumanCharacterSpec['pose']; }, HUMAN_POSE_LABELS),
+    ]);
+    section('Body', [
+      hSlider('Height', h.height, 20, 120, 1, (s, v) => { s.height = v; }, { min: 5, max: 2000 }),
+      hSlider('Female ↔ male', h.body.gender, 0, 1, 0.01, (s, v) => { s.body.gender = v; }),
+      hSlider('Age', h.body.age, 1, 90, 1, (s, v) => { s.body.age = v; }),
+      hSlider('Muscle', h.body.muscle, 0, 1, 0.01, (s, v) => { s.body.muscle = v; }),
+      hSlider('Weight', h.body.weight, 0, 1, 0.01, (s, v) => { s.body.weight = v; }),
+      hSlider('Stature', h.body.stature, 0, 1, 0.01, (s, v) => { s.body.stature = v; }),
+      hSlider('Bust', h.body.breast, 0, 1, 0.01, (s, v) => { s.body.breast = v; }),
+    ]);
+    folded('h-shape', 'Face and torso shape', [
+      hSlider('Jaw width', h.face.jawWidth, -1, 1, 0.05, (s, v) => { s.face.jawWidth = v; }),
+      hSlider('Chin', h.face.chin, -1, 1, 0.05, (s, v) => { s.face.chin = v; }),
+      hSlider('Cheekbones', h.face.cheekbones, -1, 1, 0.05, (s, v) => { s.face.cheekbones = v; }),
+      hSlider('Nose width', h.face.noseWidth, -1, 1, 0.05, (s, v) => { s.face.noseWidth = v; }),
+      hSlider('Nose length', h.face.noseLength, -1, 1, 0.05, (s, v) => { s.face.noseLength = v; }),
+      hSlider('Mouth width', h.face.mouthWidth, -1, 1, 0.05, (s, v) => { s.face.mouthWidth = v; }),
+      hSlider('Eye size', h.face.eyeSize, -1, 1, 0.05, (s, v) => { s.face.eyeSize = v; }),
+      hSlider('Square head', h.face.headSquare, 0, 1, 0.05, (s, v) => { s.face.headSquare = v; }),
+      hSlider('Shoulder taper', h.torso.vShape, -1, 1, 0.05, (s, v) => { s.torso.vShape = v; }),
+      hSlider('Belly', h.torso.belly, -1, 1, 0.05, (s, v) => { s.torso.belly = v; }),
+    ]);
+    const hair: HTMLElement[] = [
+      hSelect('Hair', h.hair.style, HAIR_STYLES, (s, v) => { s.hair.style = v as HumanCharacterSpec['hair']['style']; }),
+    ];
+    if (h.hair.style !== 'bald') {
+      hair.push(
+        hSelect('Fringe', h.hair.fringe, HAIR_FRINGES, (s, v) => { s.hair.fringe = v as HumanCharacterSpec['hair']['fringe']; }, NONE),
+        hSlider('Hair length', h.hair.length, 0.3, 2.5, 0.05, (s, v) => { s.hair.length = v; }),
+        hSlider('Hair volume', h.hair.volume, 0.3, 2.5, 0.05, (s, v) => { s.hair.volume = v; }),
+      );
+    }
+    hair.push(hSelect('Beard', h.hair.beard, BEARD_STYLES, (s, v) => { s.hair.beard = v as HumanCharacterSpec['hair']['beard']; }, NONE));
+    section('Hair', hair);
+    const clothes: HTMLElement[] = [hSelect('Top', w.top, HUMAN_TOPS, (s, v) => { s.wear.top = v as HumanCharacterSpec['wear']['top']; }, { ...NONE, tshirt: 'T-shirt', top: 'Fitted top' })];
+    if (w.top !== 'none') {
+      clothes.push(
+        hSelect('Sleeves', w.sleeve, HUMAN_SLEEVES, (s, v) => { s.wear.sleeve = v as HumanCharacterSpec['wear']['sleeve']; }, { none: 'None (tank top)' }),
+        hSelect('Neckline', w.neckline, HUMAN_NECKLINES, (s, v) => { s.wear.neckline = v as HumanCharacterSpec['wear']['neckline']; }, { v: 'V-neck' }),
+      );
+    }
+    clothes.push(hSelect('Bottom', w.bottom, HUMAN_BOTTOMS, (s, v) => { s.wear.bottom = v as HumanCharacterSpec['wear']['bottom']; }, NONE));
+    if (w.bottom === 'skirt') clothes.push(hSelect('Skirt length', w.skirtLength, HUMAN_SKIRT_LENGTHS, (s, v) => { s.wear.skirtLength = v as HumanCharacterSpec['wear']['skirtLength']; }));
+    clothes.push(
+      hSelect('Footwear', w.shoes, HUMAN_SHOES, (s, v) => { s.wear.shoes = v as HumanCharacterSpec['wear']['shoes']; }, { ...NONE, shoes: 'Shoes' }),
+      hToggle('Socks', w.socks, (s, v) => { s.wear.socks = v; }),
+      hToggle('Belt', w.belt, (s, v) => { s.wear.belt = v; }),
+      hToggle('Gloves', w.gloves, (s, v) => { s.wear.gloves = v; }),
+      hToggle('Scarf', w.scarf, (s, v) => { s.wear.scarf = v; }),
+    );
+    section('Clothing', clothes);
+    folded('h-armor', h.armor.length ? `Armor (${h.armor.length})` : 'Armor', HUMAN_ARMOR.map(item =>
+      hToggle(humanize(item), h.armor.includes(item), (s, on) => {
+        s.armor = HUMAN_ARMOR.filter(a => (a === item ? on : s.armor.includes(a)));
+      })));
+    folded('h-gear', 'Hat, props and accessories', [
+      hSelect('Hat', h.hat, HUMAN_HATS, (s, v) => { s.hat = v as HumanCharacterSpec['hat']; }, { ...NONE, tophat: 'Top hat', wizardhat: 'Wizard hat' }),
+      hSelect('Glasses', h.eyewear, HUMAN_EYEWEAR, (s, v) => { s.eyewear = v as HumanCharacterSpec['eyewear']; }, NONE),
+      hSelect('Right hand', h.hold.R, HUMAN_PROPS, (s, v) => { s.hold.R = v as HumanCharacterSpec['hold']['R']; }, { none: 'Empty' }),
+      hSelect('Left hand', h.hold.L, HUMAN_PROPS, (s, v) => { s.hold.L = v as HumanCharacterSpec['hold']['L']; }, { none: 'Empty' }),
+      hToggle('Necklace', h.necklace, (s, v) => { s.necklace = v; }),
+      hToggle('Backpack', h.backpack, (s, v) => { s.backpack = v; }),
+      hToggle('Cape', h.cape, (s, v) => { s.cape = v; }),
+    ]);
+    folded('h-colors', 'Colours', [
+      hColor('Skin', h.colors.skin, (s, v) => { s.colors.skin = v; }),
+      hColor('Eyes', h.colors.iris, (s, v) => { s.colors.iris = v; }),
+      hColor('Lips', h.colors.lips, (s, v) => { s.colors.lips = v; }),
+      hColor('Hair', h.colors.hair, (s, v) => { s.colors.hair = v; }),
+      hColor('Top', h.colors.top, (s, v) => { s.colors.top = v; }),
+      hColor('Bottom', h.colors.bottom, (s, v) => { s.colors.bottom = v; }),
+      hColor('Footwear', h.colors.shoes, (s, v) => { s.colors.shoes = v; }),
+      hColor('Armor', h.colors.armor, (s, v) => { s.colors.armor = v; }),
+      hColor('Hat, cape, scarf', h.colors.accent, (s, v) => { s.colors.accent = v; }),
+    ]);
+    section('Print', [hToggle('Stand under the feet', h.base, (s, v) => { s.base = v; })]);
+  }
+  rebuildHuman();
+  renderFamily();
+
   // --- Footer: Save ---
   const saveBtn = el('button', BUTTON_PRIMARY);
   saveBtn.textContent = 'Save to session';
@@ -599,7 +901,7 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi, openOpts?: C
       if (!(await confirmClobber())) return;
       saveBtn.disabled = true;
       saveBtn.textContent = 'Saving…';
-      const r = await api.buildCharacter(spec, { save: true });
+      const r = await api.buildCharacter(activeSpec(), { save: true });
       if (r.error) showToast(r.error, { variant: 'warn', source: 'character' });
       else showToast('Character saved as a new version', { variant: 'success', source: 'character' });
     } finally {
@@ -611,7 +913,7 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi, openOpts?: C
     }
   });
   // A handed-in spec opens unbuilt: offer an explicit Preview beside Save.
-  if (initialSpec) {
+  if (handedIn) {
     const previewBtn = el('button', BUTTON_SMALL_SECONDARY);
     previewBtn.textContent = 'Preview';
     previewBtn.title = 'Build this character in the viewport (does not save)';
@@ -623,8 +925,9 @@ export function openCharacterCreatorPanel(api: CharacterCreatorApi, openOpts?: C
   // Auto-preview on open only when it can't clobber unsaved work: an existing
   // character (already on screen — just refresh) or an empty editor. Never for
   // a handed-in spec — the user decides when to build it.
-  if (!initialSpec && (existing || currentCodeEmpty)) preview();
-  return { applied: initialSpec ? { spec: cloneSpec(initialSpec) } : {}, ignored: [] };
+  if (!handedIn && (existing || existingHuman || currentCodeEmpty)) preview();
+  const applied = initialHuman ? { spec: cloneHumanSpec(initialHuman) } : initialSpec ? { spec: cloneSpec(initialSpec) } : {};
+  return { applied, ignored: [] };
 }
 
 /** Wire the Character Creator into the command palette and the Tools menu. */
@@ -634,10 +937,10 @@ export function initCharacterCreatorUI(api: CharacterCreatorApi): void {
     title: 'Character Creator',
     hint: 'Figure',
     prefillSchema: {
-      spec: { type: 'object', description: 'Character Creator spec (same shape as buildCharacter; partial specs merge onto the default). Shown unbuilt.' },
+      spec: { type: 'object', description: 'Character Creator spec (same shape as buildCharacter; partial specs merge onto the default; family "realistic" for api.human). Shown unbuilt.' },
     },
     open: (prefill, ctx) => openCharacterCreatorPanel(api, { spec: prefill?.spec, note: ctx.note, source: ctx.source }),
-    getState: () => (currentSpec ? { spec: cloneSpec(currentSpec()) } : null),
+    getState: () => (currentSpec ? { spec: JSON.parse(JSON.stringify(currentSpec())) as unknown } : null),
     isOpen: () => openClose !== null,
     close: () => openClose?.(),
   });
@@ -660,7 +963,7 @@ export function initCharacterCreatorUI(api: CharacterCreatorApi): void {
     const btn = el('button', btnCls);
     btn.id = 'character-viewport-toggle';
     btn.textContent = '🧍 Character';
-    btn.title = 'Create a posed, painted human figure with no code';
+    btn.title = 'Create a posed, painted character with no code: realistic or avatar style';
     btn.addEventListener('click', () => openCharacterCreatorPanel(api));
     host.appendChild(btn);
   };

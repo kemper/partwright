@@ -76,6 +76,22 @@ describe('rasterizeOccupancy', () => {
     expect(count).toBeGreaterThan(5 * 5 * 5);
     expect(count).toBeLessThan(8 * 8 * 8);
   });
+
+  it("'nonzero' keeps a self-overlapping surface solid where parity cancels it", () => {
+    // Two overlapping boxes as ONE mesh (no boolean): the overlap is crossed
+    // twice going in, so parity reads it as outside; winding reads it as 2.
+    const a = boxMesh([-3, -3, -3], [1, 3, 3]);
+    const b = boxMesh([-1, -3, -3], [3, 3, 3]);
+    const both: MeshLike = {
+      vertProperties: new Float32Array([...a.vertProperties, ...b.vertProperties]),
+      triVerts: new Uint32Array([...a.triVerts, ...Array.from(b.triVerts, (v) => v + 8)]),
+      numProp: 3, numTri: 24,
+    };
+    const at = (g: Uint8Array, i: number, j: number, k: number) => g[i + j * 20 + k * 400];
+    expect(at(rasterizeOccupancy(both, spec), 5, 5, 5)).toBe(0);              // x=0: in both boxes
+    expect(at(rasterizeOccupancy(both, spec, 'nonzero'), 5, 5, 5)).toBe(1);
+    expect(at(rasterizeOccupancy(both, spec, 'nonzero'), 0, 5, 5)).toBe(0);   // x=−5: outside
+  });
 });
 
 describe('edt3dSquared', () => {
