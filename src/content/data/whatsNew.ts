@@ -26,6 +26,43 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'November 10, 2026',
+    headline: 'Partwright 1.14 — Realistic characters in the creator and chat',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.14.0',
+            body: 'A backward-compatible release — existing sessions and exported files all keep working.',
+          },
+        ],
+      },
+      {
+        label: 'Modeling',
+        items: [
+          {
+            title: 'Character creator: Realistic or Avatar',
+            body: 'The character creator now lets you pick a Realistic person (built on api.human) or an Avatar. Switching type and back keeps your character, and the Realistic presets show baked thumbnails plus a feature list for each type.',
+          },
+          {
+            title: 'Chat AI builds Realistic characters',
+            body: 'The in-app AI can now create Realistic characters directly, and repeated tool descriptions were shortened so chats start lighter.',
+          },
+        ],
+      },
+      {
+        label: 'Fixes',
+        items: [
+          {
+            title: 'Smiles no longer push the mouth through a mustache',
+            body: 'A smiling expression now keeps the mouth clear of a mustache instead of poking through it.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'November 3, 2026',
     headline: 'Partwright 1.13 — split into pieces, AI cost controls, big-session fixes',
     groups: [
