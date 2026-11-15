@@ -10987,7 +10987,7 @@ async function main() {
   // ideas page's prefill behaviour.
   setCommandPaletteFallback({
     label: (q) => `Ask the AI: “${q}”`,
-    run: (q) => prefillAiInput(q),
+    run: (q) => prefillAiInput(q, { keepDraft: true }),
   });
 
   // Init gallery — `loadVersion` (in gallery.ts) has already updated state to

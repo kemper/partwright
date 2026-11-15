@@ -532,8 +532,8 @@ export function onAiTurnEnd(fn: () => void): void {
 /** Open the AI panel (if closed) and drop `text` into the chat input without
  *  sending it — the user reads/tweaks it and hits send themselves. Used by the
  *  prompt library, the /ideas page and the command palette's "Ask the AI"
- *  row. An existing draft is kept: the text is appended below it. */
-export function prefillAiInput(text: string): void {
+ *  row (which passes `keepDraft`, appending below an existing draft). */
+export function prefillAiInput(text: string, opts: { keepDraft?: boolean } = {}): void {
   if (!inputEl) {
     // Drawer not built yet — queue it; initAiPanel applies it once the input
     // exists (covers the /editor?idea= deep-link that runs during boot).
@@ -541,10 +541,11 @@ export function prefillAiInput(text: string): void {
     return;
   }
   if (!state.open) showDrawer(false);
-  // Never clobber a half-typed message: the command palette's "Ask the AI"
-  // can fire at any time, so append below an existing draft instead.
+  // `keepDraft`: never clobber a half-typed message (the command palette's
+  // "Ask the AI" can fire at any time) — append below it instead. Prompt
+  // pickers leave it off so choosing a different prompt replaces the last.
   const draft = inputEl.value.trim();
-  const next = draft && draft !== text.trim() ? `${inputEl.value.replace(/\s+$/, '')}\n\n${text}` : text;
+  const next = opts.keepDraft && draft && draft !== text.trim() ? `${inputEl.value.replace(/\s+$/, '')}\n\n${text}` : text;
   inputEl.value = next;
   inputEl.focus();
   const end = next.length;

@@ -55,9 +55,9 @@ sandbox's, where only ~9 px was left). `searchEntry` is now `'tooltip' |
 'button'`: Tools only mentions ⌘K in its tooltip; the short Inspect menu keeps
 the icon entry. The full-row fragility is filed as #1274.
 
-**Review follow-ups** (work-reviewer, no blockers): `prefillAiInput` now
-appends below an existing draft instead of overwriting it (the palette's "Ask
-the AI" can fire mid-typing; slash commands clear the input first, so they're
-unaffected); browse sections are `role="group"` with an aria-label, since a
+**Review follow-ups** (work-reviewer, no blockers): `prefillAiInput` takes
+`{ keepDraft }`, which the palette's "Ask the AI" passes so it appends below a
+half-typed message instead of overwriting it (prompt pickers still replace, so
+picking a different prompt doesn't stack them); browse sections are `role="group"` with an aria-label, since a
 listbox may only own options and groups; the hint names the visible "Search"
 button rather than the 2xl-only "Search tools…" label.
