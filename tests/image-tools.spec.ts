@@ -80,8 +80,12 @@ test.describe('Image tools', () => {
     await expect(panel.getByTestId('image-tools-list').getByRole('button')).toHaveCount(6);
     await page.screenshot({ path: 'test-results/image-tools-panel.png' });
 
-    // A relief tool opens its wizard pre-loaded with the attached image.
-    await panel.getByRole('button', { name: /Keychain \/ colour tile/ }).click();
+    // Picking a tool selects it and previews it; Open launches its wizard,
+    // pre-loaded with the attached image.
+    await panel.getByTestId('image-tools-list').getByRole('button', { name: /Keychain \/ colour tile/ }).click();
+    await expect(panel.getByTestId('image-tools-list').getByRole('button', { name: /Keychain \/ colour tile/ })).toHaveAttribute('aria-pressed', 'true');
+    await expect(panel.getByTestId('image-tools-preview-caption')).toContainText(/Preview · \d+×\d+ · \d+ colours/, { timeout: 15_000 });
+    await panel.getByTestId('image-tools-open').click();
     await expect(page.getByRole('dialog', { name: 'Make a part from an image' })).toBeVisible({ timeout: 15_000 });
     await page.waitForTimeout(1500);
     await page.screenshot({ path: 'test-results/image-tools-wizard.png' });
@@ -92,4 +96,92 @@ test.describe('Image tools', () => {
     const viaWizard = await page.evaluate(() => (window as any).partwright.getImageToolOp());
     expect(viaWizard.tool).toBe('tile');
   });
+
+  test('the Relief Studio follows the open object, not the session', async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.addInitScript(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* ignore */ } });
+    await page.goto('/editor');
+    await page.waitForFunction(() => !!(window as any).partwright?.applyImageTool);
+    await page.evaluate(async () => {
+      const pw = (window as any).partwright;
+      for (let i = 0; i < 60; i++) {
+        const p = await pw.runAndSave('return api.Manifold.cube([1, 1, 1], true);', 'probe', {});
+        if (p && !p.error && p.version) return;
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    });
+    const src = await syntheticImage(page);
+    const ids = await page.evaluate(async (src) => {
+      const pw = (window as any).partwright;
+      const tile = await pw.applyImageTool({ tool: 'tile', src, name: 'badge', params: { common: { resolution: 64 }, quantized: { clusters: 4 } } });
+      const image = pw.getImageToolOp().image;
+      const vox = await pw.applyImageTool({ tool: 'voxel', image, params: { maxSize: 20 } });
+      return { tile: tile.object.id as string, vox: vox.object.id as string, err: tile.error ?? vox.error };
+    }, src);
+    expect(ids.err).toBeUndefined();
+    const studio = page.locator('#relief-studio');
+    // The voxel object (made from the same image) is open: no studio.
+    await expect(studio).toBeHidden({ timeout: 15_000 });
+    await expect(page.locator('#relief-viewport-toggle')).toBeHidden();
+    const blocked = await page.evaluate(() => (window as any).partwright.setReliefPreviewMode('ams'));
+    expect(blocked.error).toMatch(/not a relief/);
+    // Back to the tile object: the studio returns.
+    await page.evaluate((id) => (window as any).partwright.changeObject(id), ids.tile);
+    await expect(studio).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator('#relief-viewport-toggle')).toBeVisible();
+    await page.screenshot({ path: 'test-results/image-tools-studio-tile.png' });
+    // And away again.
+    await page.evaluate((id) => (window as any).partwright.changeObject(id), ids.vox);
+    await expect(studio).toBeHidden({ timeout: 15_000 });
+  });
+
+  test('prep an image (API + panel) and preview each tool', async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.addInitScript(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* ignore */ } });
+    await page.goto('/editor');
+    await page.waitForFunction(() => !!(window as any).partwright?.prepImage);
+    const src = await syntheticImage(page);
+    const res = await page.evaluate(async (src) => {
+      const pw = (window as any).partwright;
+      await pw.setImages([{ src, id: 'src1', label: 'poster.png' }]);
+      const bad = await pw.prepImage({ image: 'src1', blur: 2 });
+      const noop = await pw.prepImage({ image: 'src1' });
+      const missing = await pw.prepImage({ image: 'nope', contrast: 0.1 });
+      const ok = await pw.prepImage({ image: 'src1', crop: { left: 0.25, top: 0, right: 1, bottom: 1 }, contrast: 0.2, removeBackground: true });
+      const imgs = pw.getImages().map((i: { id: string; label?: string }) => ({ id: i.id, label: i.label }));
+      return { bad, noop, missing, ok, imgs };
+    }, src);
+    expect(res.bad.error).toMatch(/unknown option "blur"/);
+    expect(res.noop.error).toMatch(/nothing to do/);
+    expect(res.missing.error).toMatch(/no image attachment/);
+    expect(res.ok.error).toBeUndefined();
+    expect(res.ok.width).toBe(120);
+    expect(res.ok.height).toBe(120);
+    expect(res.ok.backgroundRemoved).toBe(true);
+    expect(res.imgs).toContainEqual({ id: 'src1', label: 'poster.png' });
+    expect(res.imgs).toContainEqual({ id: res.ok.image, label: 'poster (prepped)' });
+
+    // Panel: select the original, preview tools, prep it, open a tool on the copy.
+    await page.evaluate(() => (window as any).partwright.openImageTools());
+    const panel = page.getByRole('dialog', { name: 'Image tools' });
+    await panel.getByRole('button', { name: 'Use image poster.png' }).click();
+    const caption = panel.getByTestId('image-tools-preview-caption');
+    await expect(caption).toContainText(/colours/, { timeout: 15_000 });
+    await panel.getByTestId('image-tools-list').getByRole('button', { name: /Voxel art/ }).click();
+    await expect(caption).toContainText(/voxels/, { timeout: 15_000 });
+    await panel.getByTestId('image-tools-list').getByRole('button', { name: /Layered filament print/ }).click();
+    await expect(caption).toContainText(/solved in the dialog/, { timeout: 15_000 });
+    await panel.getByTestId('image-tools-list').getByRole('button', { name: /Silhouette tile/ }).click();
+    await panel.getByTestId('image-tools-prep').locator('summary').click();
+    await panel.getByTestId('image-tools-prep-bg').check();
+    await expect(caption).toContainText(/colours/, { timeout: 15_000 });
+    await page.waitForTimeout(500);
+    await panel.screenshot({ path: 'test-results/image-tools-prep-panel.png' });
+    const before = await page.evaluate(() => (window as any).partwright.getImages().length);
+    await panel.getByTestId('image-tools-open').click();
+    // Opening with unsaved prep saves the prepped copy first, then the wizard opens on it.
+    await expect(page.getByRole('dialog', { name: 'Make a part from an image' })).toBeVisible({ timeout: 15_000 });
+    expect(await page.evaluate(() => (window as any).partwright.getImages().length)).toBe(before + 1);
+  });
 });
+

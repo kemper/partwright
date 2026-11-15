@@ -153,6 +153,36 @@ partwright.openImageTools()   // the Image tools panel (Import â†’ Image toolsâ€
   options; `layeredPrint` the `api.layeredPrint` options.
 - Results land in the current session (where the image is attached) as a new
   object; `replace: true` re-applies to the open object.
+- The **Relief Studio** follows the open object: it shows for an object a
+  relief tool made, and hides for a voxel or layered-print object made from
+  the same image. (Reliefs from before image tools keep their studio.)
+- The panel previews the selected tool on the selected image (a small sampled
+  raster, before its wizard opens).
+
+### Image prep
+
+Crop, tone and background removal happen **once, on the image**, before any
+tool: `prepImage` saves a NEW image attachment (`"<name> (prepped)"`) and the
+original stays, so every tool reads plain pixels. In the panel: **Prep image**
+(drag the crop box, sliders, "Remove background"); opening a tool with unsaved
+prep saves the copy first.
+
+```js
+const { image } = await partwright.prepImage({
+  image: '<attachment id>',
+  crop: { left: 0.1, top: 0, right: 0.9, bottom: 1 },   // normalised 0..1
+  contrast: 0.2, brightness: 0,                            // -1..1
+  levelsLow: 10, levelsHigh: 245,                          // black / white points
+  removeBackground: true,                                  // or backgroundColor: [r, g, b]
+});
+await partwright.applyImageTool({ tool: 'silhouette', image });
+```
+
+- `removeBackground` makes the dominant border colour transparent; the result
+  says `backgroundRemoved: false` when the image has no clear backdrop. Tools
+  that read alpha (voxel, silhouette, layered print) drop the transparent area.
+- The tone sliders are the same maths as a relief tool's `preprocess`; prep
+  them once on the image when several tools should share the look.
 
 ## Layered photo prints
 

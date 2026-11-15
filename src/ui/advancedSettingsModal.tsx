@@ -1309,6 +1309,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={256} max={8192} integer
           onChange={v => set('import', 'layeredPrintMaxImagePx', v)}
         />
+        <Field cfgKey="import.imagePrepMaxPx"
+          label="Prepped image size"
+          unit="px"
+          hint="Longest side of a prepped image copy (Image tools → Prep image)."
+          tooltip="Cropping, levels and background removal save a new attached image. Sources larger than this are downscaled when prepped, which keeps the saved session small; every image tool samples far fewer pixels than this anyway."
+          defaultValue={APP_CONFIG_DEFAULTS.import.imagePrepMaxPx}
+          value={c.import.imagePrepMaxPx}
+          min={256} max={8192} integer
+          onChange={v => set('import', 'imagePrepMaxPx', v)}
+        />
         <Field cfgKey="import.threeMfMaxEntryMB"
           label="3MF max part size"
           unit="MB"
@@ -2347,6 +2357,24 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.reliefPreview3dDebounceMs}
           min={0} max={2_000} integer
           onChange={v => set('ui', 'reliefPreview3dDebounceMs', v)}
+        />
+        <Field cfgKey="ui.imageToolPreviewDebounceMs"
+          label="Image tools preview debounce"
+          unit="ms"
+          tooltip="Debounce delay for the live preview in the Image tools panel. It re-renders when you change the image, the tool, or a prep setting (crop, brightness, background); this delay keeps a slider drag from re-rendering on every step."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.imageToolPreviewDebounceMs}
+          value={c.ui.imageToolPreviewDebounceMs}
+          min={0} max={2_000} integer
+          onChange={v => set('ui', 'imageToolPreviewDebounceMs', v)}
+        />
+        <Field cfgKey="ui.imageToolPreviewMaxPx"
+          label="Image tools preview size"
+          unit="px"
+          tooltip="Long-side size of the Image tools panel's live preview. The image is decoded at twice this size for the preview, so larger values look sharper but cost more on big photos."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.imageToolPreviewMaxPx}
+          value={c.ui.imageToolPreviewMaxPx}
+          min={32} max={512} integer
+          onChange={v => set('ui', 'imageToolPreviewMaxPx', v)}
         />
         <Field cfgKey="ui.progressModalShowDelayMs"
           label="Progress modal show delay"

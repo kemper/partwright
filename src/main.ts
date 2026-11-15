@@ -205,7 +205,7 @@ import { initPlaceUI } from './ui/placeModal';
 import { generateRelief, generateReliefFromSvg } from './relief/imageToRelief';
 import { DEFAULT_RELIEF_OPTIONS, type ReliefOptions, type ReliefImportMode, type ReliefCommonOptions, type SeedRegion, type PreviewMode, type GenerateReliefResult } from './relief/types';
 import { computeReliefTriColors, getSwapGuideFor, setPreviewMode as ctlSetReliefPreviewMode, getPreviewMode as ctlGetReliefPreviewMode, isPreviewActive as isReliefPreviewActive } from './relief/reliefController';
-import { setReliefSettings, getReliefSettings, updateReliefSettings, isReliefSession, getPreviewModeFor } from './relief/reliefSettings';
+import { getReliefSettings, updateReliefSettings, recordReliefObject, isReliefObject, getPreviewModeFor } from './relief/reliefSettings';
 import { saveReliefSource, getReliefSource } from './relief/reliefSource';
 import {
   listFilaments, hexToRgb, getPaletteCapacity, setPaletteCapacity,
@@ -227,6 +227,7 @@ import { DEFAULT_LAYERED_PRINT_OPTIONS, type LayeredPrintOptions, type LayeredPr
 import { openLayeredPrintModal } from './ui/layeredPrintModal';
 import { openImageToolsModal } from './ui/imageToolsModal';
 import { IMAGE_TOOLS, imageToolInfo, imageToolOpFromCode, isImageToolId, formatImageToolHeader, withImageToolHeader, reliefOptionsForOp, toolForReliefOptions, voxelParams, type ImageToolId, type ImageToolOp } from './imageTools/descriptor';
+import { prepImagePixels, parseImagePrepOptions, describeImagePrep, isNoopPrep, type ImagePrepOptions } from './imageTools/prep';
 import { mountReliefStudio, type ReliefStudioHandle } from './ui/reliefStudio';
 import type { BuiltExport } from './export/gltf';
 
@@ -555,6 +556,31 @@ async function decodePhotoForLayeredPrint(src: Blob | string): Promise<{ image: 
   bitmap.close();
   const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
   return { image: await decodeAttachmentPixels(dataUrl), dataUrl };
+}
+
+/** Image tools prep (#1256): decode `src` (long side capped at App Config's
+ *  `import.imagePrepMaxPx`), apply crop / tone / background removal, and
+ *  re-encode as a PNG data URL (PNG keeps the removed background transparent). */
+async function prepImageSrc(src: string, prep: ImagePrepOptions): Promise<{ src: string; width: number; height: number; backgroundRemoved: boolean }> {
+  const bitmap = await loadPhotoBitmap(src);
+  const maxPx = getConfig().import.imagePrepMaxPx;
+  const scale = Math.min(1, maxPx / Math.max(bitmap.width, bitmap.height));
+  const w = Math.max(1, Math.round(bitmap.width * scale)), h = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas unavailable');
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  bitmap.close();
+  const out = prepImagePixels(ctx.getImageData(0, 0, w, h), prep);
+  const oc = document.createElement('canvas');
+  oc.width = out.width; oc.height = out.height;
+  const octx = oc.getContext('2d');
+  if (!octx) throw new Error('Canvas unavailable');
+  const id = octx.createImageData(out.width, out.height);
+  id.data.set(out.data);
+  octx.putImageData(id, 0, 0);
+  return { src: oc.toDataURL('image/png'), width: out.width, height: out.height, backgroundRemoved: out.backgroundRemoved };
 }
 
 /** Attachment src → RGBA (no resize — attachments made for layered prints are
@@ -3041,6 +3067,19 @@ function renderModelColorUnderlay(): void {
   }
 }
 
+/** Is the OPEN object a relief? Relief Studio, the relief optical preview and
+ *  the relief readouts follow the object, not the session (#1256): one image
+ *  can make a tile object and a voxel object side by side, and only the tile
+ *  is a relief. Decided from the object's saved code (an `@image-tool` header
+ *  names its tool) and the session's per-object relief list; legacy relief
+ *  sessions (no list) count every header-less object. */
+function reliefObjectActive(): boolean {
+  const st = getState();
+  const sid = st.session?.id;
+  if (!sid) return false;
+  return isReliefObject(getReliefSettings(sid), st.currentPart?.id ?? null, st.currentVersion?.code ?? null);
+}
+
 function paintedColorRefresh(): void {
   if (!currentMeshData) return;
   // Relief sessions in a non-flat preview mode show the optical (translucent /
@@ -3048,7 +3087,7 @@ function paintedColorRefresh(): void {
   // every paint path funnels through, so the preview tracks strokes, undo/redo,
   // and programmatic paints alike.
   const sid = getState().session?.id ?? null;
-  if (sid && isReliefSession(sid) && isReliefPreviewActive()) {
+  if (sid && reliefObjectActive() && isReliefPreviewActive()) {
     const lh = getReliefSettings(sid)?.layerHeight ?? 0.08;
     const preview = computeReliefTriColors(currentMeshData, lh);
     if (preview) {
@@ -4452,8 +4491,8 @@ async function main() {
 
   // Single source of truth for recoloring the displayed mesh: relief preview
   // when active (and only in a relief session — the preview mode is a module
-  // global, so gating on isReliefSession keeps a leftover mode from bleeding
-  // onto a normal session's mesh), otherwise the normal painted-region colors.
+  // global, so gating on reliefObjectActive keeps a leftover mode from bleeding
+  // onto a non-relief object's mesh), otherwise the normal painted-region colors.
   // Relief preview + normal painted-region coloring share one chokepoint
   // (module-level paintedColorRefresh) so the smooth-brush reconcile path and
   // the relief/AI paths stay in sync.
@@ -4461,11 +4500,11 @@ async function main() {
     paintedColorRefresh();
   }
 
-  // Restore the saved preview mode for the active session (reset to 'flat' for
-  // non-relief sessions so the global never carries over).
+  // Restore the saved preview mode for the open object (reset to 'flat' for a
+  // non-relief object so the global never carries over).
   function syncReliefPreviewFromSettings(): void {
     const sid = getState().session?.id ?? null;
-    ctlSetReliefPreviewMode(isReliefSession(sid) ? getPreviewModeFor(sid) : 'flat');
+    ctlSetReliefPreviewMode(reliefObjectActive() ? getPreviewModeFor(sid) : 'flat');
   }
 
   function showReliefStudio(): void {
@@ -4492,16 +4531,26 @@ async function main() {
     else showReliefStudio();
   }
 
-  // Show/hide the studio in response to a session change. Keeps the panel from
-  // hovering over an unrelated session, and re-syncs the preview mode pills
-  // from the new session's saved settings.
-  function syncReliefStudioForSession(): void {
+  // Show/hide the studio when the open object changes (another session, another
+  // object, or a re-apply that turned it into / out of a relief). Keeps the
+  // panel from hovering over a non-relief object — e.g. the voxel object made
+  // from the same image as a tile (#1256) — and re-syncs the preview mode pills
+  // from the session's saved settings. Remembers what it synced for, so the
+  // state-change hook only re-syncs on a real change and a studio the user
+  // closed stays closed while they work on the same object.
+  let reliefStudioSyncKey: string | null = null;
+  function reliefStudioKey(): string {
+    const st = getState();
+    return `${st.session?.id ?? ''}|${st.currentPart?.id ?? ''}|${reliefObjectActive() ? 1 : 0}`;
+  }
+  function syncReliefStudioForObject(): void {
     if (!reliefStudio) return;
-    const sid = getState().session?.id ?? null;
-    const isRelief = isReliefSession(sid);
+    reliefStudioSyncKey = reliefStudioKey();
+    const isRelief = reliefObjectActive();
     document.getElementById('relief-viewport-toggle')?.classList.toggle('hidden', !isRelief);
     if (isRelief) showReliefStudio();
     else {
+      syncReliefPreviewFromSettings();
       if (reliefStudio.isOpen()) reliefStudio.hide();
       if (studioCollapsedEditor) { expandEditor(); studioCollapsedEditor = false; }
     }
@@ -4739,7 +4788,8 @@ async function main() {
       }
       attachPendingImage(pending);
     }
-    setReliefSettings(sessionId, {
+    // The relief is THIS object (#1256), not the whole session.
+    recordReliefObject(sessionId, getState().currentPart?.id ?? null, {
       isRelief: true,
       layerHeight: opts.common.layerHeight,
       baseThickness: opts.common.baseThickness,
@@ -4751,7 +4801,7 @@ async function main() {
     if (sourceFile) {
       await saveReliefSource(sessionId, sourceFile, sourceFile.name || `${sourceName}${isSvg ? '.svg' : '.png'}`, isSvg);
     }
-    showReliefStudio();
+    syncReliefStudioForObject();
     return { sessionId };
   }
 
@@ -4909,10 +4959,10 @@ async function main() {
     await createSession(name, 'manifold-js', name);
   }
 
-  function attachImageSrc(src: string, label: string, id?: string): SessionAttachment {
+  function attachImageSrc(src: string, label: string, id?: string, description = 'Source image for image tools.'): SessionAttachment {
     const existing = id ? _getAttachments().find((a) => a.id === id) : undefined;
     if (existing) return existing;
-    const att = normalizeAttachment({ src, kind: 'image', label, description: 'Source image for image tools.', addedAt: Date.now(), source: 'user' }, id ?? generateId());
+    const att = normalizeAttachment({ src, kind: 'image', label, description, addedAt: Date.now(), source: 'user' }, id ?? generateId());
     commitAttachments([..._getAttachments(), att]);
     return att;
   }
@@ -4959,6 +5009,20 @@ async function main() {
   function attachmentFile(att: SessionAttachment): File {
     const blob = att.src.startsWith('data:') ? dataUrlToBlob(att.src) : new Blob([]);
     return new File([blob], att.label || 'image', { type: blob.type || att.mediaType || 'image/png' });
+  }
+
+  /** Image prep (#1256): a cropped / toned / background-removed copy of
+   *  attachment `imageId`, attached as a NEW image ("<name> (prepped)") so every
+   *  tool reads plain pixels and the original stays. The id is derived from the
+   *  result, so the same prep twice reuses one attachment. */
+  async function prepImageAttachment(imageId: string, prep: ImagePrepOptions): Promise<{ att: SessionAttachment; width: number; height: number; backgroundRemoved: boolean }> {
+    const src = imageAttachments().find((a) => a.id === imageId);
+    if (!src) throw new Error(`no image attachment "${imageId}" in this session`);
+    if (isNoopPrep(prep)) throw new Error('nothing to do — pass crop, brightness, contrast, saturation, levelsLow/levelsHigh or removeBackground');
+    const out = await prepImageSrc(src.src, prep);
+    const base = (src.label || 'image').replace(/\.[^.]+$/, '').replace(/ \(prepped\)$/, '');
+    const att = attachImageSrc(out.src, `${base} (prepped)`, imageAttachmentIdFor(out.src), `Prepped from "${src.label || src.id}" (${src.id}): ${describeImagePrep(prep)}.`);
+    return { att, width: out.width, height: out.height, backgroundRemoved: out.backgroundRemoved };
   }
 
   /** The open object's image-tool record (header, or a layered print's call). */
@@ -5038,6 +5102,10 @@ async function main() {
       addImage: async (file) => {
         const a = await attachImageFile(file);
         return { id: a.id, src: a.src, label: a.label };
+      },
+      prepImage: async (image, prep) => {
+        const { att } = await prepImageAttachment(image, prep);
+        return { id: att.id, src: att.src, label: att.label };
       },
       onChooseTool: (tool, image, o) => { void launchImageTool(tool, image, o); },
     });
@@ -9229,7 +9297,7 @@ async function main() {
       // with its stored source + settings (re-tune without re-uploading);
       // otherwise start a fresh blank import.
       const sid = getState().session?.id ?? null;
-      if (sid && isReliefSession(sid)) void reopenReliefImport(sid);
+      if (sid && reliefObjectActive()) void reopenReliefImport(sid);
       else openReliefImportFlow();
     },
     onCreateVoxel: () => { void openVoxelImportFlow(); },
@@ -12508,6 +12576,11 @@ async function main() {
     detectLevels: () => detectReliefLevels(),
     onClose: () => closeReliefStudio(),
     onEditImage: () => {
+      // An image-tool relief re-opens its tool on the attached image and
+      // re-applies to THIS object (#1256); a legacy relief reopens the wizard
+      // from the session's stored source.
+      const op = currentImageToolOp();
+      if (op && imageToolInfo(op.tool).engine === 'relief') { void launchImageTool(op.tool, op.image, { replace: true, params: op.params }); return; }
       const sid = getState().session?.id ?? null;
       if (sid) void reopenReliefImport(sid);
       else openReliefImportFlow();
@@ -13804,7 +13877,7 @@ async function main() {
       await enterSharedFromHash();
     } else {
       await syncEditorFromURL();
-      syncReliefStudioForSession();
+      syncReliefStudioForObject();
     }
   }
 
@@ -13833,6 +13906,9 @@ async function main() {
       void clearBrepShape().catch(() => {});
     }
     updateDocumentTitle({ page: 'editor', sessionName: state.session?.name ?? null });
+    // The Relief Studio follows the open object (#1256): re-sync when the
+    // session, the object, or the object's relief-ness changes.
+    if (reliefStudioKey() !== reliefStudioSyncKey) syncReliefStudioForObject();
     // Re-bind the AI panel to the current session so chat history follows.
     void setAiActiveSession(state.session?.id ?? null);
     // Claim (or queue for) write-ownership of the now-active session so two
@@ -18040,6 +18116,32 @@ async function main() {
     getImageToolOp(): unknown {
       return currentImageToolOp() ?? { error: 'getImageToolOp: the open object was not made by an image tool (no @image-tool header or api.layeredPrint call).' };
     },
+    /** Image prep (#1256): crop / tone / remove the background of an attached
+     *  image, saved as a NEW image attachment ("<name> (prepped)") that any
+     *  image tool can then use. The original attachment is kept. */
+    async prepImage(args: { image: string; crop?: { left?: number; top?: number; right?: number; bottom?: number }; brightness?: number; contrast?: number; saturation?: number; levelsLow?: number; levelsHigh?: number; removeBackground?: boolean; backgroundColor?: [number, number, number] }): Promise<unknown> {
+      const checked = guard(() => {
+        assertObject(args, 'prepImage(args)');
+        assertString(args.image, 'prepImage(image)');
+        return true;
+      });
+      if (typeof checked === 'object' && checked !== null && 'error' in checked) return checked;
+      let prep: ImagePrepOptions;
+      try {
+        const { image: _image, ...rest } = args as unknown as Record<string, unknown>;
+        prep = parseImagePrepOptions(rest, 'prepImage');
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : String(e) };
+      }
+      if (!imageAttachments().some((a) => a.id === args.image)) return { error: `prepImage: no image attachment "${args.image}" in this session. List them with getImages().` };
+      if (isNoopPrep(prep)) return { error: 'prepImage: nothing to do — pass crop, brightness, contrast, saturation, levelsLow/levelsHigh or removeBackground.' };
+      try {
+        const out = await prepImageAttachment(args.image, prep);
+        return { image: out.att.id, label: out.att.label, width: out.width, height: out.height, from: args.image, ...(prep.removeBackground ? { backgroundRemoved: out.backgroundRemoved } : {}) };
+      } catch (e) {
+        return { error: `prepImage failed: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    },
     /** Open the Image tools panel for the user. */
     openImageTools(): { ok: true } {
       openImageToolsPanel();
@@ -18229,8 +18331,8 @@ async function main() {
       // Guard the setter — without this an AI/console call into a non-relief
       // session writes a previewMode record into ReliefSettings for that
       // session and starts shading its mesh with relief-preview colours.
-      if (!sid || !isReliefSession(sid)) {
-        return { error: 'setReliefPreviewMode: no relief session active. Create one with importImageAsRelief first.' };
+      if (!sid || !reliefObjectActive()) {
+        return { error: 'setReliefPreviewMode: the open object is not a relief. Create one with importImageAsRelief (or an image tool) first.' };
       }
       ctlSetReliefPreviewMode(mode);
       updateReliefSettings(sid, { previewMode: mode });
@@ -24980,6 +25082,7 @@ async function main() {
         'getImageToolOp': { signature: 'getImageToolOp() -- The open object\'s image-tool record {tool, image, params} (from its @image-tool code header), or {error}', docs: '/ai/relief.md#image-tools' },
         'applyImageTool': { signature: "await applyImageTool({tool, image?: attachmentId, src?, params?, replace?, name?}) -- Make an object from an attached image with a tool (new object), or re-apply to the open object (replace: true; same-tool params merge over the stored ones) -> {tool, image, object, op} or {error}", docs: '/ai/relief.md#image-tools' },
         'openImageTools': { signature: 'openImageTools() -- Open the Image tools panel for the user', docs: '/ai/relief.md#image-tools' },
+        'prepImage': { signature: "await prepImage({image, crop?: {left, top, right, bottom} (0..1), brightness?, contrast?, saturation? (-1..1), levelsLow?, levelsHigh? (0..255), removeBackground?, backgroundColor?: [r,g,b]}) -- Crop / tone / remove the background of an attached image; saved as a NEW image attachment for the image tools -> {image: newAttachmentId, label, width, height, backgroundRemoved?} or {error}", docs: '/ai/relief.md#image-prep' },
         'createLayeredPrint': { signature: "await createLayeredPrint({src, colors?: 8, widthMm?: 120, maxHeightMm?: 2.4, baseHeightMm?, layerHeight?: 0.08, firstLayerHeight?: 0.16, pixelSizeMm?: 0.3, filaments?: [{name, hex, td}], baseFilament?, chromaWeight?, smoothing?, effort?, seed?, name?}) -- HueForge-style filament-layering print from a photo: picks filaments + swap layers + per-pixel heights, opens a new session -> {sessionId, blocks, swaps, meanDeltaE, ...} or {error}", docs: '/ai/relief.md#layered-photo-prints' },
         'getLayeredPrintPlan': { signature: 'getLayeredPrintPlan() -- The current layered print: filaments, swap layers/heights, instructions text -> plan or {error}', docs: '/ai/relief.md#layered-photo-prints' },
         'listLayeredPrintFilaments': { signature: 'listLayeredPrintFilaments() -- Built-in filament list (name, hex, TD mm) createLayeredPrint chooses from', docs: '/ai/relief.md#layered-photo-prints' },

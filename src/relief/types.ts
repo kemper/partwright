@@ -314,6 +314,13 @@ export interface ReliefSettings {
   baseThickness: number;
   previewMode: PreviewMode;
   options?: ReliefOptions;
+  /** The objects (part ids) in this session that are reliefs, so the Relief
+   *  Studio follows the OPEN object rather than the whole session (#1256: one
+   *  image can make a tile object and a voxel object side by side). Absent on
+   *  sessions saved before this was tracked — every object of such a session
+   *  counts as a relief unless its code says otherwise (an `@image-tool`
+   *  header naming a non-relief tool). */
+  objects?: string[];
   // The source image is NOT kept here — photos can exceed the localStorage
   // quota, so it lives in IndexedDB (the `reliefSources` store, see
   // src/relief/reliefSource.ts), keyed by session id like these settings.

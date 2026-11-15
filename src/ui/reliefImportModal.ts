@@ -15,6 +15,7 @@ import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
 import * as THREE from 'three';
 import { getConfig } from '../config/appConfig';
 import { createSliderEntry } from './sliderEntry';
+import { createCropBox, clampCropRect } from './cropBox';
 import { createToolNote, type ToolOpenContext } from './toolRegistry';
 
 /** A partial ReliefOptions (every sub-object partial) — what an
@@ -440,49 +441,17 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   // --- Crop editor (in the right column, above the previews) --------------
   // Drag the rectangle to move, drag handles to resize. When shape is
   // 'circle', the crop aspect locks to 1:1 so the inscribed circle fills the
-  // crop. Crop is stored on opts.crop as normalised 0..1 box.
-  const cropEditor = document.createElement('div');
-  cropEditor.className = 'hidden flex flex-col items-center gap-1';
-  const cropHeading = document.createElement('div');
-  cropHeading.className = 'text-[10px] text-zinc-500 font-mono self-start';
-  cropHeading.textContent = 'Crop · drag corners to resize';
-  const cropContainer = document.createElement('div');
-  cropContainer.className = 'relative select-none touch-none rounded border border-zinc-700 overflow-hidden bg-zinc-900';
-  cropContainer.style.maxWidth = '200px';
-  cropContainer.style.width = '200px';
-  const cropImg = document.createElement('img');
-  cropImg.className = 'block w-full h-auto pointer-events-none';
-  cropImg.draggable = false;
-  cropContainer.appendChild(cropImg);
-  // 4 dim panels around the crop rectangle. Each absolutely-positioned to
-  // shade the part of the image that's being cropped away.
-  const dimTop = document.createElement('div');
-  const dimRight = document.createElement('div');
-  const dimBottom = document.createElement('div');
-  const dimLeft = document.createElement('div');
-  for (const d of [dimTop, dimRight, dimBottom, dimLeft]) {
-    d.className = 'absolute bg-black/55 pointer-events-none';
-    cropContainer.appendChild(d);
-  }
-  const cropRect = document.createElement('div');
-  cropRect.className = 'absolute border-2 border-white/90 cursor-move shadow-[0_0_0_1px_rgba(0,0,0,0.4)]';
-  cropContainer.appendChild(cropRect);
-  // 8 handles: 4 corners + 4 edges. Each is a small box positioned over the
-  // crop rect's perimeter; the handle's data-edge identifies which sides it
-  // controls when dragged.
-  type Edge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
-  const handles: Partial<Record<Edge, HTMLElement>> = {};
-  const handleStyle = 'absolute w-3 h-3 -mt-1.5 -ml-1.5 rounded-sm bg-white/95 border border-zinc-700';
-  const edgeCursor: Record<Edge, string> = { n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize', ne: 'nesw-resize', sw: 'nesw-resize', nw: 'nwse-resize', se: 'nwse-resize' };
-  for (const e of ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as Edge[]) {
-    const h = document.createElement('div');
-    h.className = handleStyle;
-    h.style.cursor = edgeCursor[e];
-    h.dataset.edge = e;
-    handles[e] = h;
-    cropRect.appendChild(h);
-  }
-  cropEditor.append(cropHeading, cropContainer);
+  // crop. Crop is stored on opts.crop as normalised 0..1 box (shared component:
+  // ./cropBox.ts, also used by the Image tools panel's prep).
+  const cropBox = createCropBox({
+    getCrop: () => ensureCrop(),
+    getNaturalAspect: () => (image ? image.width / image.height : 1),
+    getAspectLock: () => lockAspectForShape(),
+    onChange: () => schedulePreview(),
+  });
+  const cropEditor = cropBox.el;
+  cropEditor.classList.add('hidden');
+  const cropImg = cropBox.img;
   gridRight.appendChild(cropEditor);
 
   // Default crop covers the whole image (no crop). Stored as normalised
@@ -491,29 +460,6 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   function ensureCrop(): { left: number; top: number; right: number; bottom: number } {
     if (!opts.crop) opts.crop = { left: 0, top: 0, right: 1, bottom: 1 };
     return opts.crop;
-  }
-  function clampCrop(c: { left: number; top: number; right: number; bottom: number }, lockAspect: number | null): void {
-    const minSize = 0.05; // never let crop shrink below 5% of an edge
-    c.left = Math.max(0, Math.min(1 - minSize, c.left));
-    c.top = Math.max(0, Math.min(1 - minSize, c.top));
-    c.right = Math.max(c.left + minSize, Math.min(1, c.right));
-    c.bottom = Math.max(c.top + minSize, Math.min(1, c.bottom));
-    if (lockAspect) {
-      // Aspect lock is in image pixels (natural width / natural height). Crop
-      // normalised box uses fractions, so apply the natural-aspect ratio when
-      // adjusting box height to box width.
-      const naturalAspect = image ? image.width / image.height : 1;
-      const targetHFrac = ((c.right - c.left) * naturalAspect) / lockAspect;
-      // Try keeping the centre y the same as the user dragged; clamp if it
-      // would push past 0..1.
-      const cy = (c.top + c.bottom) / 2;
-      let top = cy - targetHFrac / 2;
-      let bot = cy + targetHFrac / 2;
-      if (top < 0) { top = 0; bot = targetHFrac; }
-      if (bot > 1) { bot = 1; top = 1 - targetHFrac; }
-      c.top = Math.max(0, top);
-      c.bottom = Math.min(1, bot);
-    }
   }
   function lockAspectForShape(): number | null {
     // For circle, we want the crop to be a 1:1 box (in image pixels) so the
@@ -525,83 +471,8 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     if (!image) { cropEditor.classList.add('hidden'); return; }
     if (svgText) { cropEditor.classList.add('hidden'); return; }
     cropEditor.classList.remove('hidden');
-    const c = ensureCrop();
-    const lpct = c.left * 100;
-    const tpct = c.top * 100;
-    const wpct = (c.right - c.left) * 100;
-    const hpct = (c.bottom - c.top) * 100;
-    cropRect.style.left = `${lpct}%`;
-    cropRect.style.top = `${tpct}%`;
-    cropRect.style.width = `${wpct}%`;
-    cropRect.style.height = `${hpct}%`;
-    dimTop.style.left = '0'; dimTop.style.top = '0'; dimTop.style.width = '100%'; dimTop.style.height = `${tpct}%`;
-    dimBottom.style.left = '0'; dimBottom.style.top = `${tpct + hpct}%`; dimBottom.style.width = '100%'; dimBottom.style.height = `${100 - (tpct + hpct)}%`;
-    dimLeft.style.left = '0'; dimLeft.style.top = `${tpct}%`; dimLeft.style.width = `${lpct}%`; dimLeft.style.height = `${hpct}%`;
-    dimRight.style.left = `${lpct + wpct}%`; dimRight.style.top = `${tpct}%`; dimRight.style.width = `${100 - (lpct + wpct)}%`; dimRight.style.height = `${hpct}%`;
-    // Position handles at corners + edge midpoints.
-    if (handles.nw) { handles.nw.style.left = '0%'; handles.nw.style.top = '0%'; }
-    if (handles.ne) { handles.ne.style.left = '100%'; handles.ne.style.top = '0%'; }
-    if (handles.sw) { handles.sw.style.left = '0%'; handles.sw.style.top = '100%'; }
-    if (handles.se) { handles.se.style.left = '100%'; handles.se.style.top = '100%'; }
-    if (handles.n) { handles.n.style.left = '50%'; handles.n.style.top = '0%'; }
-    if (handles.s) { handles.s.style.left = '50%'; handles.s.style.top = '100%'; }
-    if (handles.w) { handles.w.style.left = '0%'; handles.w.style.top = '50%'; }
-    if (handles.e) { handles.e.style.left = '100%'; handles.e.style.top = '50%'; }
+    cropBox.render();
   }
-  // Pointer-events drag on crop rect (move) and handles (resize). Working in
-  // normalised crop space keeps the geometry tidy.
-  let dragMode: { kind: 'move' | 'resize'; edge?: Edge; startX: number; startY: number; orig: { left: number; top: number; right: number; bottom: number } } | null = null;
-  function startDrag(e: PointerEvent, kind: 'move' | 'resize', edge?: Edge): void {
-    e.preventDefault();
-    e.stopPropagation();
-    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
-    dragMode = { kind, edge, startX: e.clientX, startY: e.clientY, orig: { ...ensureCrop() } };
-  }
-  function moveDrag(e: PointerEvent): void {
-    if (!dragMode) return;
-    const rect = cropContainer.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return;
-    const dxN = (e.clientX - dragMode.startX) / rect.width;
-    const dyN = (e.clientY - dragMode.startY) / rect.height;
-    const c = ensureCrop();
-    const o = dragMode.orig;
-    if (dragMode.kind === 'move') {
-      const w = o.right - o.left;
-      const h = o.bottom - o.top;
-      c.left = o.left + dxN;
-      c.top = o.top + dyN;
-      c.right = c.left + w;
-      c.bottom = c.top + h;
-      // Move-clamp without aspect lock — moving never resizes.
-      if (c.left < 0) { c.right -= c.left; c.left = 0; }
-      if (c.top < 0) { c.bottom -= c.top; c.top = 0; }
-      if (c.right > 1) { c.left -= (c.right - 1); c.right = 1; }
-      if (c.bottom > 1) { c.top -= (c.bottom - 1); c.bottom = 1; }
-    } else if (dragMode.edge) {
-      const edge = dragMode.edge;
-      if (edge.includes('n')) c.top = o.top + dyN;
-      if (edge.includes('s')) c.bottom = o.bottom + dyN;
-      if (edge.includes('w')) c.left = o.left + dxN;
-      if (edge.includes('e')) c.right = o.right + dxN;
-      clampCrop(c, lockAspectForShape());
-    }
-    renderCrop();
-    schedulePreview();
-  }
-  function endDrag(e: PointerEvent): void {
-    if (!dragMode) return;
-    (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
-    dragMode = null;
-  }
-  cropRect.addEventListener('pointerdown', (e) => {
-    const target = e.target as HTMLElement;
-    const edge = target.dataset.edge as Edge | undefined;
-    if (edge) startDrag(e, 'resize', edge);
-    else startDrag(e, 'move');
-  });
-  cropRect.addEventListener('pointermove', moveDrag);
-  cropRect.addEventListener('pointerup', endDrag);
-  cropRect.addEventListener('pointercancel', endDrag);
 
   // --- Live preview --------------------------------------------------------
   const previewWrap = document.createElement('div');
@@ -1172,7 +1043,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     // hidden until an image is loaded. Aspect lock to 1:1 for circle shape so
     // the inscribed circle fills the crop region.
     const lockAspect = lockAspectForShape();
-    if (lockAspect && image && opts.crop) clampCrop(opts.crop, lockAspect);
+    if (lockAspect && image && opts.crop) clampCropRect(opts.crop, lockAspect, image.width / image.height);
     renderCrop();
 
     // Preview canvas: clickable to drop a hole in tile modes only.

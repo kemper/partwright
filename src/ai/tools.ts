@@ -2576,6 +2576,25 @@ Returns { ok, stats, metrics, version } or { error }.`,
     },
   },
   {
+    name: 'prepImage',
+    description: "Prep an image attached to the session BEFORE an image tool: crop, brightness/contrast/saturation, black/white points, background removal. Saves a NEW image attachment (\"<name> (prepped)\"); the original stays. Pass its returned id as applyImageTool's `image`. removeBackground makes the dominant border colour (or backgroundColor) transparent — the result reports backgroundRemoved: false when no clear backdrop was found.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        image: { type: 'string', description: 'Attachment id of the image (getImages).' },
+        crop: { type: 'object', description: 'Normalised 0..1 box over the image.', properties: { left: { type: 'number' }, top: { type: 'number' }, right: { type: 'number' }, bottom: { type: 'number' } } },
+        brightness: { type: 'number', description: '-1..1, 0 = unchanged.' },
+        contrast: { type: 'number', description: '-1..1, 0 = unchanged.' },
+        saturation: { type: 'number', description: '-1..1, 0 = unchanged, -1 = greyscale.' },
+        levelsLow: { type: 'integer', description: 'Black point 0..254.' },
+        levelsHigh: { type: 'integer', description: 'White point 1..255.' },
+        removeBackground: { type: 'boolean' },
+        backgroundColor: { type: 'array', items: { type: 'integer' }, description: '[r, g, b] backdrop colour to remove (else auto-detected from the border).' },
+      },
+      required: ['image'],
+    },
+  },
+  {
     name: 'getImageToolOp',
     description: "The open object's image-tool record {tool, image, params} — the settings an image tool made it with (its `// @image-tool` code header, or a layered print's api.layeredPrint call). Errors when the object wasn't made by an image tool.",
     input_schema: { type: 'object', properties: {} },
@@ -3080,6 +3099,8 @@ const ALWAYS_AVAILABLE = new Set([
   'applyImageTool',
   'getImageToolOp',
   'listImageTools',
+  // Adds a prepped COPY of an attached image (the original stays); no geometry.
+  'prepImage',
   'getLayeredPrintPlan',
   'listLayeredPrintFilaments',
 ]);
@@ -4787,6 +4808,10 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
         args.image = entry.id;
       }
       return api.applyImageTool(args);
+    }
+    case 'prepImage': {
+      const args = Object.fromEntries(Object.entries(input).filter(([, v]) => v !== null));
+      return api.prepImage(args);
     }
     case 'getImageToolOp':
       return api.getImageToolOp();
