@@ -18,10 +18,12 @@ import { BUTTON_SMALL_PRIMARY, BUTTON_SMALL_SECONDARY } from './styleConstants';
 import { showToast } from './toast';
 import { DEFAULT_LAYER_BASE_COLOR } from '../print/layerColors';
 
-export interface PrintPreviewChange { z: number; color: string }
+export interface PrintPreviewChange { z: number; color: string; /** Filament name (a layered photo print's swaps carry one). */ name?: string }
 
 export interface PrintPreviewLayerInfo {
   declared: boolean;
+  /** Where the bands come from; `'layeredPrint'` is read-only here. */
+  source: 'layerColors' | 'layeredPrint' | null;
   changes: PrintPreviewChange[];
   layerHeight: number;
   firstLayerHeight: number;
@@ -148,7 +150,9 @@ function openPanel(): void {
 
   // ── Colour changes ──
   const listTitle = el('div', 'flex items-baseline justify-between');
-  listTitle.append(el('span', 'text-[12px] text-zinc-300', 'Colours by height'), el('span', 'text-[11px] text-zinc-500', 'from this height up'));
+  const listTitleText = el('span', 'text-[12px] text-zinc-300', 'Colours by height');
+  const listTitleHint = el('span', 'text-[11px] text-zinc-500', 'from this height up');
+  listTitle.append(listTitleText, listTitleHint);
   const list = el('div', 'flex flex-col gap-1.5');
   list.dataset.printPreviewList = '';
   const addBtn = el('button', `${BUTTON_SMALL_SECONDARY} ${TOUCH} self-start`, '+ Add change at this layer');
@@ -176,14 +180,15 @@ function openPanel(): void {
     const info = h.getLayerColors();
     const base = info.changes.find((c) => c.z <= info.firstLayerHeight / 2);
     const later = info.changes.filter((c) => c.z > info.firstLayerHeight / 2);
-    draft = [{ z: 0, color: base?.color ?? DEFAULT_LAYER_BASE_COLOR }, ...later.map((c) => ({ z: c.z, color: c.color }))];
+    const named = (c: PrintPreviewChange) => (c.name ? { name: c.name } : {});
+    draft = [{ z: 0, color: base?.color ?? DEFAULT_LAYER_BASE_COLOR, ...(base ? named(base) : {}) }, ...later.map((c) => ({ z: c.z, color: c.color, ...named(c) }))];
     dirty = false;
   }
 
   function pushDraft(): void {
     draft.sort((a, b) => a.z - b.z);
     dirty = true;
-    h.setDraft(draft.map((c) => ({ ...c })));
+    h.setDraft(draft.map((c) => ({ z: c.z, color: c.color })));
     render();
   }
 
@@ -200,7 +205,7 @@ function openPanel(): void {
       color.addEventListener('change', () => { change.color = color.value; pushDraft(); });
       row.append(color);
       if (i === 0) {
-        row.append(el('span', 'flex-1 text-[12px] text-zinc-400', 'from the bed'));
+        row.append(el('span', 'flex-1 text-[12px] text-zinc-400', change.name ? `${change.name}, from the bed` : 'from the bed'));
       } else {
         const z = el('input', `w-20 bg-zinc-800 border border-zinc-700 rounded px-1.5 py-1 text-[12px] text-right tabular-nums text-zinc-200 ${TOUCH}`);
         z.type = 'number';
@@ -221,7 +226,13 @@ function openPanel(): void {
         remove.disabled = !editable;
         remove.setAttribute('aria-label', `Remove the change at ${fmtMm(change.z)}`);
         remove.addEventListener('click', () => { draft.splice(i, 1); pushDraft(); });
-        row.append(el('span', 'text-[12px] text-zinc-400', 'from'), z, el('span', 'flex-1 text-[12px] text-zinc-400', 'mm'), remove);
+        if (change.name) {
+          // A layered photo print's swap: read-only, so say which filament and which layer.
+          const layer = Math.round((change.z - info.firstLayerHeight) / info.layerHeight) + 2;
+          row.append(el('span', 'flex-1 text-[12px] text-zinc-400', `${change.name}, from layer ${layer} (${fmtMm(change.z)})`));
+        } else {
+          row.append(el('span', 'text-[12px] text-zinc-400', 'from'), z, el('span', 'flex-1 text-[12px] text-zinc-400', 'mm'), remove);
+        }
       }
       list.append(row);
     });
@@ -272,6 +283,12 @@ function openPanel(): void {
     renderReadout();
 
     renderList(info, editable);
+    // A layered photo print's swaps are shown, not edited: no edit controls at all.
+    const readOnlySource = info.source === 'layeredPrint';
+    addBtn.classList.toggle('hidden', readOnlySource);
+    footer.classList.toggle('hidden', readOnlySource);
+    listTitleText.textContent = readOnlySource ? 'Filament swaps' : 'Colours by height';
+    listTitleHint.textContent = readOnlySource ? 'from this layer up' : 'from this height up';
     addBtn.disabled = !editable;
     editNote.textContent = edit.ok ? '' : edit.reason;
     editNote.classList.toggle('hidden', edit.ok);
@@ -319,7 +336,7 @@ function openPanel(): void {
     }
     if (shell === panelShell) render();
   };
-  applyBtn.addEventListener('click', () => { void run(() => h.apply(draft.map((c) => ({ ...c }))), 'Layer colours saved to the model code.'); });
+  applyBtn.addEventListener('click', () => { void run(() => h.apply(draft.map((c) => ({ z: c.z, color: c.color }))), 'Layer colours saved to the model code.'); });
   clearBtn.addEventListener('click', () => { void run(() => h.clear(), 'Layer colours removed from the model code.'); });
 
   loadDraftFromCode();

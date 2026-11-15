@@ -130,10 +130,12 @@ From the console or an agent, the same thing without editing code by hand:
   version. Returns `{ok, call, replaced, version?, layerColors}` or `{error}`.
 - `await clearLayerColors()` removes the call. `setLayerColors([])` does the
   same: an empty list declares nothing, in the console and in code.
-- `getLayerColors()` returns `{declared, changes, layerHeight,
+- `getLayerColors()` returns `{declared, source, changes, layerHeight,
   firstLayerHeight, modelHeight, totalLayers, bands, warnings?}`. `bands` is
   what actually prints after snapping: `[{color, fromZ, toZ, firstLayer,
-  lastLayer}]`, with 1-based layer numbers.
+  lastLayer}]`, with 1-based layer numbers. `source` says where the bands come
+  from: `'layerColors'` (this call), `'layeredPrint'` (a layered photo print's
+  swap plan, see below) or `null`. `declared` is true only for the call.
 
 **Layer colours and paint don't combine on one object.** A slicer ignores
 layer colour changes on an object that carries per-triangle paint. When an
@@ -175,8 +177,18 @@ showing, layer, totalLayers, z, blend, notes?}`.
 - While the preview is on, the viewport **and** `renderView` / `renderViews`
   show it. So to check a layer-colour design: `setPrintPreview({enabled:
   true})`, render, then `setPrintPreview({enabled: false})`.
-- `showing` is false when the object declares no layer colours; `notes` says
-  why. The preview is per tab and is not saved.
+- `showing` is false when the object has nothing to preview (no layer
+  colours, and not a layered photo print); `notes` says why. The preview is
+  per tab and is not saved.
+- **Layered photo prints** (`api.layeredPrint`, see
+  [/ai/relief.md#layered-photo-prints](/ai/relief.md#layered-photo-prints))
+  preview from their own swap plan, with no extra call: `getLayerColors()`
+  reports `source: 'layeredPrint'` and each change carries the filament's
+  `name`. Without `blend` the preview shows the raw filament of every layer,
+  as a slicer's layer view does; with `blend` it shows the colours the
+  print's own solver predicted, cut at any layer. The swaps are read-only
+  here: change them in the `api.layeredPrint` call. If the code also calls
+  `api.print.layerColors`, that call wins in the preview and `warnings` says so.
 - The preview and the user's Print preview panel go together: turning it on
   opens the panel and turning it off closes it. Opening another tool (Paint,
   Parts, Simplify…) closes the panel and so turns the preview off, so check
@@ -186,6 +198,16 @@ showing, layer, totalLayers, z, blend, notes?}`.
   it won't show thin features a slicer drops.
 
 Users open the same thing from Inspect -> Print preview (`tool-print-preview`).
+
+**In the 3MF export dialog.** The object picker of the 3MF exports has an
+optional **Print preview** block (off until the user clicks Show): one ticked
+object drawn as that export will colour it, with the same layer slider and
+blending checkbox. A layer-coloured object shows its bands; any other object
+shows its own paint, and the slider still cuts it. It only looks: it changes
+neither the export nor the viewport's preview. To open the dialog with it
+showing: `openTool('export-objects', {printPreview: true})`; `toolState.
+printPreview` is `{shown, object, kind, layer, totalLayers, z, blend}`. To
+look yourself, use `setPrintPreview` and render as above.
 
 ## Printing a figure in pieces
 

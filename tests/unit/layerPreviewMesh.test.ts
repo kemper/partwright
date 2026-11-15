@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildLayerPreviewMesh, cutBandMesh, splitMeshByBands } from '../../src/print/layerPreviewMesh';
+import { bandMeshFromColoredMesh, buildLayerPreviewMesh, cutBandMesh, splitMeshByBands } from '../../src/print/layerPreviewMesh';
 import { resolveLayerBands } from '../../src/print/layerColors';
 import type { MeshData } from '../../src/geometry/types';
 
@@ -207,6 +207,39 @@ describe('buildLayerPreviewMesh', () => {
     const grey = parseInt(cap[0].hex.slice(1, 3), 16);
     expect(grey).toBeGreaterThan(20);
     expect(grey).toBeLessThan(120);
+  });
+
+  it('a blend can bring its own colour per layer (a layered photo print\'s prediction)', () => {
+    const two = resolveLayerBands('#000000', [{ z: 5, color: '#ffffff' }], 10, P);
+    const seen: number[] = [];
+    const blend = { transmissionOf: () => 1, maxLayers: 50, minUpNormal: 0.5, colorOnTopOf: (layer: number) => { seen.push(layer); return layer >= 49 ? '#123456' : '#654321'; } };
+    const ts = trisOf(buildLayerPreviewMesh(cube, { bands: two, profile: P, blend }).mesh);
+    // The top of the cube is the top of the last layer (index 49).
+    expect(new Set(ts.filter((t) => t.nz > 0.5).map((t) => t.hex))).toEqual(new Set(['#123456']));
+    expect(seen).toContain(49);
+    // Walls keep their band's own colour.
+    expect(new Set(ts.filter((t) => Math.abs(t.nz) < 0.5).map((t) => t.hex))).toEqual(new Set(['#010101', '#ffffff']));
+  });
+
+  it('a painted model can be cut by the layer slider too, in its own colours', () => {
+    const painted = meshOf(box([0, 0, 0], [10, 10, 10]));
+    // Two red triangles, the rest unpainted.
+    painted.triColors = new Uint8Array(12 * 3);
+    painted.triColors.set([220, 30, 30, 220, 30, 30], 4 * 3);
+    const whole = bandMeshFromColoredMesh(painted, P);
+    expect(whole.numTri).toBe(12);
+    expect(whole.totalLayers).toBe(50);
+    const all = trisOf(cutBandMesh(whole).mesh);
+    expect(areaWhere(all, (t) => t.hex === '#dc1e1e')).toBeCloseTo(100, 4);
+    expect(areaWhere(all, (t) => t.hex === '#8c8c8c')).toBeCloseTo(500, 4);
+    // Cut halfway: walls up to the cut, and a neutral cap over the opening.
+    const r = cutBandMesh(whole, 4.9);
+    expect(r.cutZ).toBeCloseTo(5, 6);
+    expect(r.capped).toBe(true);
+    const ts = trisOf(r.mesh);
+    expect(Math.max(...ts.flatMap((t) => t.z))).toBeCloseTo(5, 5);
+    expect(areaWhere(ts, (t) => t.nz > 0.5 && t.hex === '#8c8c8c')).toBeCloseTo(100, 4);
+    expect(areaWhere(ts, (t) => Math.abs(t.nz) < 0.5)).toBeCloseTo(200, 4);
   });
 
   it('handles an empty mesh', () => {

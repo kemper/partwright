@@ -20,7 +20,8 @@ const MODEL = `const { Manifold } = api;
 const base = Manifold.cube([40, 30, 12], true).translate([0, 0, 6]);
 const dome = Manifold.sphere(12, 48).translate([0, 0, 12]);
 api.print.layerColors([{ z: 0, color: '#f0f0f0' }, { z: 6, color: '#dc1e1e' }, { z: 14, color: '#1e50dc' }]);
-return base.add(dome);`;
+return base.add(dome);
+`; // ends with a newline, as the editor's auto-format leaves it (see #1263)
 
 interface View { enabled: boolean; showing: boolean; layer: number; totalLayers: number; z: number | null; blend: boolean }
 interface Layers { declared: boolean; changes: { z: number; color: string }[]; totalLayers: number; bands: { color: string; firstLayer: number; lastLayer: number }[] }
@@ -153,5 +154,80 @@ test.describe('Print preview', () => {
     expect(await pw(page, 'setLayerColors', [])).toMatchObject({ ok: true });
     expect(await pw<string>(page, 'getCode')).not.toContain('layerColors');
     expect(await pw(page, 'getLayerColors')).toMatchObject({ declared: false });
+  });
+  test('the 3MF export dialog can show how an object will print, layer by layer', async ({ page }) => {
+    // Open the Bambu/Orca export: its object picker has an optional Print preview block.
+    await page.locator('#btn-export').click();
+    await page.locator('#export-dropdown').getByText('3MF — Bambu/Orca', { exact: true }).click();
+    const modal = page.getByRole('dialog');
+    await expect(modal.getByText(/Export .*to 3MF/i).first()).toBeVisible({ timeout: 10_000 });
+    const block = modal.locator('[data-export-print-preview]');
+    await expect(block).toBeVisible();
+    // Off until asked for.
+    await expect(block.locator('[data-export-print-preview-stage]')).toHaveCount(0);
+    await block.locator('[data-export-print-preview-toggle]').click();
+    await expect(block.locator('[data-export-print-preview-stage] canvas')).toBeVisible({ timeout: 20_000 });
+    await expect(block.locator('[data-export-print-preview-readout]')).toHaveText('120 of 120, 24 mm');
+    await expect(block.locator('[data-export-print-preview-caption]')).toContainText('Colours by layer height');
+    await page.screenshot({ path: 'test-results/export-print-preview.png' });
+
+    // Scrub to layer 45 and turn blending on: the frame is redrawn, the export choices are untouched.
+    await block.locator('[data-export-print-preview-layer]').fill('45');
+    await expect(block.locator('[data-export-print-preview-readout]')).toHaveText('45 of 120, 9 mm');
+    await block.locator('[data-export-print-preview-blend]').check();
+    await expect(block.locator('[data-export-print-preview-stage] canvas')).toBeVisible();
+    await page.screenshot({ path: 'test-results/export-print-preview-cut.png' });
+    await expect(modal.getByRole('button', { name: /^Export/ }).last()).toBeEnabled();
+    await page.keyboard.press('Escape');
+    await expect(modal).toBeHidden();
+    // Looking never turned the viewport's own preview on.
+    expect(await pw(page, 'getPrintPreview')).toMatchObject({ enabled: false });
+  });
+
+  test('a layered photo print shows its swap plan in the preview, read-only', async ({ page }) => {
+    test.setTimeout(180_000);
+    // A synthetic picture drawn in the page (no third-party photo).
+    const made = await page.evaluate(async () => {
+      const c = document.createElement('canvas');
+      c.width = 96; c.height = 64;
+      const g = c.getContext('2d')!;
+      const grad = g.createLinearGradient(0, 0, 0, 64);
+      grad.addColorStop(0, '#f6e7c8'); grad.addColorStop(0.6, '#f08a3c'); grad.addColorStop(1, '#3a2a5c');
+      g.fillStyle = grad; g.fillRect(0, 0, 96, 64);
+      g.fillStyle = '#1b1b22'; g.beginPath(); g.arc(48, 34, 18, 0, Math.PI * 2); g.fill();
+      const p = (window as unknown as { partwright: PW }).partwright;
+      const created = await p.createLayeredPrint({ src: c.toDataURL('image/png'), colors: 4, widthMm: 40, pixelSizeMm: 0.8, maxHeightMm: 2, effort: 0.2, name: 'layered preview' }) as { error?: string; blocks?: unknown[] };
+      return { error: created.error ?? null, blocks: created.blocks?.length ?? 0 };
+    });
+    expect(made.error).toBeNull();
+    expect(made.blocks).toBeGreaterThanOrEqual(2);
+
+    // The plan is the preview's source: bands and named swaps, with no api.print.layerColors call.
+    const layers = await pw<Layers & { source: string; changes: { z: number; color: string; name?: string }[]; layerHeight: number }>(page, 'getLayerColors');
+    expect(layers).toMatchObject({ declared: false, source: 'layeredPrint' });
+    expect(layers.changes).toHaveLength(made.blocks);
+    expect(layers.changes.every(c => typeof c.name === 'string' && c.name.length > 0)).toBe(true);
+    expect(layers.bands.length).toBeGreaterThanOrEqual(2);
+    expect(layers.bands[0].firstLayer).toBe(1);
+
+    const on = await pw<View>(page, 'setPrintPreview', { enabled: true });
+    expect(on).toMatchObject({ enabled: true, showing: true });
+    expect(on.totalLayers).toBe(layers.totalLayers);
+    const panel = page.locator('#print-preview-panel');
+    await expect(panel).toBeVisible();
+    await expect(panel.locator('[data-print-preview-row]')).toHaveCount(made.blocks);
+    await page.screenshot({ path: 'test-results/print-preview-layered.png' });
+    // Shown, not edited: the swaps belong to api.layeredPrint in the code.
+    await expect(panel.locator('[data-print-preview-add]')).toBeDisabled();
+    await expect(panel.locator('[data-print-preview-apply]')).toBeDisabled();
+    await expect(panel.locator('[data-print-preview-row] input[type="color"]').first()).toBeDisabled();
+    await expect(panel).toContainText('layered photo print');
+
+    // The layer slider and the blending view work on it (blending uses the print's own prediction).
+    const half = Math.max(2, Math.floor(layers.totalLayers / 2));
+    expect(await pw(page, 'setPrintPreview', { layer: half, blend: true })).toMatchObject({ showing: true, layer: half, blend: true });
+    await page.screenshot({ path: 'test-results/print-preview-layered-blend.png' });
+    await pw(page, 'setPrintPreview', { enabled: false });
+    await expect(panel).toBeHidden();
   });
 });

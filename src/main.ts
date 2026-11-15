@@ -111,6 +111,7 @@ import { showExportColorsModal } from './ui/exportColorsModal';
 import { buildZip, type ZipEntry } from './export/zip';
 import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT, BAMBU_NOZZLES, DEFAULT_BAMBU_NOZZLE, BAMBU_PLATE_LAYOUTS, PACK_STRATEGIES, isBambuPrinter, isBambuNozzle, isBambuFilament, isBambuPlateLayout, isPackStrategy, type BambuPlateLayout, type PackStrategy, type PartExport } from './export/threemfProject';
 import { showExportPartsModal, WHOLE_ITEM_KEY, type ExportPartChoice, type ExportObjectSplitInfo } from './ui/exportPartsModal';
+import type { ExportPrintPreviewFrame } from './ui/exportPrintPreview';
 import { analyzeObjectSplit, availableSplitModes, extractItemMesh, isExportSplitMode, splitItemName, splitItems, EXPORT_SPLIT_MODES, type ExportSplitMode, type ObjectSplitAnalysis } from './export/exportSplit';
 import { exportVOX, buildVOX } from './export/vox';
 import { assertFiniteMesh } from './export/meshClean';
@@ -478,7 +479,8 @@ import {
 import { buildGeometryHeuristicWarnings } from './geometry/geometryHeuristics';
 import { getConfig, saveAppConfig } from './config/appConfig';
 import { DEFAULT_LAYER_BASE_COLOR, hexToRgb as layerHexToRgb, layerCount, layerTopZ, parseLayerColorsSpec, resolveLayerBands, splitBaseColor, type LayerBand, type LayerColorsSpec, type LayerProfile } from './print/layerColors';
-import { cutBandMesh, splitMeshByBands, type LayerBandMesh, type LayerPreviewResult } from './print/layerPreviewMesh';
+import { bandMeshFromColoredMesh, cutBandMesh, splitMeshByBands, type LayerBandMesh, type LayerBandOptions, type LayerPreviewResult } from './print/layerPreviewMesh';
+import { layeredPlanPreview, type LayeredPlanPreview } from './print/layeredPlanBands';
 import { initPrintPreviewUI, openPrintPreviewPanel, closePrintPreviewPanel, type PrintPreviewHandlers } from './ui/printPreviewPanel';
 import { removeLayerColorsCall, upsertLayerColorsCall } from './print/layerColorsCodegen';
 import { photoMatch as scorePhotoMatch, buildTriangleRegions, photoMatchTuningFromConfig, photoMatchOverlay, combinePhotoMatches, type CropRect, type PhotoMatchResult } from './tools/photoMatch';
@@ -753,7 +755,7 @@ const printPreviewState: { enabled: boolean; cutZ: number | null; blend: boolean
 /** Called after the preview's inputs or state change, so an open panel can redraw. */
 let onPrintPreviewChange: (() => void) | null = null;
 /** The band split of the current model (kept while the layer slider moves) and the last cut of it. */
-let printSplitMemo: { mesh: MeshData; spec: LayerColorsSpec; key: string; split: LayerBandMesh } | null = null;
+let printSplitMemo: { mesh: MeshData; source: object; key: string; split: LayerBandMesh } | null = null;
 let printPreviewMemo: { split: LayerBandMesh; cutZ: number | null; result: LayerPreviewResult } | null = null;
 /** The preview mesh currently in the viewport, or null when the model itself is drawn. */
 let shownPrintPreviewMesh: MeshData | null = null;
@@ -782,11 +784,25 @@ function printLayerProfile(spec: LayerColorsSpec | null): LayerProfile {
   return { layerHeight: spec?.layerHeight ?? r.printLayerHeightMm, firstLayerHeight: spec?.firstLayerHeight ?? r.printFirstLayerHeightMm };
 }
 
-/** The bands the current model prints in (one band when the code declares no
- *  layer colours), or null when there is no model. */
-function currentPrintBands(): { bands: LayerBand[]; profile: LayerProfile; height: number } | null {
-  const mesh = currentMeshData;
-  if (!mesh || mesh.numTri === 0) return null;
+/** What the print preview draws from: the object's own layer colours
+ *  (`api.print.layerColors`, or the panel's draft of them), else the swap plan
+ *  of a layered photo print (`api.layeredPrint`). Null when it has neither. */
+type PrintSource =
+  | { kind: 'layerColors'; spec: LayerColorsSpec }
+  | { kind: 'layeredPrint'; plan: LayeredPrintPlanRecord };
+
+function activePrintSource(): PrintSource | null {
+  const spec = activeLayerColors();
+  if (declaresLayerColors(spec)) return { kind: 'layerColors', spec };
+  if (currentLayeredPlan) return { kind: 'layeredPrint', plan: currentLayeredPlan };
+  return null;
+}
+
+/** A length in mm, rounded to the micron, for API results. */
+const mm3 = (n: number) => Math.round(n * 1000) / 1000;
+
+/** Height of a mesh above its lowest point, or 0. */
+function meshHeight(mesh: MeshData): number {
   let lo = Infinity;
   let hi = -Infinity;
   for (let i = 0; i < mesh.numVert; i++) {
@@ -794,36 +810,58 @@ function currentPrintBands(): { bands: LayerBand[]; profile: LayerProfile; heigh
     if (z < lo) lo = z;
     if (z > hi) hi = z;
   }
-  const height = hi - lo;
-  if (!(height > 0)) return null;
-  const spec = activeLayerColors();
-  const profile = printLayerProfile(spec);
-  const { base, changes } = spec ? splitBaseColor(spec, profile, DEFAULT_LAYER_BASE_COLOR) : { base: DEFAULT_LAYER_BASE_COLOR, changes: [] };
-  return { bands: resolveLayerBands(base, changes, height, profile), profile, height };
+  return hi > lo ? hi - lo : 0;
 }
 
-/** The print-preview mesh for the current model, or null when the code
- *  declares no layer colours (there is nothing to preview then). */
+/** The bands the current model prints in (one band when it has neither layer
+ *  colours nor a layered-print plan), or null when there is no model. */
+function currentPrintBands(): { bands: LayerBand[]; profile: LayerProfile; height: number; source: PrintSource | null; plan: LayeredPlanPreview | null } | null {
+  const mesh = currentMeshData;
+  if (!mesh || mesh.numTri === 0) return null;
+  const height = meshHeight(mesh);
+  if (!(height > 0)) return null;
+  const source = activePrintSource();
+  if (source?.kind === 'layeredPrint') {
+    const plan = layeredPlanPreview(source.plan, height);
+    return { bands: plan.bands, profile: plan.profile, height, source, plan };
+  }
+  const spec = source?.spec ?? null;
+  const profile = printLayerProfile(spec);
+  const { base, changes } = spec ? splitBaseColor(spec, profile, DEFAULT_LAYER_BASE_COLOR) : { base: DEFAULT_LAYER_BASE_COLOR, changes: [] };
+  return { bands: resolveLayerBands(base, changes, height, profile), profile, height, source, plan: null };
+}
+
+/** The preview's blend settings: the app's generic estimate, or for a layered
+ *  photo print the colours its own solver predicted. */
+function printBlendOptions(plan: LayeredPlanPreview | null): NonNullable<LayerBandOptions['blend']> {
+  const r = getConfig().renderer;
+  const transmissionOf = (color: string): number => {
+    const [red, green, blue] = layerHexToRgb(color);
+    const brightness = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255;
+    return r.printBlendTransmissionDarkMm + (r.printBlendTransmissionLightMm - r.printBlendTransmissionDarkMm) * brightness;
+  };
+  return plan
+    ? { transmissionOf, maxLayers: plan.layers, minUpNormal: r.printBlendMinUpNormal, colorOnTopOf: plan.colorOnTopOf }
+    : { transmissionOf, maxLayers: r.printBlendMaxLayers, minUpNormal: r.printBlendMinUpNormal };
+}
+
+/** The print-preview mesh for the current model, or null when it has neither
+ *  layer colours nor a layered-print plan (there is nothing to preview then). */
 function buildPrintPreview(): LayerPreviewResult | null {
   const mesh = currentMeshData;
-  const spec = activeLayerColors();
   const info = currentPrintBands();
-  if (!mesh || !declaresLayerColors(spec) || !info) return null;
+  if (!mesh || !info || !info.source) return null;
+  const identity: object = info.source.kind === 'layerColors' ? info.source.spec : info.source.plan;
   const r = getConfig().renderer;
   const { cutZ, blend } = printPreviewState;
   const key = JSON.stringify([blend, info.profile, r.printBlendMaxLayers, r.printBlendTransmissionDarkMm, r.printBlendTransmissionLightMm, r.printBlendMinUpNormal]);
-  if (!printSplitMemo || printSplitMemo.mesh !== mesh || printSplitMemo.spec !== spec || printSplitMemo.key !== key) {
-    const transmissionOf = (color: string): number => {
-      const [red, green, blue] = layerHexToRgb(color);
-      const brightness = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255;
-      return r.printBlendTransmissionDarkMm + (r.printBlendTransmissionLightMm - r.printBlendTransmissionDarkMm) * brightness;
-    };
+  if (!printSplitMemo || printSplitMemo.mesh !== mesh || printSplitMemo.source !== identity || printSplitMemo.key !== key) {
     const split = splitMeshByBands(mesh, {
       bands: info.bands,
       profile: info.profile,
-      ...(blend ? { blend: { transmissionOf, maxLayers: r.printBlendMaxLayers, minUpNormal: r.printBlendMinUpNormal } } : {}),
+      ...(blend ? { blend: printBlendOptions(info.plan) } : {}),
     });
-    printSplitMemo = { mesh, spec, key, split };
+    printSplitMemo = { mesh, source: identity, key, split };
     printPreviewMemo = null;
   }
   // Moving the layer slider only re-cuts the split: the expensive part is kept.
@@ -7201,7 +7239,52 @@ async function main() {
         ortho: STANDARD_VIEWS.iso.ortho, size: 64, thumbnail: true, annotations: false,
       });
     };
-    return { bake, analyze, thumbnail, analysisOf, cancel, isReady: (id: string) => ready.has(id) };
+    // ── Print preview (the picker's optional "how will this print" look) ──
+    // The split of each object is kept, so dragging the layer slider only re-cuts it.
+    const previewSplits = new Map<string, { key: string; kind: 'layerColors' | 'paint'; split: LayerBandMesh; frame: { min: [number, number, number]; max: [number, number, number] } }>();
+    /** Draw one object as this export will colour it. `layerColours` is false
+     *  for a generic 3MF, which carries no colours by layer height. */
+    const printPreview = async (id: string, view: { layer: number | null; blend: boolean; size: number }, layerColours: boolean): Promise<ExportPrintPreviewFrame | null> => {
+      const b = await bake(id);
+      if (!b || b.mesh.numTri === 0) return null;
+      const declared = declaresLayerColors(b.layerColors ?? null) ? b.layerColors! : null;
+      const spec = layerColours ? declared : null;
+      const blend = view.blend && spec !== null;
+      const key = `${spec ? 'layers' : 'paint'}:${blend}`;
+      let memo = previewSplits.get(id);
+      if (!memo || memo.key !== key) {
+        const vp = b.mesh.vertProperties, np = b.mesh.numProp;
+        const min: [number, number, number] = [Infinity, Infinity, Infinity];
+        const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+        for (let v = 0; v < b.mesh.numVert; v++) for (let a = 0; a < 3; a++) { const c = vp[v * np + a]; if (c < min[a]) min[a] = c; if (c > max[a]) max[a] = c; }
+        const profile = printLayerProfile(spec);
+        let split: LayerBandMesh;
+        if (spec) {
+          const { base, changes } = splitBaseColor(spec, profile, DEFAULT_LAYER_BASE_COLOR);
+          const bands = resolveLayerBands(base, changes, meshHeight(b.mesh), profile);
+          split = splitMeshByBands(b.mesh, { bands, profile, ...(blend ? { blend: printBlendOptions(null) } : {}) });
+        } else {
+          split = bandMeshFromColoredMesh(b.mesh, profile);
+        }
+        memo = { key, kind: spec ? 'layerColors' : 'paint', split, frame: { min, max } };
+        previewSplits.set(id, memo);
+      }
+      const { split } = memo;
+      // The middle of the requested layer: a cut snaps to the top of the layer it falls in.
+      const cut = cutBandMesh(split, view.layer === null ? undefined : layerTopZ(view.layer - 1, split.profile) - split.profile.layerHeight / 2);
+      if (cut.mesh.numTri === 0) return null;
+      const canvas = renderSingleViewCanvas(cut.mesh, {
+        elevation: STANDARD_VIEWS.iso.elevation, azimuth: STANDARD_VIEWS.iso.azimuth,
+        ortho: STANDARD_VIEWS.iso.ortho, size: view.size, annotations: false,
+        // Framed on the whole object, so scrubbing the layers doesn't move the camera.
+        frame: memo.frame,
+      });
+      const note = declared && !layerColours ? 'A generic 3MF does not carry its colours by layer height; the Bambu/Orca project export does.'
+        : !cut.capped ? 'The object is not a closed solid at this height, so part of the cut is open.'
+          : undefined;
+      return { canvas, kind: memo.kind, totalLayers: cut.totalLayers, layer: cut.shownLayers, z: cut.cutZ === null ? null : mm3(cut.cutZ), height: mm3(split.height), ...(note ? { note } : {}) };
+    };
+    return { bake, analyze, thumbnail, analysisOf, cancel, printPreview, isReady: (id: string) => ready.has(id) };
   }
   type ExportSplitSession = ReturnType<typeof createExportSplitSession>;
 
@@ -8291,6 +8374,7 @@ async function main() {
       // the two-pane layout so the arrangement control is always visible.
       ...(bambu ? {} : { packing: true }),
       split: splitPickerOptions(session),
+      printPreview: { render: (id, view) => session.printPreview(id, view, bambu) },
     });
     if (!selected || selected.partIds.length === 0) { session.cancel(); return; }
     // A single object kept whole exports exactly as before the picker existed
@@ -15013,25 +15097,33 @@ async function main() {
   }
 
   // ── Print colours by layer height (api.print.layerColors) ───────────────
-  const mm3 = (n: number) => Math.round(n * 1000) / 1000;
 
   /** What `getLayerColors()` returns. Layer numbers are 1-based, as a slicer shows them. */
   function describeLayerColors() {
     const spec = declaresLayerColors(currentLayerColors) ? currentLayerColors : null;
     const info = currentPrintBands();
-    const profile = printLayerProfile(spec);
+    // A layered photo print has no api.print.layerColors call: its bands come from its swap plan.
+    const plan = !spec && info?.source?.kind === 'layeredPrint' ? info.plan : null;
+    const profile = plan ? plan.profile : printLayerProfile(spec);
     const warnings: string[] = [];
-    if (spec && modelHasColor()) {
+    if (spec && currentLayeredPlan) {
+      warnings.push('This object is a layered photo print that also declares layer colours. The preview and the 3MF project export use the declared layer colours; exportLayeredPrint3MF uses the print\'s own swap plan.');
+    } else if (spec && modelHasColor()) {
       warnings.push('This object also has painted or label colours. A slicer ignores layer colour changes on an object that carries per-triangle paint, so a 3MF project export writes the layer colours and leaves that paint out.');
     }
     return {
+      /** True when the code declares api.print.layerColors. */
       declared: spec !== null,
-      changes: spec ? spec.changes.map(c => ({ z: c.z, color: c.color })) : [],
+      /** Where the bands come from: the code's layer colours, a layered photo print's swap plan, or nothing. */
+      source: spec ? 'layerColors' as const : plan ? 'layeredPrint' as const : null,
+      changes: spec ? spec.changes.map(c => ({ z: c.z, color: c.color }))
+        : plan ? plan.changes.map((c, i) => ({ z: mm3(c.z), color: c.color, name: plan.names[i] }))
+          : [],
       layerHeight: profile.layerHeight,
       firstLayerHeight: profile.firstLayerHeight,
       modelHeight: info ? mm3(info.height) : 0,
       totalLayers: info ? layerCount(info.height, info.profile) : 0,
-      bands: spec && info ? info.bands.map(b => ({ color: b.color, fromZ: mm3(b.fromZ), toZ: mm3(b.toZ), firstLayer: b.firstLayer + 1, lastLayer: b.lastLayer + 1 })) : [],
+      bands: (spec || plan) && info ? info.bands.map(b => ({ color: b.color, fromZ: mm3(b.fromZ), toZ: mm3(b.toZ), firstLayer: b.firstLayer + 1, lastLayer: b.lastLayer + 1 })) : [],
       ...(warnings.length > 0 ? { warnings } : {}),
     };
   }
@@ -15042,7 +15134,7 @@ async function main() {
     const info = currentPrintBands();
     const totalLayers = info ? layerCount(info.height, info.profile) : 0;
     const notes: string[] = [];
-    if (printPreviewState.enabled && !declaresLayerColors(activeLayerColors())) notes.push('The preview is on, but this object declares no layer colours, so the model is shown as usual. Declare them with setLayerColors([{ z, color }, …]) or api.print.layerColors in the code.');
+    if (printPreviewState.enabled && !info?.source) notes.push('The preview is on, but this object declares no layer colours and is not a layered photo print, so the model is shown as usual. Declare them with setLayerColors([{ z, color }, …]) or api.print.layerColors in the code.');
     if (shown && !shown.capped) notes.push('The model is not a closed solid at this height, so the cut could not be capped.');
     return {
       enabled: printPreviewState.enabled,
@@ -24796,7 +24888,7 @@ async function main() {
         'measureBetween': { signature: 'measureBetween([x,y,z], [x,y,z]) -- Alias of measurePoints -> number or {error}. Check typeof r === "number" before comparing', docs: '/ai.md#console-api--windowpartwright' },
         'measureMode': { signature: 'measureMode(enabled?) -- Turn the interactive two-click measure tool on/off (omit to toggle); locks orbit while on. Throws on a non-boolean', docs: '/ai.md#console-api--windowpartwright' },
         'getMeasurement': { signature: 'getMeasurement() -- Interactive measure state -> {active, point1, point2, distance} (points/distance null until clicked)', docs: '/ai.md#console-api--windowpartwright' },
-        'getLayerColors': { signature: "getLayerColors() -- Print colours by layer height the open object's code declares: {declared, changes:[{z,color}], layerHeight, firstLayerHeight, modelHeight, totalLayers, bands:[{color,fromZ,toZ,firstLayer,lastLayer}], warnings?}", docs: '/ai/printing.md#colours-by-layer-height' },
+        'getLayerColors': { signature: "getLayerColors() -- Print colours by layer height the open object's code declares, or a layered photo print's swap plan: {declared, source: 'layerColors'|'layeredPrint'|null, changes:[{z,color,name?}], layerHeight, firstLayerHeight, modelHeight, totalLayers, bands:[{color,fromZ,toZ,firstLayer,lastLayer}], warnings?}", docs: '/ai/printing.md#colours-by-layer-height' },
         'setLayerColors': { signature: "setLayerColors([{z, color}], {layerHeight?, firstLayerHeight?}?) -- Declare print colours by layer height (from z mm above the bed up, print in color; z:0 sets the first layers). Writes api.print.layerColors(...) into the code, runs and saves. An empty list removes them. manifold-js only. Returns {ok, call, replaced, version?, layerColors} or {error}", docs: '/ai/printing.md#colours-by-layer-height' },
         'clearLayerColors': { signature: "clearLayerColors() -- Remove the api.print.layerColors call from the open object's code, run and save", docs: '/ai/printing.md#colours-by-layer-height' },
         'setPrintPreview': { signature: "setPrintPreview({enabled?, layer?, z?, blend?}) -- Print preview: draw the model as the layer-colour bands that will print. layer (layers printed, 1-based) or z (mm above the bed) cuts it like a slicer's layer slider; null shows it whole. blend estimates how thin translucent top layers mix. renderView/renderViews show the preview while it is on. Turning it on opens the Print preview panel (off closes it); opening another tool turns it off. Returns the state or {error}", docs: '/ai/printing.md#print-preview' },
@@ -25210,6 +25302,7 @@ async function main() {
       if (isReadOnlyViewer()) return { ok: false, reason: 'This tab is a read-only viewer of the session, so the colours can\'t be edited here.' };
       if (isSharedPreview()) return { ok: false, reason: 'Fork this shared design to edit its layer colours.' };
       if (getActiveLanguage() !== 'manifold-js') return { ok: false, reason: 'Layer colours can be edited in JavaScript models only for now. This session uses another language.' };
+      if (activePrintSource()?.kind === 'layeredPrint') return { ok: false, reason: 'This is a layered photo print. Its filament swaps come from api.layeredPrint in the code, so they are shown here and changed there (or by making the print again).' };
       return { ok: true };
     },
     getLayerColors: () => describeLayerColors(),

@@ -425,7 +425,7 @@ partwright.setPrinterSettings({bed?, nozzleWidth?, overhangAngleDeg?, clearance?
 partwright.checkPrintability({bed?, nozzleWidth?, overhangAngleDeg?}?) // bed fit / overhang / thin wall / small feature / tip-over / watertight report, or {error}
 await partwright.thicknessMap({threshold?, limit?, render?, views?, size?}?) // EXACT wall thickness per triangle -> {minThickness, medianThickness, thinFraction, spots[] (thin areas, thinnest first), image? (heatmap)} — find WHERE walls are thin; see /ai/printing.md#thicknessmapopts
 partwright.getLayerColors() / await partwright.setLayerColors([{z, color}], {layerHeight?, firstLayerHeight?}?) / await partwright.clearLayerColors() // print colours by layer height (writes api.print.layerColors into the code)
-partwright.setPrintPreview({enabled?, layer?, z?, blend?}) / partwright.getPrintPreview() // show the model as the bands that print; renders follow it while on
+partwright.setPrintPreview({enabled?, layer?, z?, blend?}) / partwright.getPrintPreview() // show the model as the bands that print; renders follow it while on (layer colours, or a layered photo print's swap plan)
 partwright.isRunning()                   // -> boolean (is code executing?)
 
 // Spending mode (AI budget) -- respect what the user set; see #spending-mode

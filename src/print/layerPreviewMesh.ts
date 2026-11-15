@@ -31,8 +31,12 @@ export interface LayerBandOptions {
   blend?: {
     /** mm of a colour's filament that light gets through. */
     transmissionOf: (color: string) => number;
-    /** How many layers down to look. */
+    /** How many layers down to look (and how many layers above a colour change still change shade). */
     maxLayers: number;
+    /** The colour seen on top of 0-based `layer`, as "#rrggbb". When given it
+     *  replaces the built-in estimate: a layered photo print brings the
+     *  prediction its own solver made. */
+    colorOnTopOf?: (layer: number) => string | null;
     /** A face counts as upward-facing when its unit normal's z is at least this. */
     minUpNormal: number;
   };
@@ -190,7 +194,7 @@ export function splitMeshByBands(mesh: MeshData, opts: LayerBandOptions): LayerB
   /** Offset into `seeRgb` of the estimated see-through colour on top of `layer`. */
   const seeThrough = (layer: number): number => {
     if (!seeKnown![layer]) {
-      const hex = estimateTopColor(bands, layerTopZ(layer, profile), profile, blend!.transmissionOf, blend!.maxLayers);
+      const hex = blend!.colorOnTopOf ? blend!.colorOnTopOf(layer) : estimateTopColor(bands, layerTopZ(layer, profile), profile, blend!.transmissionOf, blend!.maxLayers);
       seeRgb!.set(hex ? storedRgb(hex) : [bandRgb[layer * 3], bandRgb[layer * 3 + 1], bandRgb[layer * 3 + 2]], layer * 3);
       seeKnown![layer] = 1;
     }
@@ -277,6 +281,43 @@ export function splitMeshByBands(mesh: MeshData, opts: LayerBandOptions): LayerB
       return [table[at], table[at + 1], table[at + 2]];
     },
   };
+}
+
+/** Colour of a cut's cap, and of unpainted triangles, when the model is drawn in its own colours. */
+const PLAIN_RGB: [number, number, number] = [140, 140, 140];
+
+/**
+ * A model drawn in its OWN colours (paint, labels, or none), in the shape
+ * `cutBandMesh` takes, so the layer slider works on a model that has no layer
+ * colours too. The inside of a painted model has no colour to show, so the
+ * cap of a cut is a neutral grey.
+ */
+export function bandMeshFromColoredMesh(mesh: MeshData, profile: LayerProfile): LayerBandMesh {
+  const { vertProperties: vp, triVerts, numTri, numProp, triColors } = mesh;
+  const positions = new Float32Array(numTri * 9);
+  const colors = new Uint8Array(numTri * 3);
+  let bedZ = Infinity;
+  let topZ = -Infinity;
+  for (let t = 0; t < numTri; t++) {
+    for (let k = 0; k < 3; k++) {
+      const i = triVerts[t * 3 + k] * numProp;
+      positions[t * 9 + k * 3] = vp[i];
+      positions[t * 9 + k * 3 + 1] = vp[i + 1];
+      positions[t * 9 + k * 3 + 2] = vp[i + 2];
+      if (vp[i + 2] < bedZ) bedZ = vp[i + 2];
+      if (vp[i + 2] > topZ) topZ = vp[i + 2];
+    }
+    const r = triColors ? triColors[t * 3] : 0, g = triColors ? triColors[t * 3 + 1] : 0, b = triColors ? triColors[t * 3 + 2] : 0;
+    const unpainted = r === 0 && g === 0 && b === 0;
+    colors[t * 3] = unpainted ? PLAIN_RGB[0] : r;
+    colors[t * 3 + 1] = unpainted ? PLAIN_RGB[1] : g;
+    colors[t * 3 + 2] = unpainted ? PLAIN_RGB[2] : b;
+  }
+  if (numTri === 0 || !Number.isFinite(bedZ)) {
+    return { positions: new Float32Array(0), colors: new Uint8Array(0), numTri: 0, bedZ: 0, height: 0, totalLayers: 0, profile, capColorOfLayer: () => PLAIN_RGB };
+  }
+  const height = topZ - bedZ;
+  return { positions, colors, numTri, bedZ, height, totalLayers: layerCount(height, profile), profile, capColorOfLayer: () => PLAIN_RGB };
 }
 
 type P2 = [number, number];

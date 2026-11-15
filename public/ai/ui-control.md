@@ -142,7 +142,7 @@ Nothing is painted until the user clicks the model.
 
 ### `tool-print-preview` — Print preview
 
-No prefill. Opens the panel that shows the model as the layer-colour bands that will print, with a layer slider, an **Estimated blending** checkbox and an editable list of colour changes (written to the code on **Apply to code**). Opening it turns the preview on; closing it turns it off. To set what it shows from code, call `setPrintPreview({layer?, z?, blend?})`; to change the colours, `setLayerColors`. `toolState = {enabled, showing, layer, totalLayers, z, blend}`. See `/ai/printing.md#print-preview`.
+No prefill. Opens the panel that shows the model as the layer-colour bands that will print (its `api.print.layerColors`, or a layered photo print's swap plan, which is read-only there), with a layer slider, an **Estimated blending** checkbox and an editable list of colour changes (written to the code on **Apply to code**). Opening it turns the preview on; closing it turns it off. To set what it shows from code, call `setPrintPreview({layer?, z?, blend?})`; to change the colours, `setLayerColors`. `toolState = {enabled, showing, layer, totalLayers, z, blend}`. See `/ai/printing.md#print-preview`.
 
 ### `tool-cross-section` — Cross section
 
@@ -150,7 +150,7 @@ No prefill. Opens the panel that shows the model as the layer-colour bands that 
 
 ### `export-objects` — Export objects (object picker)
 
-`format` (`3mf-bambu` default, `3mf`, `stl`, `obj`, `glb` — non-Bambu formats need a session with 2+ objects, since one object downloads straight away), `objects` (names or ids to tick; default the current object), and for `3mf-bambu`: `printer` (id), `nozzle` (`"0.2"` `"0.4"` `"0.6"` `"0.8"`), `filament` (id), `plateLayout` (`separate|grid|group`); `packStrategy` (`grid|horizontal|vertical`, any 3MF). Opens the export's picker with these ticked/selected — the user clicks **Export**. Every key (incl. `objects`, `plateLayout:'group'` needing grouped objects) is checked before anything opens. If a pre-export "unsaved objects" confirm comes first, `openTool` returns `pending: true` after a few seconds (`ui.toolDialogOpenWaitMs`) and the picker opens with your values once the user answers the confirm. `toolState` includes `format`.
+`format` (`3mf-bambu` default, `3mf`, `stl`, `obj`, `glb` — non-Bambu formats need a session with 2+ objects, since one object downloads straight away), `objects` (names or ids to tick; default the current object), and for `3mf-bambu`: `printer` (id), `nozzle` (`"0.2"` `"0.4"` `"0.6"` `"0.8"`), `filament` (id), `plateLayout` (`separate|grid|group`); `packStrategy` (`grid|horizontal|vertical`, any 3MF); `printPreview` (bool, any 3MF: open with the Print preview block showing how a ticked object will print). Opens the export's picker with these ticked/selected — the user clicks **Export**. Every key (incl. `objects`, `plateLayout:'group'` needing grouped objects) is checked before anything opens. If a pre-export "unsaved objects" confirm comes first, `openTool` returns `pending: true` after a few seconds (`ui.toolDialogOpenWaitMs`) and the picker opens with your values once the user answers the confirm. `toolState` includes `format`, and for 3MF `printPreview` (`{shown, object, kind, layer, totalLayers, z, blend}`).
 
 ### `export-session` — Export session (.partwright.json)
 
