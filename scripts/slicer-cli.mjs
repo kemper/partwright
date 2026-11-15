@@ -6,9 +6,15 @@
 //   node scripts/slicer-cli.mjs status                 # JSON: what is installed (runs nothing)
 //   node scripts/slicer-cli.mjs fetch                  # download + hash-check the pinned build (runs nothing)
 //   node scripts/slicer-cli.mjs install [--apt]        # fetch, unpack, check system packages
-//   node scripts/slicer-cli.mjs run -- <slicer args>   # see the two recipes below
+//   node scripts/slicer-cli.mjs check <file.3mf | model.js>   # THE AGENT COMMAND: renders + slice + one JSON report
+//   node scripts/slicer-cli.mjs run -- <slicer args>   # raw slicer CLI, see the two recipes below
 //
-// Recipes (both take ~1-2 s on a small model):
+// `check` (scripts/slicer-cli/check.mjs) is what agents should reach for: it
+// exports a model through the real app when given code, reads the file with our
+// own 3MF reader, asks the slicer for plate renders and a slice, compares the
+// two, and exits non-zero when a check fails. `check --help` lists its options.
+//
+// Raw recipes (each takes a few seconds on a small model):
 //   plate render   run -- --export-png 0 --camera-view 0 --outputdir <dir> model.3mf
 //                  → <dir>/plate_<n>_<view>.png, 512x512, painted filament colours included.
 //                  Views: 0 iso, 1 top-front, 2 left, 3 right, 10/11/12 other isos.
@@ -38,7 +44,7 @@
 // The CLI is not the desktop app: it loads projects through a different path
 // than the GUI, so a clean run here does not prove the GUI opens the file.
 import { createHash } from 'node:crypto';
-import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
+import { closeSync, createReadStream, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -213,7 +219,13 @@ async function startCompositor(runtimeDir) {
   return null;
 }
 
-async function run(args) {
+/**
+ * Set up one slicer session and hand `fn` an `exec(args, { log })` that runs
+ * the slicer once (several calls share the compositor and shim). `log` sends
+ * the slicer's output to a file instead of this process's stdio. Verifies the
+ * launched files first and cleans up on every path, including an interrupt.
+ */
+async function withSession(fn) {
   if (!(await unpackedMatches()) || missingPackages().length > 0) await install();
   const osmesa = osmesaPath();
   const runDir = makeRunDir();
@@ -234,20 +246,29 @@ async function run(args) {
     compositor = await startCompositor(runDir);
     if (!compositor) throw new Error('the headless compositor (weston) did not start');
     const preload = [shim, osmesa, process.env.LD_PRELOAD].filter(Boolean).join(' ');
-    slicer = spawn(LAUNCHER, args, {
-      stdio: 'inherit',
-      env: { ...process.env, XDG_RUNTIME_DIR: runDir, WAYLAND_DISPLAY: compositor.socket, LD_PRELOAD: preload },
+    const env = { ...process.env, XDG_RUNTIME_DIR: runDir, WAYLAND_DISPLAY: compositor.socket, LD_PRELOAD: preload };
+    const exec = (args, { log } = {}) => new Promise((done, bad) => {
+      const fd = log ? openSync(log, 'a') : null;
+      const finish = () => { if (fd !== null) closeSync(fd); slicer = null; };
+      slicer = spawn(LAUNCHER, args, { stdio: fd !== null ? ['ignore', fd, fd] : 'inherit', env });
+      slicer.on('error', (e) => { finish(); bad(e); });
+      slicer.on('exit', (status, signal) => { finish(); done(status ?? (signal ? 1 : 0)); });
     });
-    const code = await new Promise((done, bad) => {
-      slicer.on('error', bad);
-      slicer.on('exit', (status, signal) => done(status ?? (signal ? 1 : 0)));
-    });
+    return await fn({ exec });
+  } finally {
     cleanup();
-    process.exit(code);
-  } catch (e) {
-    cleanup();
-    fail(e instanceof Error ? e.message : String(e));
   }
+}
+
+async function run(args) {
+  let code;
+  try { code = await withSession(({ exec }) => exec(args)); } catch (e) { fail(e instanceof Error ? e.message : String(e)); }
+  process.exit(code);
+}
+
+async function check(args) {
+  const { runCheck } = await import('./slicer-cli/check.mjs');
+  process.exit(await runCheck(args, { withSession, root: ROOT }));
 }
 
 async function status() {
@@ -267,7 +288,8 @@ if (command === 'status') await status();
 else if (command === 'fetch') await fetchBundle();
 else if (command === 'install') await install({ apt: rest.includes('--apt') });
 else if (command === 'run') await run(rest[0] === '--' ? rest.slice(1) : rest);
+else if (command === 'check') await check(rest);
 else {
-  console.error('usage: node scripts/slicer-cli.mjs status | fetch | install [--apt] | run -- <slicer args>');
+  console.error('usage: node scripts/slicer-cli.mjs status | fetch | install [--apt] | check <file.3mf|model.js> [options] | run -- <slicer args>');
   process.exit(2);
 }

@@ -19,7 +19,7 @@ npm run snap -- /editor [--out f.png] [--wait ms]  # one-shot navigate→settle�
 npm run human:fit -- --photo p.png [--photo side.png@0,0]   # fit api.human's body sliders + arm/leg spread to a photo's silhouette → api.human code (see public/ai/human.md)
 npm run pr:screenshots -- a.png b.png  # upload screenshots; a workflow posts them as the PR's "Visual proof" comment (stored on pr-assets, never in branch history) — see Visual proof in the PR
 npm run cf:prune-previews [-- --yes]   # delete Cloudflare Pages per-branch preview deployments (dry run unless --yes; keeps main/staging, never production; needs CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID)
-node scripts/slicer-cli.mjs run -- --export-png 0 --outputdir out model.3mf   # the real slicer's own plate render (or --slice 0) of an exported 3MF; `install --apt` once per container — see docs/headless-cli.md
+node scripts/slicer-cli.mjs check model.js --expect-filaments 3   # print-job check: real app export → real slicer renders + slice → JSON report (also takes a .3mf); `install --apt` once per container — see Print-Job Check below
 ```
 
 Open `http://localhost:5173/editor` to go straight to the editor. AI agents drive the tool via the `window.partwright` console API and see geometry by calling the render tools (`renderViews`/`renderView`), so there is no special view to preselect.
@@ -268,6 +268,7 @@ Re-shoot when a later push changes the visuals; the proof must match the current
 | AI panel / provider changes | Open panel, verify connection indicator, basic interaction |
 | Surface modifiers (fuzzy/smooth/voxelize/scale) | Trigger the modifier, verify the result renders correctly |
 | Paint, import, export | Trigger the specific flow, verify output |
+| 3MF export, paint→filament mapping, plates/placement | `node scripts/slicer-cli.mjs check <model.js\|file.3mf>` — see [Print-Job Check](#print-job-check--slicer-cli-check-for-cli-agents-validating-3mf-exports) |
 | Pure logic, no UI | Unit tests sufficient; Playwright not required |
 
 **When to add a Playwright spec:** When you land a new UI feature, add a `tests/*.spec.ts` that covers its golden path. Not exhaustive coverage — one `test()` that opens the feature, performs the core interaction, and asserts the key visible outcome is enough to catch future regressions.
@@ -346,6 +347,25 @@ node bin/partwright.mjs fetch <image-url> --out ref.png            # pull a remo
 > **A shared builder/engine fix does not automatically refresh the baked catalog — this has bitten more than a dozen sessions.** Catalog entries are baked snapshots (mesh + thumbnail + `geometryData`) generated once from their stored `code`; editing a builder like `sdfFigure.ts` fixes every consuming entry's *editor* rendering for free the moment someone opens it (opening an entry re-runs its code), but the static `/catalog` grid thumbnail and stored `geometryData` stay stale until you explicitly re-bake, and nothing currently flags that drift. After changing a builder consumed by catalog entries, grep `public/catalog/*.partwright.json` + `examples/figure_*.js` for consumers and re-bake the affected ones — don't treat "the fix landed on `main`" as "the catalog shows it." (A standing CI "catalog freshness" check that diffs source against committed bake stats is tracked as an open gap — see the Backlog in the latest `retros/reports/`.)
 
 > **CLI agents vs in-app/extension AI.** `model:preview` is for agents running in *this repo* (you). The in-app and chrome-extension AI cannot run a CLI — they verify with the in-browser `renderViews()` / `runAndSave(code, label, {maxComponents})` and read `public/ai/*.md` subdocs (e.g. `mechanisms`). Keep tool-specific instructions in `CLAUDE.md`/`docs/` (this audience) and in-browser instructions in `ai.md`/subdocs (that audience).
+
+## Print-Job Check — `slicer-cli check` (for CLI agents validating 3MF exports)
+
+`model:preview` shows the **model**; this shows the **print job**. It runs Bambu Studio's own command line on the 3MF the app exports, as an external process, and tells you whether the real slicer loads it, slices it, and sees the same objects and painted filaments our own reader sees. It is a **test tool for development**, like a unit test: the slicer is AGPL-3.0 and a native binary, so it never ships in the site and the in-app AI can't call it.
+
+```bash
+node scripts/slicer-cli.mjs install --apt                          # once per container (256 MB download + 4 Ubuntu packages, ~1 min)
+node scripts/slicer-cli.mjs check model.js --expect-filaments 3    # code → real app export (warm-browser daemon) → slicer
+node scripts/slicer-cli.mjs check exported.3mf                     # a file you already have
+node scripts/slicer-cli.mjs check --current --export-opts '{"plateLayout":"grid"}'   # the daemon's open session (multi-object, brush paint)
+node scripts/slicer-cli.mjs check model.js --no-render             # numbers only
+```
+
+- **Output:** one JSON document on stdout — `ok`, `checks[]` (`slicer-loads`, `slicer-slices`, `object-count`, `object-sizes`, `objects-on-bed`, `filaments-used`, `expect-*`), `warnings[]`, `file` (what our reader sees), `slicer` (per-plate objects, grams per filament, filament changes, print time) and `renders.sheet` (a contact sheet of the slicer's own plate renders). Exit `0` all checks passed, `1` a check failed, `2` bad arguments. Files land in the gitignored `.partwright/slicer-check/<name>/`.
+- **Run it when you touch the 3MF path** (`src/export/threemf*.ts`, `paintColor3mf.ts`, the project templates, plate layout/packing, `src/import/parsers/threemf.ts`) or how paint becomes filament, and put the result in the PR body.
+- **Green checks don't prove the paint is where you meant it.** Paint is per triangle, so a band across a face made of two big triangles exports as a diagonal wedge with every check passing. `Read` `renders.sheet` at checkpoints (first pass, after a paint change, before telling a user a job is ready).
+- **Limits:** the command line loads projects through a different path than the desktop GUI, so it can't catch GUI-only load crashes; seven fixed cameras at 512 px with no underside view; one pinned Bambu Studio release (not Orca/Prusa); not installed in GitHub Actions.
+
+Full guide: the **`/slicer-check`** skill (`.claude/skills/slicer-check/SKILL.md`). Raw slicer arguments: `node scripts/slicer-cli.mjs run -- …` (`docs/headless-cli.md`).
 
 ## AI Agent Workflow & API Reference
 
@@ -750,7 +770,7 @@ Guardrails for automated work, learned the hard way:
 - **A failed or unreadable tool result is not a success.** If a call errors (e.g. an `AskUserQuestion` that didn't validate) or its output comes back garbled / empty / out-of-order, re-run or re-verify state before proceeding — never act on an answer you didn't actually receive, and never treat a laggy/garbled shell as ground truth.
 - **Git is single-writer.** The working tree and index are shared mutable state. Don't run git mutations while a subagent is also touching the same checkout. Resolve merges/rebases inline yourself; if you must delegate git work to a subagent, give it an isolated worktree (`isolation: "worktree"`).
 - **Verify state between destructive git steps.** After a merge / rebase / reset, confirm `git status` and HEAD, and that local HEAD matches what you pushed, before moving on.
-- **Validate an external format/integration against its real downstream consumer, not a synthetic proxy.** A headless CLI validator can exercise a completely different code path than the GUI or app it's meant to feed (Bambu's slicer CLI uses a different loader than the desktop app's `load_project`, and OrcaSlicer is not a valid proxy for Bambu-specific behavior) — a "passes my harness" result isn't evidence until the harness is the actual consumer. For any export-format work, an early question is "can I run the real thing that opens this file," not just "can I round-trip it myself."
+- **Validate an external format/integration against its real downstream consumer, not a synthetic proxy.** A headless CLI validator can exercise a completely different code path than the GUI or app it's meant to feed (Bambu's slicer CLI uses a different loader than the desktop app's `load_project`, and OrcaSlicer is not a valid proxy for Bambu-specific behavior) — a "passes my harness" result isn't evidence until the harness is the actual consumer. For any export-format work, an early question is "can I run the real thing that opens this file," not just "can I round-trip it myself." For 3MF, `node scripts/slicer-cli.mjs check` runs the real slicer's command line (still not its GUI loader) — see [Print-Job Check](#print-job-check--slicer-cli-check-for-cli-agents-validating-3mf-exports).
 - **A delegated subagent's "done and validated" claim can be wrong — re-verify before relying on it.** This applies doubly to `isolation: "worktree"` work: confirm the worktree actually branched from the current feature HEAD (not a stale `origin/main`) before integrating its result.
 
 ### After Opening a PR

@@ -65,9 +65,24 @@ command line on an exported `.3mf`, as an external process:
 
 ```bash
 node scripts/slicer-cli.mjs install --apt      # once per container: download (256 MB), unpack, system packages
-node scripts/slicer-cli.mjs run -- --export-png 0 --camera-view 0 --outputdir out model.3mf
+node scripts/slicer-cli.mjs check model.js --expect-filaments 3    # the agent command: one JSON report
+node scripts/slicer-cli.mjs run -- --export-png 0 --camera-view 0 --outputdir out model.3mf   # raw slicer CLI
 node scripts/slicer-cli.mjs run -- --slice 0 --export-3mf sliced.gcode.3mf --outputdir out model.3mf
 ```
+
+**`check` is the command agents should use.** It takes a `.3mf`, a model file
+(`.js` / `.scad`, run and exported through the real app in the Phase 2 daemon),
+or `--current` (the daemon's open session). It reads the file with our own
+parser, asks the slicer for plate renders and a slice in one session, compares
+the two, and prints one JSON document (`ok`, `checks[]`, `warnings[]`, `file`,
+`slicer`, `renders`), exiting non-zero when a check fails. The pure comparison
+logic is `scripts/slicer-cli/report.mjs` (unit-tested in
+`tests/unit/slicerReport.test.ts`); the orchestration is
+`scripts/slicer-cli/check.mjs`. When to run it, how to read the report and
+what it can't tell you are in the `/slicer-check` skill
+(`.claude/skills/slicer-check/SKILL.md`).
+
+The raw `run` recipes:
 
 - **Plate render** (`--export-png 0`, ~1 s): writes `out/plate_<n>_<view>.png`,
   512×512, drawn by the slicer's own renderer with painted filament colours.
