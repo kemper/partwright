@@ -31,6 +31,10 @@ export interface LayerColorsSpec {
   firstLayerHeight?: number;
 }
 
+/** Filament colour under the first declared change when no entry sits on the
+ *  bed: what the 3MF project export gives an uncoloured object. */
+export const DEFAULT_LAYER_BASE_COLOR = '#d9d9d9';
+
 /** Most colour changes one model may declare. */
 export const MAX_LAYER_COLOR_CHANGES = 256;
 

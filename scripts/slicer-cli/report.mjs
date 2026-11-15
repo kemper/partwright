@@ -68,6 +68,8 @@ export function summarizeFile(parsed) {
     plates: (parsed.plates ?? []).map((p) => ({ id: p.id, name: p.name })),
     filaments: palette.map((p, i) => ({ slot: i + 1, hex: p.hex, name: p.name, triangles: perSlot[i] })),
     uncolouredTriangles,
+    // Colour changes by layer height written in the project, flattened.
+    layerChanges: (parsed.layerChanges ?? []).flatMap((p) => p.entries.map((e) => ({ plate: p.plate, topZ: e.topZ, kind: e.kind, slot: e.slot, color: e.color }))),
     splitPaintedTriangles: parsed.splitPaintedTriangles ?? 0,
     skippedParts: parsed.skippedParts ?? 0,
   };
@@ -185,8 +187,25 @@ export function buildChecks(file, slicer, expect = {}, context = {}) {
     add('object-sizes', sizeProblems.length === 0, sizeProblems.length === 0 ? `all ${file.objects.length} object(s) agree within ${SIZE_TOLERANCE_MM} mm` : sizeProblems.join('; '));
     add('objects-on-bed', offBed.length === 0, offBed.length === 0 ? 'every object sits on z = 0' : offBed.join('; '));
 
-    const fSlots = file.filaments.filter((f) => f.triangles > 0).map((f) => f.slot);
-    add('filaments-used', sameSet(fSlots, sSlots), `file paints slots [${fSlots.join(', ')}], slicer extruded slots [${sSlots.join(', ')}]`);
+    // Filaments the file asks for: every painted slot, plus the slots its
+    // layer changes switch to.
+    const switches = (file.layerChanges ?? []).filter((c) => c.kind === 'filament');
+    const fSlots = [...new Set([...file.filaments.filter((f) => f.triangles > 0).map((f) => f.slot), ...switches.map((c) => c.slot)])].sort((a, b) => a - b);
+    add('filaments-used', sameSet(fSlots, sSlots), `file uses slots [${fSlots.join(', ')}]${switches.length > 0 ? ` (${switches.length} by layer change)` : ''}, slicer extruded slots [${sSlots.join(', ')}]`);
+
+    // Layer changes only take effect on a plate that prints in one filament.
+    // Where that holds, the slicer must make exactly that many filament changes.
+    for (const plate of slicer.plates) {
+      const wanted = switches.filter((c) => c.plate === plate.id);
+      if (wanted.length === 0) continue;
+      const objects = file.objects.filter((o) => (o.plate ?? 1) === plate.id);
+      const painted = objects.some((o) => o.filaments.length > 1) || new Set(objects.flatMap((o) => o.filaments)).size > 1;
+      if (painted) {
+        warnings.push(`plate ${plate.id}: the file has ${wanted.length} layer colour change(s), but its objects use more than one filament, so the slicer ignores them`);
+        continue;
+      }
+      add('layer-changes', plate.filamentChanges === wanted.length, `plate ${plate.id}: file declares ${wanted.length} layer colour change(s), slicer made ${plate.filamentChanges} filament change(s)`);
+    }
   }
 
   // A plain (non-project) 3MF lists no plates: its objects share one implicit plate.

@@ -161,6 +161,55 @@ describe('slicer-cli report', () => {
     expect(checks.find((c: Check) => c.name === 'expect-filaments')!.detail).toContain('not sliced');
   });
 
+  describe('colour changes by layer height', () => {
+    // One unpainted object on plate 1 (slot 1) with two layer switches, to slots 2 and 3.
+    const layered = () => {
+      const p = parsed();
+      p.objects = [{ name: 'a', triangleCount: 4, firstTriangle: 0, plate: 1 }];
+      p.triColor = new Int32Array([0, 0, 0, 0]);
+      p.plates = [{ id: 1, name: 'Plate 1' }];
+      return { ...p, layerChanges: [{ plate: 1, entries: [{ topZ: 4.2, kind: 'filament', slot: 2, color: '#ff0000' }, { topZ: 8.2, kind: 'filament', slot: 3, color: '#0000ff' }] }] };
+    };
+    const sliced = (changes: number, slots: number[]) => {
+      const r = sliceResult({ slots });
+      r.sliced_plates = [{ ...r.sliced_plates[0], objects: [{ name: 'a', triangle_count: 4, bbox: { width: 54, depth: 10, height: 10, z: 0 } }], filaments: slots.map((id) => ({ id, main_used_g: 1, total_used_g: 2 })), filament_change_times: changes }];
+      return ran(r);
+    };
+
+    it('counts the slots layer changes switch to as filaments the file uses', () => {
+      const f = summarizeFile(layered());
+      expect(f.layerChanges).toEqual([
+        { plate: 1, topZ: 4.2, kind: 'filament', slot: 2, color: '#ff0000' },
+        { plate: 1, topZ: 8.2, kind: 'filament', slot: 3, color: '#0000ff' },
+      ]);
+      const { checks } = buildChecks(f, sliced(2, [1, 2, 3]));
+      expect(failed(checks)).toEqual([]);
+      expect(checks.find((c: Check) => c.name === 'filaments-used')!.detail).toContain('2 by layer change');
+      expect(checks.find((c: Check) => c.name === 'layer-changes')!.detail).toBe('plate 1: file declares 2 layer colour change(s), slicer made 2 filament change(s)');
+    });
+
+    it('fails when the slicer did not make the declared changes', () => {
+      const { checks } = buildChecks(summarizeFile(layered()), sliced(0, [1]));
+      expect(failed(checks)).toEqual(['filaments-used', 'layer-changes']);
+    });
+
+    it('warns instead of failing when the plate is painted, since the slicer ignores layer changes there', () => {
+      const p = layered();
+      p.triColor = new Int32Array([0, 1, 0, 1]); // two painted filaments on the object
+      const { checks, warnings } = buildChecks(summarizeFile(p), sliced(40, [1, 2, 3]));
+      expect(checks.map((c: Check) => c.name)).not.toContain('layer-changes');
+      expect(warnings.join(' ')).toContain('the slicer ignores them');
+    });
+
+    it('a manual swap is not a new filament', () => {
+      const p = layered();
+      p.layerChanges = [{ plate: 1, entries: [{ topZ: 4.2, kind: 'swap', slot: 1, color: '#ff0000' }] }];
+      const { checks } = buildChecks(summarizeFile(p), sliced(0, [1]));
+      expect(failed(checks)).toEqual([]);
+      expect(checks.map((c: Check) => c.name)).not.toContain('layer-changes');
+    });
+  });
+
   it('treats a plain 3MF with no plate list as one plate', () => {
     const p = parsed();
     p.plates = [];

@@ -468,7 +468,7 @@ import {
 } from './geometry/statsComputation';
 import { buildGeometryHeuristicWarnings } from './geometry/geometryHeuristics';
 import { getConfig, saveAppConfig } from './config/appConfig';
-import { hexToRgb as layerHexToRgb, layerCount, layerTopZ, parseLayerColorsSpec, resolveLayerBands, splitBaseColor, type LayerBand, type LayerColorsSpec, type LayerProfile } from './print/layerColors';
+import { DEFAULT_LAYER_BASE_COLOR, hexToRgb as layerHexToRgb, layerCount, layerTopZ, parseLayerColorsSpec, resolveLayerBands, splitBaseColor, type LayerBand, type LayerColorsSpec, type LayerProfile } from './print/layerColors';
 import { buildLayerPreviewMesh, type LayerPreviewResult } from './print/layerPreviewMesh';
 import { initPrintPreviewUI, type PrintPreviewHandlers } from './ui/printPreviewPanel';
 import { removeLayerColorsCall, upsertLayerColorsCall } from './print/layerColorsCodegen';
@@ -657,9 +657,6 @@ let printPreviewDraft: LayerColorsSpec | null = null;
 /** Print preview: draw the model as the layer-colour bands that will print.
  *  Per tab and never persisted: it is a way of looking, not model state. */
 const printPreviewState: { enabled: boolean; cutZ: number | null; blend: boolean } = { enabled: false, cutZ: null, blend: false };
-/** Filament colour under the first declared change when no entry sits on the
- *  bed: the colour the 3MF project export gives an uncoloured object. */
-const PRINT_BASE_COLOR = '#d9d9d9';
 /** Called after the preview's inputs or state change, so an open panel can redraw. */
 let onPrintPreviewChange: (() => void) | null = null;
 let printPreviewMemo: { mesh: MeshData; spec: LayerColorsSpec; key: string; result: LayerPreviewResult } | null = null;
@@ -685,7 +682,7 @@ function currentPrintBands(): { bands: LayerBand[]; profile: LayerProfile; heigh
   if (!(height > 0)) return null;
   const spec = printPreviewDraft ?? currentLayerColors;
   const profile = printLayerProfile(spec);
-  const { base, changes } = spec ? splitBaseColor(spec, profile, PRINT_BASE_COLOR) : { base: PRINT_BASE_COLOR, changes: [] };
+  const { base, changes } = spec ? splitBaseColor(spec, profile, DEFAULT_LAYER_BASE_COLOR) : { base: DEFAULT_LAYER_BASE_COLOR, changes: [] };
   return { bands: resolveLayerBands(base, changes, height, profile), profile, height };
 }
 
@@ -713,6 +710,12 @@ function buildPrintPreview(): LayerPreviewResult | null {
   });
   printPreviewMemo = { mesh, spec, key, result };
   return result;
+}
+
+/** Options every 3MF project export passes so layer colours use the same layer
+ *  heights the preview does; the exporter's warnings are collected in `sink`. */
+function printExportOptions(sink: string[]): { layerProfile: LayerProfile; onWarning: (message: string) => void } {
+  return { layerProfile: printLayerProfile(null), onWarning: (message) => { sink.push(message); } };
 }
 
 /** The mesh to draw instead of the model while the print preview is on, or null. */
@@ -6686,7 +6689,7 @@ async function main() {
     partId: string,
     name: string,
     opts: { onStart?: () => void } = {},
-  ): Promise<{ name: string; mesh: MeshData; labels: Map<string, Set<number>> | null } | null> {
+  ): Promise<{ name: string; mesh: MeshData; labels: Map<string, Set<number>> | null; layerColors?: LayerColorsSpec } | null> {
     if (partId === getState().currentPart?.id && currentMeshData) {
       // The label map indexes the run's mesh; a texture / paint subdivision /
       // simplify pass may have swapped the displayed mesh since, so carry the
@@ -6694,7 +6697,7 @@ async function main() {
       const labels = currentLabelMap && currentLabelMesh && currentLabelMesh !== currentMeshData
         ? remapTriangleSets(currentLabelMap, currentLabelMesh, currentMeshData)
         : currentLabelMap;
-      return { name, mesh: coloredMeshForExport(currentMeshData), labels };
+      return { name, mesh: coloredMeshForExport(currentMeshData), labels, ...(currentLayerColors ? { layerColors: currentLayerColors } : {}) };
     }
     const domain = getEngineTrustDomain(); // this session's code (#1090)
     const version = await getLatestVersion(partId);
@@ -6774,13 +6777,13 @@ async function main() {
     }
 
     const triColors = composeTriColors(mesh.numTri, [modelLayer, manualLayer]);
-    return { name, mesh: triColors ? { ...mesh, triColors } : mesh, labels: result.labelMap ?? null };
+    return { name, mesh: triColors ? { ...mesh, triColors } : mesh, labels: result.labelMap ?? null, ...(result.layerColors ? { layerColors: result.layerColors } : {}) };
   }
 
   /** One part slated for a multi-part export bake. */
   interface ExportBakePart { id: string; name: string; group?: string }
   /** One object's baked, coloured mesh (plus its part labels, for splitting). */
-  interface BakedExportObject { id: string; name: string; mesh: MeshData; labels: Map<string, Set<number>> | null; group?: string }
+  interface BakedExportObject { id: string; name: string; mesh: MeshData; labels: Map<string, Set<number>> | null; group?: string; layerColors?: LayerColorsSpec }
 
   // Serializes overlapping export bakes. The geometry pool (`enginePool`) is a
   // process-wide singleton and each batch sizes + disposes it, so two concurrent
@@ -6958,7 +6961,8 @@ async function main() {
       const plates = choice.plates?.[b.id];
       if (!items) {
         const plate = plates?.[WHOLE_ITEM_KEY];
-        out.push({ name: b.name, mesh: b.mesh, ...(b.group ? { group: b.group } : {}), ...(plate !== undefined ? { plate } : {}) });
+        // Layer colours are heights above the bed, so they only carry over to a whole object: a split piece sits on its own bed floor.
+        out.push({ name: b.name, mesh: b.mesh, ...(b.group ? { group: b.group } : {}), ...(plate !== undefined ? { plate } : {}), ...(b.layerColors ? { layerColors: b.layerColors } : {}) });
         continue;
       }
       const skip = new Set(choice.excluded?.[b.id] ?? []);
@@ -8060,11 +8064,14 @@ async function main() {
       const toWrite = items.map(b => ({ ...b, mesh: applyColorRemap(b.mesh, remap) }));
 
       const bed = loadPrinterSettings().bed;
+      const exportWarnings: string[] = [];
       const built = build3MFProject(toWrite, {
         bambu, bedSize: [bed[0], bed[1]],
         printer: selected.printer, nozzle: selected.nozzle, filament: selected.filament,
         plateLayout: selected.plateLayout, packStrategy: selected.packStrategy,
+        ...printExportOptions(exportWarnings),
       });
+      for (const w of exportWarnings) showToast(w, { variant: 'warn', source: 'export' });
       downloadBlob(built.blob, built.filename, '3MF');
       showToast(`Exported ${built.filename} — ${exportedSummary(bakeParts.length, baked.length, items)}`, { variant: 'success' });
     } catch (e) {
@@ -8366,7 +8373,7 @@ async function main() {
    *  BuiltExport (no download, no base64) so callers can either trigger a
    *  download or return the bytes. `opts.bambu` (default true) → one part per
    *  build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
-  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: ApiExportOpts): Promise<{ built: import('./export/gltf').BuiltExport; items: PartExport[]; baked: BakedExportObject[]; split: boolean } | { error: string }> {
+  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: ApiExportOpts): Promise<{ built: import('./export/gltf').BuiltExport; items: PartExport[]; baked: BakedExportObject[]; split: boolean; warnings: string[] } | { error: string }> {
     const bambu = opts?.bambu ?? true;
     // Validate the Bambu profile selectors at the boundary so a console/AI/MCP
     // caller gets the same constraints the export modal's dropdowns enforce. An
@@ -8400,13 +8407,15 @@ async function main() {
     const { remap } = merge;
     try {
       const bed = loadPrinterSettings().bed;
+      const warnings: string[] = [];
       const built = build3MFProject(r.items.map(b => ({ ...b, mesh: applyColorRemap(b.mesh, remap) })), {
         customName: filename, bambu, bedSize: [bed[0], bed[1]],
         printer: opts?.printer, nozzle: opts?.nozzle, filament: opts?.filament,
         plateLayout: opts?.plateLayout as BambuPlateLayout | undefined,
         packStrategy: opts?.packStrategy as PackStrategy | undefined,
+        ...printExportOptions(warnings),
       });
-      return { built, items: r.items, baked: r.baked, split: r.split };
+      return { built, items: r.items, baked: r.baked, split: r.split, warnings };
     } catch (e) {
       return { error: e instanceof Error ? e.message : String(e) };
     }
@@ -8415,19 +8424,19 @@ async function main() {
   /** Console/AI twin of the multi-part 3MF export — bakes the requested parts
    *  (default: all) and DOWNLOADS one 3MF. `opts.bambu` (default true) → one part
    *  per build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
-  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: ApiExportOpts): Promise<{ ok: true; filename: string; objects: number; parts: number; items?: string[] } | { error: string }> {
+  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: ApiExportOpts): Promise<{ ok: true; filename: string; objects: number; parts: number; items?: string[]; warnings?: string[] } | { error: string }> {
     const bad = argError(() => assertString(filename, 'export3MFObjects(objectIds, filename)', { optional: true }));
     if (bad) return bad;
     const r = await build3MFPartsExport(partIds, filename, opts);
     if ('error' in r) return r;
     downloadBlob(r.built.blob, r.built.filename, '3MF');
-    return { ok: true as const, filename: r.built.filename, ...exportCounts(r) };
+    return { ok: true as const, filename: r.built.filename, ...exportCounts(r), ...(r.warnings.length > 0 ? { warnings: r.warnings } : {}) };
   }
 
   /** Like {@link export3MFPartsApi} but RETURNS the bytes (base64) instead of
    *  downloading — the agent/test-friendly twin. Lets a caller read the exported
    *  3MF back without the browser download path. */
-  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: ApiExportOpts): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; objects: number; parts: number; items?: string[] } | { error: string }> {
+  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: ApiExportOpts): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; objects: number; parts: number; items?: string[]; warnings?: string[] } | { error: string }> {
     const bad = argError(() => assertString(filename, 'export3MFObjectsData(objectIds, filename)', { optional: true }));
     if (bad) return bad;
     const r = await build3MFPartsExport(partIds, filename, opts);
@@ -8438,6 +8447,7 @@ async function main() {
       sizeBytes: r.built.blob.size,
       base64: await blobToBase64(r.built.blob),
       ...exportCounts(r),
+      ...(r.warnings.length > 0 ? { warnings: r.warnings } : {}),
     };
   }
 
@@ -8692,9 +8702,10 @@ async function main() {
       const mesh = fileExportMesh(true);
       if (!mesh) return null;
       const bed = loadPrinterSettings().bed;
-      const built = build3MFProject([{ name: getState().session?.name ?? 'model', mesh }], {
+      const built = build3MFProject([{ name: getState().session?.name ?? 'model', mesh, ...(currentLayerColors ? { layerColors: currentLayerColors } : {}) }], {
         bambu: true, bedSize: [bed[0], bed[1]],
         printer: DEFAULT_BAMBU_PRINTER, nozzle: '0.4', filament: DEFAULT_BAMBU_FILAMENT,
+        ...printExportOptions([]),
       });
       return { blob: built.blob, filename: built.filename };
     }
