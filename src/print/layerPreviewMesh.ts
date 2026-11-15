@@ -110,16 +110,6 @@ function chainLoops(segments: [P3, P3][]): [number, number][][] | null {
   return loops;
 }
 
-const signedArea = (loop: [number, number][]) => {
-  let a = 0;
-  for (let i = 0; i < loop.length; i++) {
-    const [x1, y1] = loop[i];
-    const [x2, y2] = loop[(i + 1) % loop.length];
-    a += x1 * y2 - x2 * y1;
-  }
-  return a / 2;
-};
-
 function pointInLoop(x: number, y: number, loop: [number, number][]): boolean {
   let inside = false;
   for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) {
