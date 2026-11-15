@@ -74,6 +74,7 @@ describe('checkEngineWorkerMessage', () => {
         { name: 'coat', color: [0.5, 0.4, 0.3], descriptor: { kind: 'pattern', pattern: 'spots', colors: [[1, 1, 1], [0, 0, 0]] } },
       ],
       surfaceOps: [{ id: 'fuzzy', params: { amplitude: 0.2 } }], materialSpec: { preset: 'brass' },
+      layerColors: { changes: [{ z: 0, color: '#ffffff' }, { z: 8, color: '#dc1e1e' }], layerHeight: 0.2 },
       lostLabels: null, paramsSchema: [{ key: 'w', type: 'number', default: 1, label: 'W' }],
       renderOnly: false, workerMs: 12, engineHeapBytes: 1024,
       manifoldFacts: { bbox: { min: [0, 0, 0], max: [1, 1, 1] }, volume: 1, surfaceArea: 6, genus: 0, isManifold: true, manifoldStatus: null, componentCount: 1, containedComponents: 0, componentsInterpenetrate: false, edges: { min: 0.5, mean: 1 }, pieces: { count: 1, pieceOfTri: new Int32Array(1) } },
@@ -212,6 +213,24 @@ describe('surfaceOps / paramsSchema / materialSpec re-validation', () => {
     ]) {
       expect(exec(extra).ok, JSON.stringify(extra).slice(0, 90)).toBe(false);
     }
+  });
+});
+
+describe('layerColors re-validation', () => {
+  const exec = (layerColors: unknown) => checkEngineWorkerMessage({ type: 'execute_result', callId: 'e', mesh: null, error: null, layerColors });
+  it('accepts what the api.print.layerColors recorder emits', () => {
+    expect(exec({ changes: [] }).ok).toBe(true);
+    expect(exec({ changes: [{ z: 0, color: '#ffffff' }, { z: 8.2, color: '#dc1e1e' }], layerHeight: 0.16, firstLayerHeight: 0.2 }).ok).toBe(true);
+    expect(exec(null).ok).toBe(true);
+  });
+  it('refuses forged values', () => {
+    expect(exec([{ z: 0, color: '#ffffff' }]).ok).toBe(false);                             // not the spec object
+    expect(exec({ changes: [{ z: 0, color: '#ffffff' }], extra: 1 }).ok).toBe(false);      // unknown key
+    expect(exec({ changes: [{ z: -1, color: '#ffffff' }] }).ok).toBe(false);               // below the bed
+    expect(exec({ changes: [{ z: 0, color: 'red' }] }).ok).toBe(false);                    // not #rrggbb
+    expect(exec({ changes: [{ z: 0, color: '#ffffff', gcode: 'M600' }] }).ok).toBe(false); // unknown change key
+    expect(exec({ changes: [{ z: 0, color: '#ffffff' }], layerHeight: 50 }).ok).toBe(false);
+    expect(exec({ changes: Array.from({ length: 300 }, (_, i) => ({ z: i, color: '#ffffff' })) }).ok).toBe(false);
   });
 });
 
