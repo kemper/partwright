@@ -4,7 +4,7 @@
 // (tests/unit/slicerReport.test.ts).
 
 /** Size agreement tolerance between our reader and the slicer, in mm. */
-export const SIZE_TOLERANCE_MM = 0.05;
+const SIZE_TOLERANCE_MM = 0.05;
 
 /** The slicer's fixed plate-render cameras (`--camera-view`). */
 export const SLICER_VIEWS = { 0: 'iso', 1: 'top-front', 2: 'left', 3: 'right', 10: 'iso-1', 11: 'iso-2', 12: 'iso-3' };
@@ -73,22 +73,43 @@ export function summarizeFile(parsed) {
   };
 }
 
+const succeeded = (result, exit) => !!result && result.return_code === 0 && (exit === null || exit === undefined || exit === 0);
+
+/** Why a slicer run did not succeed, in words. `exit` is the process exit status. */
+function failure(result, exit) {
+  if (!result) return `the slicer wrote no result (exit ${exit ?? 'unknown'}); it may have crashed`;
+  if (result.return_code !== 0) return `${result.error_string ?? 'unknown error'} (code ${result.return_code})`;
+  return `the slicer reported success but exited with status ${exit}`;
+}
+
 /**
- * Summarise the slicer's `result.json` files. `load` is the result of any run
- * that loaded the file (a plate render, or the slice when rendering is off);
- * `slice` is the slice run's result, or null when slicing was skipped.
+ * Summarise what the slicer runs produced.
+ *
+ * @param {object} runs
+ * @param {object|null} runs.load   `result.json` of the first run that loaded the file (a plate render, or the slice)
+ * @param {number|null} runs.loadExit  that run's process exit status
+ * @param {boolean} [runs.renderAttempted]  plate renders were requested
+ * @param {string[]} [runs.renderFailures]  one line per render that failed
+ * @param {boolean} [runs.sliceSkipped]   the caller asked not to slice
+ * @param {boolean} [runs.sliceAttempted] a slice was started
+ * @param {object|null} [runs.slice]      the slice run's `result.json` (null = none written)
+ * @param {number|null} [runs.sliceExit]  the slice run's process exit status
  */
-export function summarizeSlicer(load, slice) {
-  const ok = (r) => !!r && r.return_code === 0;
+export function summarizeSlicer({ load = null, loadExit = null, renderAttempted = false, renderFailures = [], sliceSkipped = false, sliceAttempted = false, slice = null, sliceExit = null }) {
+  const loaded = succeeded(load, loadExit);
+  // null = not attempted (skipped, or the file never loaded); false = attempted and failed.
+  const sliced = !sliceAttempted ? null : succeeded(slice, sliceExit);
   const out = {
-    loaded: ok(load),
-    ...(load && !ok(load) ? { loadError: `${load.error_string ?? 'unknown error'} (code ${load.return_code})` } : {}),
-    ...(!load ? { loadError: 'the slicer wrote no result' } : {}),
-    sliced: slice === null ? null : ok(slice),
-    ...(slice && !ok(slice) ? { sliceError: `${slice.error_string ?? 'unknown error'} (code ${slice.return_code})` } : {}),
+    loaded,
+    ...(loaded ? {} : { loadError: failure(load, loadExit) }),
+    rendered: renderAttempted ? renderFailures.length === 0 : null,
+    ...(renderFailures.length > 0 ? { renderErrors: renderFailures } : {}),
+    sliced,
+    sliceSkipped,
+    ...(sliced === false ? { sliceError: failure(slice, sliceExit) } : {}),
     plates: [],
   };
-  for (const p of (ok(slice) ? slice.sliced_plates ?? [] : [])) {
+  for (const p of (sliced ? slice.sliced_plates ?? [] : [])) {
     out.plates.push({
       id: p.id,
       objects: (p.objects ?? []).map((o) => ({
@@ -97,7 +118,8 @@ export function summarizeSlicer(load, slice) {
         size: [round(o.bbox?.width ?? 0), round(o.bbox?.depth ?? 0), round(o.bbox?.height ?? 0)],
         z: round(o.bbox?.z ?? 0),
       })),
-      filaments: (p.filaments ?? []).map((f) => ({ slot: f.id, grams: round(f.main_used_g ?? 0, 2), totalGrams: round(f.total_used_g ?? 0, 2) })),
+      // `used` is decided on the raw weight: a small accent can round to 0.00 g.
+      filaments: (p.filaments ?? []).map((f) => ({ slot: f.id, used: (f.main_used_g ?? 0) > 0, grams: round(f.main_used_g ?? 0, 2), totalGrams: round(f.total_used_g ?? 0, 2) })),
       filamentChanges: p.filament_change_times ?? 0,
       printSeconds: Math.round(p.main_predication ?? p.total_predication ?? 0),
       ...(p.warning_message ? { warning: p.warning_message } : {}),
@@ -107,39 +129,59 @@ export function summarizeSlicer(load, slice) {
 }
 
 const sameSet = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+const isUnique = (keys) => new Set(keys).size === keys.length;
+
+/**
+ * Pair each file object with the slicer's object for it. By name when names
+ * are unique on both sides; else by plate + name; else by position, which can
+ * pair the wrong objects in a multi-plate file, so that case is reported.
+ */
+function pairObjects(fileObjects, slicerObjects) {
+  const byKey = (key) => {
+    if (!isUnique(fileObjects.map(key)) || !isUnique(slicerObjects.map(key))) return null;
+    return fileObjects.map((fo) => [fo, slicerObjects.find((so) => key(so) === key(fo))]);
+  };
+  const pairs = byKey((o) => o.name) ?? byKey((o) => `${o.plate ?? ''}|${o.name}`);
+  if (pairs) return { pairs, byPosition: false };
+  return { pairs: fileObjects.map((fo, i) => [fo, slicerObjects[i]]), byPosition: true };
+}
 
 /**
  * Compare the two summaries. Returns `{ checks, warnings }`; each check is
- * `{ name, ok, detail }`. `file` may be null (our reader could not parse it).
- * `expect` holds optional caller expectations: `{ filaments, objects, plates }`.
+ * `{ name, ok, detail }`. `file` is null when our reader could not parse the
+ * 3MF (`context.fileError` says why). `expect` holds optional caller
+ * expectations: `{ filaments, objects, plates }`.
  */
-export function buildChecks(file, slicer, expect = {}) {
+export function buildChecks(file, slicer, expect = {}, context = {}) {
   const checks = [];
   const warnings = [];
   const add = (name, ok, detail) => checks.push({ name, ok, detail });
 
+  // Our reader is the app's own import path: failing on the app's own export is a defect.
+  add('reader-parses', !!file, file ? 'our 3MF reader parsed the file' : `our 3MF reader could not parse the file: ${context.fileError ?? 'unknown error'}`);
   add('slicer-loads', slicer.loaded, slicer.loaded ? 'the slicer opened the file' : slicer.loadError);
-  if (slicer.sliced !== null) add('slicer-slices', slicer.sliced, slicer.sliced ? 'the slicer produced G-code' : (slicer.sliceError ?? 'not attempted: the file did not load'));
+  if (slicer.rendered !== null) add('slicer-renders', slicer.rendered, slicer.rendered ? 'every requested plate render was written' : slicer.renderErrors.join('; '));
+  if (!slicer.sliceSkipped) {
+    add('slicer-slices', slicer.sliced === true, slicer.sliced === true ? 'the slicer produced G-code' : (slicer.sliceError ?? 'not attempted: the file did not load'));
+  }
 
-  const sObjects = slicer.plates.flatMap((p) => p.objects);
-  const sSlots = [...new Set(slicer.plates.flatMap((p) => p.filaments.filter((f) => f.grams > 0).map((f) => f.slot)))].sort((a, b) => a - b);
+  const sObjects = slicer.plates.flatMap((p) => p.objects.map((o) => ({ ...o, plate: p.id })));
+  const sSlots = [...new Set(slicer.plates.flatMap((p) => p.filaments.filter((f) => f.used).map((f) => f.slot)))].sort((a, b) => a - b);
 
   if (file && slicer.sliced) {
     add('object-count', file.objects.length === sObjects.length, `file has ${file.objects.length}, slicer sliced ${sObjects.length}`);
 
-    // Match by name when names are unique on both sides, else by order.
-    const unique = (list) => new Set(list.map((o) => o.name)).size === list.length;
-    const byName = unique(file.objects) && unique(sObjects);
+    const { pairs, byPosition } = pairObjects(file.objects, sObjects);
+    if (byPosition && file.objects.length > 1) warnings.push('object names repeat, so file and slicer objects were paired by position; a size mismatch (or match) may be between the wrong objects');
     const sizeProblems = [];
     const offBed = [];
-    file.objects.forEach((fo, i) => {
-      const so = byName ? sObjects.find((o) => o.name === fo.name) : sObjects[i];
-      if (!so) { sizeProblems.push(`"${fo.name}" is not in the slicer's result`); return; }
+    for (const [fo, so] of pairs) {
+      if (Math.abs(fo.minZ) > SIZE_TOLERANCE_MM) offBed.push(`"${fo.name}" starts at z = ${fo.minZ} mm`);
+      if (!so) { sizeProblems.push(`"${fo.name}" is not in the slicer's result`); continue; }
       const off = fo.size.map((d, a) => Math.abs(d - so.size[a]));
       if (off.some((d) => d > SIZE_TOLERANCE_MM)) sizeProblems.push(`"${fo.name}": file ${fo.size.join(' × ')} mm, slicer ${so.size.join(' × ')} mm`);
       if (fo.triangles !== so.triangles) warnings.push(`"${fo.name}": the file has ${fo.triangles} triangles, the slicer kept ${so.triangles} (it repaired or dropped some)`);
-      if (Math.abs(fo.minZ) > SIZE_TOLERANCE_MM) offBed.push(`"${fo.name}" starts at z = ${fo.minZ} mm`);
-    });
+    }
     add('object-sizes', sizeProblems.length === 0, sizeProblems.length === 0 ? `all ${file.objects.length} object(s) agree within ${SIZE_TOLERANCE_MM} mm` : sizeProblems.join('; '));
     add('objects-on-bed', offBed.length === 0, offBed.length === 0 ? 'every object sits on z = 0' : offBed.join('; '));
 
@@ -147,25 +189,25 @@ export function buildChecks(file, slicer, expect = {}) {
     add('filaments-used', sameSet(fSlots, sSlots), `file paints slots [${fSlots.join(', ')}], slicer extruded slots [${sSlots.join(', ')}]`);
   }
 
+  // A plain (non-project) 3MF lists no plates: its objects share one implicit plate.
+  const filePlates = file ? file.plates.length || (file.objects.length > 0 ? 1 : 0) : null;
   if (expect.filaments !== undefined) {
     const got = slicer.sliced ? sSlots.length : file ? file.filaments.filter((f) => f.triangles > 0).length : null;
     add('expect-filaments', got === expect.filaments, `expected ${expect.filaments}, got ${got ?? 'unknown'}${slicer.sliced ? '' : ' (from the file; not sliced)'}`);
   }
   if (expect.objects !== undefined) {
     const got = slicer.sliced ? sObjects.length : file ? file.objects.length : null;
-    add('expect-objects', got === expect.objects, `expected ${expect.objects}, got ${got ?? 'unknown'}`);
+    add('expect-objects', got === expect.objects, `expected ${expect.objects}, got ${got ?? 'unknown'}${slicer.sliced ? '' : ' (from the file; not sliced)'}`);
   }
   if (expect.plates !== undefined) {
-    const got = slicer.sliced ? slicer.plates.length : file ? file.plates.length : null;
-    add('expect-plates', got === expect.plates, `expected ${expect.plates}, got ${got ?? 'unknown'}`);
+    const got = slicer.sliced ? slicer.plates.length : filePlates;
+    add('expect-plates', got === expect.plates, `expected ${expect.plates}, got ${got ?? 'unknown'}${slicer.sliced ? '' : ' (from the file; not sliced)'}`);
   }
 
   for (const p of slicer.plates) if (p.warning) warnings.push(`slicer, plate ${p.id}: ${p.warning}`);
   if (file) {
     if (file.splitPaintedTriangles > 0) warnings.push(`${file.splitPaintedTriangles} triangle(s) are split between filaments; our reader reports each by its dominant filament`);
     if (file.skippedParts > 0) warnings.push(`${file.skippedParts} modifier/support part(s) in the file are not printed geometry and were skipped`);
-  } else {
-    warnings.push('our own 3MF reader could not parse the file, so the file-vs-slicer checks were skipped');
   }
   return { checks, warnings };
 }

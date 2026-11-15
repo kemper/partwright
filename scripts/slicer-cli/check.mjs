@@ -15,14 +15,16 @@
 // renders, (3) asks the slicer to slice it, and (4) compares the two views of
 // the file. See scripts/slicer-cli/report.mjs for the checks.
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { basename, extname, join, resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { basename, extname, join, relative, resolve, sep } from 'node:path';
 import { SLICER_VIEWS, buildChecks, parseViews, summarizeFile, summarizeSlicer } from './report.mjs';
 
 const USAGE = `usage: node scripts/slicer-cli.mjs check <file.3mf | model.js | model.scad> [options]
        node scripts/slicer-cli.mjs check --current [options]
   --current               export the session open in the partwright daemon instead of a file
   --export-opts '<json>'  extra export3MFObjectsData options for a model/--current export (e.g. '{"plateLayout":"grid"}')
-  --out <dir>             where renders, the slice and the log go (default: .partwright/slicer-check/<name>/)
+  --out <dir>             where renders, the slice and the log go (default: .partwright/slicer-check/<name>/).
+                          Replaced on each run; a custom dir must be new, empty, or one this command made
   --views 0,1,2,3         plate-render cameras: ${Object.entries(SLICER_VIEWS).map(([n, v]) => `${n} ${v}`).join(', ')}
   --no-render             skip the plate renders
   --no-slice              skip slicing (load + render only)
@@ -82,7 +84,9 @@ async function exportFromApp({ file, lang, filename, opts }) {
       await pw.createSession('slicer-check');
       await pw.setActiveLanguage(arg.lang);
       const run = await pw.runAndSave(arg.code, 'slicer-check');
-      if (run && (typeof run.error === 'string' || run.geometry?.status === 'error')) return { error: run.error || run.geometry?.error || 'the model did not run' };
+      if (run && typeof run.error === 'string') return { error: run.error };
+      if (run && run.passed === false) return { error: (run.failures || []).join('; ') || 'the model did not run' };
+      if (run && run.geometry?.status === 'error') return { error: run.geometry.error || 'the model did not run' };
     }
     return await pw.export3MFObjectsData(undefined, arg.filename, arg.opts);
   `, { code: file ? readFileSync(file, 'utf8') : null, lang, filename, opts });
@@ -115,84 +119,138 @@ async function writeSheet(pngs, out) {
     .png().toFile(out);
 }
 
+/** Marker file that says "`slicer-cli check` made this folder and may replace it". */
+const MARKER = '.slicer-check';
+
+const isInside = (child, parent) => {
+  const rel = relative(parent, child);
+  return rel === '' || (!rel.startsWith('..') && !rel.startsWith(sep) && rel !== child);
+};
+
+/**
+ * Decide the output folder and whether it is safe to replace. The folder is
+ * wiped on every run, and this script is pre-approved for agents, so it must
+ * never delete something it did not create. Returns `{ out }` or `{ error }`.
+ */
+function resolveOutDir({ custom, root, stem, input }) {
+  const base = join(root, '.partwright', 'slicer-check');
+  const out = resolve(custom ?? join(base, stem));
+  // Never a folder that holds the input, the repo, the home dir or the filesystem root.
+  for (const [what, path] of [['the input file', input], ['the repository', root], ['your home directory', homedir()], ['the filesystem root', resolve(sep)]]) {
+    if (path && isInside(path, out)) return { error: `the output folder ${out} contains ${what}, and this command replaces its output folder on every run; pass --out <another folder>` };
+  }
+  const ownDefault = isInside(out, base) && out !== base;
+  if (!ownDefault && existsSync(out)) {
+    const entries = readdirSync(out);
+    if (entries.length > 0 && !entries.includes(MARKER)) return { error: `the output folder ${out} exists and was not created by this command; pass --out with a new or empty folder` };
+  }
+  return { out };
+}
+
 /**
  * @param {string[]} argv arguments after `check`
- * @param {{ withSession: Function, root: string }} deps the wrapper's slicer session + repo root
- * @returns {Promise<number>} process exit code (0 = every check passed)
+ * @param {{ withSession: Function, notReady: () => Promise<string | null>, root: string }} deps
+ *   the wrapper's slicer session, a "why can't the slicer run?" probe, and the repo root
+ * @returns {Promise<number>} process exit code: 0 every check passed, 1 a check
+ *   failed or the tool could not run (stdout still carries JSON), 2 bad arguments
  */
-export async function runCheck(argv, { withSession, root }) {
+export async function runCheck(argv, { withSession, notReady, root }) {
+  const usageError = (message) => { console.error(`slicer-cli check: ${message}`); return 2; };
   let a;
   try { a = parseArgs(argv); } catch (e) { console.error(`slicer-cli check: ${e.message}\n${USAGE}`); return 2; }
   const current = a.flags.has('current');
   if (a.flags.has('help') || a._.length !== (current ? 0 : 1)) { console.error(USAGE); return 2; }
 
+  // ---- validate everything before touching the disk ----
+  const input = current ? null : resolve(a._[0]);
+  if (input && !existsSync(input)) return usageError(`no such file: ${input}`);
+  const ext = input ? extname(input).toLowerCase() : '';
+  const fromApp = ext !== '.3mf';
+  const lang = !input ? null : a.lang ?? ({ '.js': 'manifold-js', '.scad': 'scad' })[ext];
+  if (input && fromApp && !lang) return usageError(`can't tell the language of ${basename(input)}; pass --lang`);
+  if (!fromApp) {
+    const ignored = ['export-opts', 'printer', 'lang'].filter((k) => a[k] !== undefined);
+    if (ignored.length > 0) return usageError(`${ignored.map((k) => `--${k}`).join(', ')} only apply when exporting a model or --current, not to an existing .3mf`);
+  }
   let views, expect, exportOpts;
   try {
-    exportOpts = { bambu: true, printer: a.printer ?? 'p1s', ...(a['export-opts'] ? JSON.parse(a['export-opts']) : {}) };
+    const extra = a['export-opts'] ? JSON.parse(a['export-opts']) : {};
+    if (extra === null || typeof extra !== 'object' || Array.isArray(extra)) throw new Error('--export-opts must be a JSON object');
+    exportOpts = { bambu: true, printer: a.printer ?? 'p1s', ...extra };
     views = a.flags.has('no-render') ? [] : parseViews(a.views ?? '0,1,2,3');
     expect = { filaments: expectNumber(a, 'expect-filaments'), objects: expectNumber(a, 'expect-objects'), plates: expectNumber(a, 'expect-plates') };
-  } catch (e) { console.error(`slicer-cli check: ${e.message}`); return 2; }
-  if (views.length === 0 && a.flags.has('no-slice')) { console.error('slicer-cli check: --no-render with --no-slice leaves nothing to run'); return 2; }
+  } catch (e) { return usageError(e.message); }
+  const wantSlice = !a.flags.has('no-slice');
+  if (views.length === 0 && !wantSlice) return usageError('--no-render with --no-slice leaves nothing to run');
 
-  const input = current ? '(current daemon session)' : resolve(a._[0]);
-  if (!current && !existsSync(input)) { console.error(`slicer-cli check: no such file: ${input}`); return 2; }
-  const stem = current ? 'current-session' : basename(input).replace(/\.[^.]+$/, '');
-  const out = resolve(a.out ?? join(root, '.partwright', 'slicer-check', stem));
+  const stem = current ? 'current-session' : basename(input).replace(/\.[^.]+$/, '') || 'model';
+  const where = resolveOutDir({ custom: a.out, root, stem, input });
+  if (where.error) return usageError(where.error);
+  const out = where.out;
+  const shownInput = input ?? '(current daemon session)';
+  const stop = (error, extra = {}) => { console.log(JSON.stringify({ ok: false, input: shownInput, ...extra, error }, null, 2)); return 1; };
+
+  const blocked = await notReady();
+  if (blocked) return stop(blocked);
+
   rmSync(out, { recursive: true, force: true });
   mkdirSync(join(out, 'slice'), { recursive: true });
+  writeFileSync(join(out, MARKER), 'Created by `node scripts/slicer-cli.mjs check`; replaced on each run.\n');
   const log = join(out, 'slicer.log');
 
   // 1. The file under test.
   let threemf = input;
-  const ext = current ? '' : extname(input).toLowerCase();
-  if (ext !== '.3mf') {
-    const lang = current ? null : a.lang ?? ({ '.js': 'manifold-js', '.scad': 'scad' })[ext];
-    if (!current && !lang) { console.error(`slicer-cli check: can't tell the language of ${basename(input)}; pass --lang`); return 2; }
+  if (fromApp) {
     try {
       threemf = join(out, `${stem}.3mf`);
-      writeFileSync(threemf, await exportFromApp({ file: current ? null : input, lang, filename: stem, opts: exportOpts }));
+      writeFileSync(threemf, await exportFromApp({ file: input, lang, filename: stem, opts: exportOpts }));
     } catch (e) {
-      console.log(JSON.stringify({ ok: false, input, error: e.message }, null, 2));
-      return 1;
+      return stop(e.message);
     }
   }
 
   // 2. What our own reader sees in it.
   let file = null;
-  let fileError;
+  let fileError = null;
   try { file = await readWithOurParser(readFileSync(threemf), root); } catch (e) { fileError = e.message; }
 
-  // 3. What the real slicer makes of it.
-  let load = null;
-  let slice = null;
+  // 3. What the real slicer makes of it. Each run's result.json is removed
+  //    first, so a crashed run can never be read as the previous run's result.
+  const runs = { load: null, loadExit: null, renderFailures: [], renderAttempted: views.length > 0, slice: null, sliceExit: null, sliceAttempted: false };
   const renders = [];
   try {
     await withSession(async ({ exec }) => {
+      const resultFile = join(out, 'result.json');
       for (const view of views) {
-        await exec(['--debug', '2', '--export-png', '0', '--camera-view', String(view), '--outputdir', out, threemf], { log });
-        const r = readJson(join(out, 'result.json'));
-        load = load && load.return_code === 0 ? load : r;
-        if (!r || r.return_code !== 0) break; // it did not load; more cameras won't help
+        rmSync(resultFile, { force: true });
+        const exit = await exec(['--debug', '2', '--export-png', '0', '--camera-view', String(view), '--outputdir', out, threemf], { log });
+        const r = readJson(resultFile);
+        if (runs.load === null) { runs.load = r; runs.loadExit = exit; }
+        if (!r || r.return_code !== 0 || exit !== 0) {
+          runs.renderFailures.push(`view ${SLICER_VIEWS[view]}: ${r ? `${r.error_string} (code ${r.return_code})` : 'the slicer wrote no result'}, exit ${exit}`);
+          if (!r || r.return_code !== 0) break; // it did not load; more cameras won't help
+        }
       }
-      rmSync(join(out, 'result.json'), { force: true });
+      rmSync(resultFile, { force: true });
       for (const f of readdirSync(out).sort()) {
         const m = /^plate_(\d+)_(\d+)\.png$/.exec(f);
         if (m) renders.push({ plate: Number(m[1]), view: SLICER_VIEWS[m[2]] ?? m[2], png: join(out, f) });
       }
-      if (!a.flags.has('no-slice') && (views.length === 0 || load?.return_code === 0)) {
-        await exec(['--debug', '2', '--slice', '0', '--export-3mf', 'sliced.gcode.3mf', '--outputdir', join(out, 'slice'), threemf], { log });
-        slice = readJson(join(out, 'slice', 'result.json'));
-        load = load ?? slice;
+      const loaded = runs.load?.return_code === 0;
+      if (wantSlice && (views.length === 0 || loaded)) {
+        runs.sliceAttempted = true;
+        runs.sliceExit = await exec(['--debug', '2', '--slice', '0', '--export-3mf', 'sliced.gcode.3mf', '--outputdir', join(out, 'slice'), threemf], { log });
+        runs.slice = readJson(join(out, 'slice', 'result.json'));
+        if (runs.load === null) { runs.load = runs.slice; runs.loadExit = runs.sliceExit; }
       }
     });
   } catch (e) {
-    console.log(JSON.stringify({ ok: false, input, threemf, error: `could not run the slicer: ${e.message}` }, null, 2));
-    return 1;
+    return stop(`could not run the slicer: ${e.message}`, { threemf });
   }
+  if (runs.renderAttempted && runs.renderFailures.length === 0 && renders.length === 0) runs.renderFailures.push('the slicer reported success but wrote no plate image');
 
-  const slicer = summarizeSlicer(load, a.flags.has('no-slice') ? null : slice);
-  const { checks, warnings } = buildChecks(file, slicer, expect);
-  if (fileError) warnings.push(`our reader's error: ${fileError}`);
+  const slicer = summarizeSlicer({ ...runs, sliceSkipped: !wantSlice });
+  const { checks, warnings } = buildChecks(file, slicer, expect, { fileError });
 
   let sheet;
   if (renders.length > 0) {
@@ -203,7 +261,7 @@ export async function runCheck(argv, { withSession, root }) {
   const ok = checks.every((c) => c.ok);
   console.log(JSON.stringify({
     ok,
-    input,
+    input: shownInput,
     threemf,
     out,
     checks,

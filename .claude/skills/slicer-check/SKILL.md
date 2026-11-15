@@ -1,6 +1,6 @@
 ---
 name: slicer-check
-description: "Validate a 3MF print job with the real slicer: one command exports a model through the app (or takes a .3mf), has Bambu Studio's own CLI render and slice it, cross-checks that against our 3MF reader, and returns a JSON report. Use when changing 3MF export, paint-to-filament mapping, plates or placement, or when checking that a painted model will print in the intended colours. Development/CI tool only; nothing here ships in the site."
+description: "Validate a 3MF print job with the real slicer: one command exports a model through the app (or takes a .3mf), has Bambu Studio's own CLI render and slice it, cross-checks that against our 3MF reader, and returns a JSON report. Use when changing 3MF export, paint-to-filament mapping, plates or placement, or when checking that a painted model will print in the intended colours. Development tool only; nothing here ships in the site."
 ---
 
 # Slicer check
@@ -57,10 +57,16 @@ node scripts/slicer-cli.mjs check --current --export-opts '{"plateLayout":"grid"
 - **`--export-opts '<json>'`** passes extra `export3MFObjectsData` options
   (`plateLayout`, `packStrategy`, `nozzle`, `filament`, `split`, …) for a model
   or `--current` export.
-- Exit code: `0` every check passed, `1` a check failed or the tool could not
-  run, `2` bad arguments. Stdout is one JSON document; the slicer's own output
-  goes to `<out>/slicer.log`.
+- Exit code: `0` every check passed; `1` a check failed, or the tool could not
+  run (stdout then carries `{ ok: false, error }`, including when the slicer is
+  not installed: `check` never installs anything itself); `2` bad arguments
+  (message on stderr, no JSON). The slicer's own output goes to
+  `<out>/slicer.log`.
 - Output lands in `.partwright/slicer-check/<name>/` unless you pass `--out`.
+  **That folder is replaced on every run.** A custom `--out` must be new,
+  empty, or a folder this command created; it refuses anything else, and any
+  folder that contains the input file, the repo or your home directory. To
+  re-check a `.3mf` a previous run exported, pass a different `--out`.
 
 ## Reading the report
 
@@ -68,8 +74,10 @@ Read `ok` and `checks[]` first. Each check is `{ name, ok, detail }`:
 
 | Check | A failure means |
 |---|---|
+| `reader-parses` | Our own 3MF reader (the app's import path) could not parse the file. |
 | `slicer-loads` | The slicer refused the file. `detail` has its error. Fix the writer before anything else. |
-| `slicer-slices` | It loaded but could not produce G-code (off the plate, empty layers, bad profile). |
+| `slicer-renders` | A plate render failed or the slicer crashed during one (only present when rendering). |
+| `slicer-slices` | It loaded but could not produce G-code (off the plate, empty layers, bad profile), or it crashed mid-slice. |
 | `object-count` | Our reader and the slicer disagree on how many objects the file holds. |
 | `object-sizes` | An object's size differs by more than 0.05 mm: a transform or unit problem. |
 | `objects-on-bed` | An object in the file does not start at z = 0. |
@@ -81,7 +89,7 @@ Then the numbers:
 - `file.filaments[]`: every declared slot with its colour and how many
   triangles it paints. A slot at 0 triangles is declared but unused.
 - `slicer.plates[].filaments[]`: grams per slot. `grams` is model material,
-  `totalGrams` includes purge. A colour that should be a thin accent but weighs
+  `totalGrams` includes purge, `used` is true for any amount above zero. A colour that should be a thin accent but weighs
   as much as the body is painted over far more than intended.
 - `filamentChanges`, `printSeconds`: the cost of the colour layout.
 - `warnings[]`: slicer warnings per plate, triangles the slicer repaired, split

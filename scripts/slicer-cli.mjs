@@ -237,9 +237,8 @@ async function withSession(fn) {
   };
   // Interrupted (Ctrl-C, a harness timeout, a closed terminal): pass the signal
   // on to the slicer, stop the compositor and remove the temp dir before exiting.
-  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-    process.on(sig, () => { slicer?.kill(sig); cleanup(); process.exit(1); });
-  }
+  const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'].map((sig) => [sig, () => { slicer?.kill(sig); cleanup(); process.exit(1); }]);
+  for (const [sig, handler] of signals) process.on(sig, handler);
   try {
     const shim = buildShim(runDir, osmesa);
     if (!shim) throw new Error('could not build the GL shim (gcc failed)');
@@ -249,13 +248,28 @@ async function withSession(fn) {
     const env = { ...process.env, XDG_RUNTIME_DIR: runDir, WAYLAND_DISPLAY: compositor.socket, LD_PRELOAD: preload };
     const exec = (args, { log } = {}) => new Promise((done, bad) => {
       const fd = log ? openSync(log, 'a') : null;
-      const finish = () => { if (fd !== null) closeSync(fd); slicer = null; };
-      slicer = spawn(LAUNCHER, args, { stdio: fd !== null ? ['ignore', fd, fd] : 'inherit', env });
-      slicer.on('error', (e) => { finish(); bad(e); });
-      slicer.on('exit', (status, signal) => { finish(); done(status ?? (signal ? 1 : 0)); });
+      // Node can emit both 'error' and 'exit' for one child: settle once.
+      let settled = false;
+      const finish = () => {
+        if (settled) return false;
+        settled = true;
+        if (fd !== null) closeSync(fd);
+        slicer = null;
+        return true;
+      };
+      try {
+        slicer = spawn(LAUNCHER, args, { stdio: fd !== null ? ['ignore', fd, fd] : 'inherit', env });
+      } catch (e) {
+        finish();
+        bad(e);
+        return;
+      }
+      slicer.on('error', (e) => { if (finish()) bad(e); });
+      slicer.on('exit', (status, signal) => { if (finish()) done(status ?? (signal ? 1 : 0)); });
     });
     return await fn({ exec });
   } finally {
+    for (const [sig, handler] of signals) process.off(sig, handler);
     cleanup();
   }
 }
@@ -268,7 +282,13 @@ async function run(args) {
 
 async function check(args) {
   const { runCheck } = await import('./slicer-cli/check.mjs');
-  process.exit(await runCheck(args, { withSession, root: ROOT }));
+  // `check` never installs anything by itself: it reports what is missing as JSON.
+  const notReady = async () => {
+    if (!(await unpackedMatches())) return 'the slicer is not installed (or its files changed). Run: node scripts/slicer-cli.mjs install --apt';
+    const missing = missingPackages();
+    return missing.length > 0 ? `missing system packages: ${missing.join(' ')}. Run: node scripts/slicer-cli.mjs install --apt` : null;
+  };
+  process.exit(await runCheck(args, { withSession, notReady, root: ROOT }));
 }
 
 async function status() {

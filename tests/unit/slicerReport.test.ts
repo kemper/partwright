@@ -29,9 +29,15 @@ function parsed(bLift = 0) {
 }
 
 const okLoad = { return_code: 0, error_string: 'Success.' };
-function sliceResult(overrides: { bSize?: [number, number, number]; slots?: number[] } = {}) {
+/** A full run: file loaded, renders fine, slice attempted with `slice` as its result. */
+const ran = (slice: unknown, extra: Record<string, unknown> = {}) =>
+  summarizeSlicer({ load: okLoad, loadExit: 0, renderAttempted: true, renderFailures: [], sliceAttempted: true, slice, sliceExit: 0, ...extra });
+/** Loaded and rendered, slicing skipped by the caller. */
+const notSliced = () => summarizeSlicer({ load: okLoad, loadExit: 0, renderAttempted: true, sliceSkipped: true });
+
+function sliceResult(overrides: { bSize?: [number, number, number]; slots?: number[]; grams?: number } = {}) {
   const [w, d, h] = overrides.bSize ?? [4, 4, 2];
-  const filaments = (ids: number[]) => ids.map((id) => ({ id, main_used_g: 1.234, total_used_g: 2.5 }));
+  const filaments = (ids: number[]) => ids.map((id) => ({ id, main_used_g: overrides.grams ?? 1.234, total_used_g: 2.5 }));
   const slots = overrides.slots ?? [1, 2, 3];
   return {
     return_code: 0,
@@ -57,56 +63,115 @@ describe('slicer-cli report', () => {
   });
 
   it('summarises the slicer result and passes when it agrees with the file', () => {
-    const s = summarizeSlicer(okLoad, sliceResult());
+    const s = ran(sliceResult());
     expect(s.loaded).toBe(true);
     expect(s.sliced).toBe(true);
-    expect(s.plates[0]).toMatchObject({ id: 1, filamentChanges: 7, printSeconds: 600, filaments: [{ slot: 1, grams: 1.23 }, { slot: 2, grams: 1.23 }] });
+    expect(s.plates[0]).toMatchObject({ id: 1, filamentChanges: 7, printSeconds: 600, filaments: [{ slot: 1, used: true, grams: 1.23 }, { slot: 2, used: true, grams: 1.23 }] });
     const { checks, warnings } = buildChecks(summarizeFile(parsed()), s, { filaments: 3, objects: 2, plates: 2 });
     expect(failed(checks)).toEqual([]);
-    expect(checks.map((c: Check) => c.name)).toEqual(['slicer-loads', 'slicer-slices', 'object-count', 'object-sizes', 'objects-on-bed', 'filaments-used', 'expect-filaments', 'expect-objects', 'expect-plates']);
+    expect(checks.map((c: Check) => c.name)).toEqual(['reader-parses', 'slicer-loads', 'slicer-renders', 'slicer-slices', 'object-count', 'object-sizes', 'objects-on-bed', 'filaments-used', 'expect-filaments', 'expect-objects', 'expect-plates']);
     expect(warnings).toEqual([]);
   });
 
   it('fails the size check when the slicer sees a different object', () => {
-    const { checks } = buildChecks(summarizeFile(parsed()), summarizeSlicer(okLoad, sliceResult({ bSize: [4, 4, 2.5] })));
+    const { checks } = buildChecks(summarizeFile(parsed()), ran(sliceResult({ bSize: [4, 4, 2.5] })));
     expect(failed(checks)).toEqual(['object-sizes']);
     expect(checks.find((c: Check) => c.name === 'object-sizes')!.detail).toContain('"b"');
   });
 
   it('fails when a painted filament is never extruded (paint lost on the way to the slicer)', () => {
-    const { checks } = buildChecks(summarizeFile(parsed()), summarizeSlicer(okLoad, sliceResult({ slots: [1, 3] })), { filaments: 3 });
+    const { checks } = buildChecks(summarizeFile(parsed()), ran(sliceResult({ slots: [1, 3] })), { filaments: 3 });
     expect(failed(checks)).toEqual(['filaments-used', 'expect-filaments']);
   });
 
   it('flags an object that does not sit on the bed', () => {
-    const { checks } = buildChecks(summarizeFile(parsed(5)), summarizeSlicer(okLoad, sliceResult()));
+    const { checks } = buildChecks(summarizeFile(parsed(5)), ran(sliceResult()));
     expect(failed(checks)).toEqual(['objects-on-bed']);
   });
 
   it('reports a load failure and skips the comparisons', () => {
-    const s = summarizeSlicer({ return_code: -6, error_string: 'The input model file to the slicer can not be parsed.' }, null);
-    expect(s).toMatchObject({ loaded: false, sliced: null, plates: [] });
-    const { checks, warnings } = buildChecks(null, s);
-    expect(checks).toEqual([{ name: 'slicer-loads', ok: false, detail: 'The input model file to the slicer can not be parsed. (code -6)' }]);
-    expect(warnings.join(' ')).toContain('could not parse');
+    const bad = { return_code: -6, error_string: 'The input model file to the slicer can not be parsed.' };
+    const s = summarizeSlicer({ load: bad, loadExit: 250, renderAttempted: true, renderFailures: ['view iso: could not be parsed (code -6), exit 250'] });
+    expect(s).toMatchObject({ loaded: false, rendered: false, sliced: null, plates: [] });
+    const { checks } = buildChecks(null, s, {}, { fileError: 'Not a ZIP archive' });
+    // Neither reader could open it: all four fail, and a slice that never started is a failure, not a skip.
+    expect(failed(checks)).toEqual(['reader-parses', 'slicer-loads', 'slicer-renders', 'slicer-slices']);
+    expect(checks.find((c: Check) => c.name === 'slicer-loads')!.detail).toBe('The input model file to the slicer can not be parsed. (code -6)');
+    expect(checks.find((c: Check) => c.name === 'reader-parses')!.detail).toContain('Not a ZIP archive');
+  });
+
+  it('fails when OUR reader cannot parse a file the slicer accepts', () => {
+    const { checks } = buildChecks(null, ran(sliceResult()), {}, { fileError: 'unexpected tag' });
+    expect(failed(checks)).toEqual(['reader-parses']);
   });
 
   it('reports a slice failure after a clean load', () => {
-    const s = summarizeSlicer(okLoad, { return_code: -50, error_string: 'Some objects are outside the plate.' });
+    const s = ran({ return_code: -50, error_string: 'Some objects are outside the plate.' }, { sliceExit: 206 });
     const { checks } = buildChecks(summarizeFile(parsed()), s);
     expect(failed(checks)).toEqual(['slicer-slices']);
+    expect(checks.find((c: Check) => c.name === 'slicer-slices')!.detail).toContain('outside the plate');
+  });
+
+  it('fails when the slicer crashed mid-slice and wrote no result', () => {
+    const s = ran(null, { sliceExit: 139 });
+    expect(s).toMatchObject({ loaded: true, sliced: false, sliceError: expect.stringContaining('wrote no result (exit 139)') });
+    expect(failed(buildChecks(summarizeFile(parsed()), s).checks)).toEqual(['slicer-slices']);
+  });
+
+  it('fails when the slicer reports success but exits non-zero', () => {
+    const s = ran(sliceResult(), { sliceExit: 1 });
+    expect(s.sliced).toBe(false);
+    expect(failed(buildChecks(summarizeFile(parsed()), s).checks)).toEqual(['slicer-slices']);
+  });
+
+  it('fails the render check when one camera fails after the file loaded', () => {
+    const s = ran(sliceResult(), { renderFailures: ['view left: the slicer wrote no result, exit 139'] });
+    const { checks } = buildChecks(summarizeFile(parsed()), s);
+    expect(failed(checks)).toEqual(['slicer-renders']);
+  });
+
+  it('counts a filament too light to show at two decimals as used', () => {
+    const s = ran(sliceResult({ grams: 0.003 }));
+    expect(s.plates[0].filaments[0]).toMatchObject({ used: true, grams: 0 });
+    expect(failed(buildChecks(summarizeFile(parsed()), s).checks)).toEqual([]);
+  });
+
+  it('pairs same-named objects by plate, and warns when it can only pair by position', () => {
+    // Two copies both called "copy", on plates 1 and 2, listed plate-2-first in the file.
+    const p = parsed();
+    p.objects = [{ name: 'copy', triangleCount: 2, firstTriangle: 2, plate: 2 }, { name: 'copy', triangleCount: 2, firstTriangle: 0, plate: 1 }];
+    const r = sliceResult();
+    r.sliced_plates[0].objects[0].name = 'copy';
+    r.sliced_plates[1].objects[0].name = 'copy';
+    const byPlate = buildChecks(summarizeFile(p), ran(r));
+    expect(failed(byPlate.checks)).toEqual([]);
+    expect(byPlate.warnings).toEqual([]);
+
+    // Same names AND same plate on the file side: only position is left.
+    p.objects.forEach((o) => { o.plate = 1; });
+    const byPosition = buildChecks(summarizeFile(p), ran(r));
+    expect(byPosition.warnings.join(' ')).toContain('paired by position');
+    expect(failed(byPosition.checks)).toEqual(['object-sizes']);
   });
 
   it('falls back to the file for expectations when slicing was skipped', () => {
-    const { checks } = buildChecks(summarizeFile(parsed()), summarizeSlicer(okLoad, null), { filaments: 3, objects: 2, plates: 2 });
+    const { checks } = buildChecks(summarizeFile(parsed()), notSliced(), { filaments: 3, objects: 2, plates: 2 });
     expect(failed(checks)).toEqual([]);
+    expect(checks.map((c: Check) => c.name)).not.toContain('slicer-slices');
     expect(checks.find((c: Check) => c.name === 'expect-filaments')!.detail).toContain('not sliced');
+  });
+
+  it('treats a plain 3MF with no plate list as one plate', () => {
+    const p = parsed();
+    p.plates = [];
+    const { checks } = buildChecks(summarizeFile(p), notSliced(), { plates: 1 });
+    expect(failed(checks)).toEqual([]);
   });
 
   it('surfaces slicer warnings without failing', () => {
     const r = sliceResult();
     r.sliced_plates[0].warning_message = 'Floating cantilever detected.';
-    const { checks, warnings } = buildChecks(summarizeFile(parsed()), summarizeSlicer(okLoad, r));
+    const { checks, warnings } = buildChecks(summarizeFile(parsed()), ran(r));
     expect(failed(checks)).toEqual([]);
     expect(warnings).toEqual(['slicer, plate 1: Floating cantilever detected.']);
   });
