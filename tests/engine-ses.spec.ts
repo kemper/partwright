@@ -438,3 +438,90 @@ test.describe('SES model-code sandbox — other Workers', () => {
     expect(phaseC.triangleCount ?? 0).toBeGreaterThan(100);
   });
 });
+
+// Imported meshes ride on `api.imports` (manifold-js) / `api.meshImports`
+// (BREP). The harden pass must never walk their vertex / index arrays —
+// hardening a typed array lists every element, which cost ~10 s per run on a
+// 1.8M-triangle import (#1259) — and they must still be locked for model code.
+test.describe('SES model-code sandbox — imported meshes', () => {
+  /** Attach an import to the editor. `tris` > 12 makes zero-filled arrays of
+   *  that size (only their size matters); otherwise a real 10 mm cube. */
+  async function attachImport(page: Page, tris = 12): Promise<void> {
+    await page.evaluate(async (tris) => {
+      const m = await import('/src/import/importedMesh.ts');
+      let vertProperties: Float32Array, triVerts: Uint32Array;
+      if (tris > 12) {
+        vertProperties = new Float32Array(Math.ceil(tris / 2) * 3);
+        triVerts = new Uint32Array(tris * 3);
+      } else {
+        vertProperties = new Float32Array([0, 0, 0, 10, 0, 0, 10, 10, 0, 0, 10, 0, 0, 0, 10, 10, 0, 10, 10, 10, 10, 0, 10, 10]);
+        triVerts = new Uint32Array([0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 2, 3, 7, 2, 7, 6, 0, 4, 7, 0, 7, 3, 1, 2, 6, 1, 6, 5]);
+      }
+      m.setActiveImports([{ id: 'probe', filename: 'probe.stl', format: 'stl', numProp: 3, numVert: vertProperties.length / 3, numTri: triVerts.length / 3, vertProperties, triVerts }]);
+    }, tris);
+  }
+
+  test('a big import adds nothing to a run: the harden pass does not walk its arrays', async ({ page }) => {
+    test.setTimeout(120_000);
+    await boot(page);
+    // 2M triangles = 9M array elements. Walking them took ~11 s per run.
+    await attachImport(page, 2_000_000);
+    const out = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: { run: (c: string) => Promise<{ error?: string | null; triangleCount?: number }>; getWorkerHealth: () => { runs: { timestamp: number; workerMs?: number }[] } } }).partwright;
+      // The model ignores the import: any time the Worker spends is overhead.
+      const r = await pw.run('const { Manifold } = api;\nreturn Manifold.cube([1, 1, 1]);');
+      const runs = pw.getWorkerHealth().runs;
+      const newest = runs.reduce((a, b) => (b.timestamp >= a.timestamp ? b : a));
+      return { error: r.error ?? null, tris: r.triangleCount, workerMs: newest.workerMs };
+    });
+    expect(out.error).toBeNull();
+    expect(out.tris).toBe(12);
+    expect(out.workerMs).toBeLessThan(2500);
+  });
+
+  test('api.imports is locked for model code, and what a run writes to it does not reach the next run', async ({ page }) => {
+    await boot(page);
+    await attachImport(page);
+    const probe = String.raw`
+      const imp = api.imports;
+      const threw = (f) => { try { f(); return false; } catch { return true; } };
+      const out = {
+        listFrozen: Object.isFrozen(imp),
+        recordFrozen: Object.isFrozen(imp[0]),
+        arraysExtensible: Object.isExtensible(imp[0].vertProperties) || Object.isExtensible(imp[0].triVerts),
+        pushThrew: threw(() => imp.push({})),
+        swapThrew: threw(() => { imp[0].vertProperties = new Float32Array(3); }),
+        expandoThrew: threw(() => { imp[0].vertProperties.tag = 1; }),
+        sameEachRead: api.imports === imp,
+        firstVertexX: imp[0].vertProperties[3],
+      };
+      imp[0].vertProperties[3] = 999; // elements can't be frozen: the arrays are this run's own copies
+      throw new Error('PROBE:' + JSON.stringify(out));
+    `;
+    const locked = { listFrozen: true, recordFrozen: true, arraysExtensible: false, pushThrew: true, swapThrew: true, expandoThrew: true, sameEachRead: true, firstVertexX: 10 };
+    expect(payload((await run(page, probe)).error, 'PROBE')).toEqual(locked);
+    // The second run sees the original value, not the first run's 999.
+    expect(payload((await run(page, probe)).error, 'PROBE')).toEqual(locked);
+    // And the import still builds.
+    const solid = await run(page, 'const { Manifold } = api;\nreturn Manifold.ofMesh(api.imports[0]);');
+    expect(solid.error ?? null).toBeNull();
+    expect(solid.triangleCount).toBe(12);
+    expect(solid.volume).toBeCloseTo(1000, 3);
+  });
+
+  test('api.meshImports in a BREP session is locked the same way', async ({ page }) => {
+    test.setTimeout(120_000);
+    await boot(page);
+    await attachImport(page);
+    const r = await run(page, String.raw`
+      const imp = api.meshImports;
+      throw new Error('PROBE:' + JSON.stringify({
+        listFrozen: Object.isFrozen(imp),
+        recordFrozen: Object.isFrozen(imp[0]),
+        arraysExtensible: Object.isExtensible(imp[0].vertProperties) || Object.isExtensible(imp[0].triVerts),
+        triangles: imp[0].triVerts.length / 3,
+      }));
+    `, 'replicad');
+    expect(payload(r.error, 'PROBE')).toEqual({ listFrozen: true, recordFrozen: true, arraysExtensible: false, triangles: 12 });
+  });
+});

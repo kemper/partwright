@@ -58,3 +58,30 @@ export function compileModelCode(jsCode: string): ModelFn {
 export function hardenModelShared<T>(x: T): T {
   return hardener !== null ? hardener(x) : x;
 }
+
+/** Lock down a run's list of bulk-data records (imported meshes: a few
+ *  numbers plus typed arrays) WITHOUT walking the typed arrays.
+ *
+ *  `hardenModelShared` must never reach a big typed array: hardening one lists
+ *  every element as an own key, so a 1.8M-triangle import (8M elements) cost
+ *  about 10 s on EVERY run, before the model code started. And it buys
+ *  nothing there — elements can't be frozen, and these arrays are the run's
+ *  own copies. So this does by hand what harden would have done to them: the
+ *  list and each record are frozen, each typed array is made non-extensible,
+ *  and any other object value is hardened as usual.
+ *
+ *  The caller must expose the list on `api` through an ACCESSOR
+ *  (`get imports() { return list; }`). harden freezes an accessor's functions
+ *  but does not call them, so the walk stops there; a plain data property
+ *  would be walked. No-op without SES, like hardenModelShared. */
+export function sealBulkRecords<T extends object>(list: T[]): T[] {
+  if (hardener === null) return list;
+  for (const record of list) {
+    for (const value of Object.values(record)) {
+      if (ArrayBuffer.isView(value)) Object.preventExtensions(value);
+      else if (value !== null && (typeof value === 'object' || typeof value === 'function')) hardener(value);
+    }
+    Object.freeze(record);
+  }
+  return Object.freeze(list) as T[];
+}

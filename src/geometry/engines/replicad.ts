@@ -1,5 +1,5 @@
 import type { Engine, MeshResult, ValidateResult } from './types';
-import { compileModelCode, hardenModelShared } from '../modelEval';
+import { compileModelCode, hardenModelShared, sealBulkRecords } from '../modelEval';
 import { javaScriptSyntaxDiagnostics, runtimeDiagnostic, modelCodeDiagnostics } from '../sourceDiagnostics';
 import { ensureBrepLoaded, getBrepNamespace, isBrepShape, consumeBrepAllocations, disposeBrepAllocationsExcept, extractLabelMap, extractLabelColors, getPendingBrepImports, setBrepRemovedParts, ofMeshWithLabels, type BrepShape } from '../brepRuntime';
 import { getManifoldModule, manifoldJsEngine, resolveLabelMap, ensureManifoldRunWrappers } from './manifoldJs';
@@ -141,11 +141,13 @@ export async function runReplicadAsync(jsCode: string, paramOverrides?: Record<s
   //     `api.imports` array isn't polluted with `{vertProperties, triVerts}`
   //     objects the AI would have to special-case.
   const brepImports = getPendingBrepImports().map(({ shape }) => shape);
-  const meshImports = getActiveImports().map(m => ({
+  // Sealed by hand and exposed through an accessor below, so the harden pass
+  // never walks the vertex / index arrays (see sealBulkRecords).
+  const meshImports = sealBulkRecords(getActiveImports().map(m => ({
     numProp: m.numProp,
     vertProperties: m.vertProperties,
     triVerts: m.triVerts,
-  }));
+  })));
 
   // Customizer parameters, shared with the manifold-js and voxel engines: a
   // BREP-session model can declare `api.params({...})` to surface the same live
@@ -182,7 +184,7 @@ export async function runReplicadAsync(jsCode: string, paramOverrides?: Record<s
     removePart,
     CrossSection: manifoldModule.CrossSection,
     imports: brepImports,
-    meshImports,
+    get meshImports() { return meshImports; },
     params: paramCapture.params,
     paint: manifoldOnlyNamespaceGuard('paint'),
     surface: manifoldOnlyNamespaceGuard('surface'),
