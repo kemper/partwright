@@ -22,6 +22,55 @@ export interface LayerColorChange {
   color: string;
 }
 
+/** What `api.print.layerColors(changes, options)` declares in model code. Plain data. */
+export interface LayerColorsSpec {
+  changes: LayerColorChange[];
+  /** Override the profile's layer height for this model, in mm. */
+  layerHeight?: number;
+  /** Override the profile's first-layer height for this model, in mm. */
+  firstLayerHeight?: number;
+}
+
+/** Most colour changes one model may declare. */
+export const MAX_LAYER_COLOR_CHANGES = 256;
+
+/**
+ * Validate the arguments of `api.print.layerColors` into a spec. The ONE
+ * validator shared by the engine's recorder, the Worker-message check and the
+ * console API, so all three accept exactly the same input. Throws an `Error`
+ * whose message names the bad argument; unknown keys are rejected.
+ */
+export function parseLayerColorsSpec(changes: unknown, options?: unknown): LayerColorsSpec {
+  const isPlain = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v) && Object.getPrototypeOf(v) === Object.prototype;
+  if (!Array.isArray(changes)) throw new Error('layerColors: expected an array of { z, color } changes.');
+  if (changes.length > MAX_LAYER_COLOR_CHANGES) throw new Error(`layerColors: at most ${MAX_LAYER_COLOR_CHANGES} changes.`);
+  const out: LayerColorChange[] = changes.map((c, i) => {
+    if (!isPlain(c)) throw new Error(`layerColors: change ${i} must be an object { z, color }.`);
+    for (const k of Object.keys(c)) if (k !== 'z' && k !== 'color') throw new Error(`layerColors: change ${i} has an unknown key "${k}" (allowed: z, color).`);
+    if (typeof c.z !== 'number' || !Number.isFinite(c.z) || c.z < 0) throw new Error(`layerColors: change ${i} needs z as a non-negative number of mm above the bed.`);
+    if (typeof c.color !== 'string' || !/^#?[0-9a-f]{6}$/i.test(c.color.trim())) throw new Error(`layerColors: change ${i} needs color as "#rrggbb".`);
+    return { z: c.z, color: normalizeHex(c.color) };
+  });
+  const spec: LayerColorsSpec = { changes: out.sort((a, b) => a.z - b.z) };
+  if (options !== undefined) {
+    if (!isPlain(options)) throw new Error('layerColors: options must be an object { layerHeight, firstLayerHeight }.');
+    for (const k of Object.keys(options)) if (k !== 'layerHeight' && k !== 'firstLayerHeight') throw new Error(`layerColors: unknown option "${k}" (allowed: layerHeight, firstLayerHeight).`);
+    for (const k of ['layerHeight', 'firstLayerHeight'] as const) {
+      const v = options[k];
+      if (v === undefined) continue;
+      if (typeof v !== 'number' || !Number.isFinite(v) || v < 0.04 || v > 2) throw new Error(`layerColors: ${k} must be a number of mm between 0.04 and 2.`);
+      spec[k] = v;
+    }
+  }
+  return spec;
+}
+
+/** The base colour (an entry at the bed) and the later changes of a spec. `fallback` is used when no entry sits on the bed. */
+export function splitBaseColor(spec: LayerColorsSpec, profile: LayerProfile, fallback: string): { base: string; changes: LayerColorChange[] } {
+  const onBed = spec.changes.filter((c) => startLayerFor(c.z, profile) === 0);
+  return { base: onBed.length > 0 ? onBed[onBed.length - 1].color : normalizeHex(fallback), changes: spec.changes.filter((c) => startLayerFor(c.z, profile) > 0) };
+}
+
 /** The slice settings that decide where layer boundaries fall. */
 export interface LayerProfile {
   /** Height of every layer after the first, in mm. */

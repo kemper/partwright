@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   bandAtZ, bandsToSlicerEntries, estimateTopColor, layerBottomZ, layerCount, layerIndexAt, layerOpacity, layerTopZ,
   parseLayerEntriesXml, resolveLayerBands, serializeLayerEntriesXml, slicerEntriesToChanges, startLayerFor,
+  MAX_LAYER_COLOR_CHANGES, parseLayerColorsSpec, splitBaseColor,
   type SlicerLayerEntry,
 } from '../../src/print/layerColors';
 
@@ -84,6 +85,37 @@ describe('resolveLayerBands', () => {
     expect(bandAtZ(bands, 8.1, P)!.color).toBe(RED);
     expect(bandAtZ(bands, 99, P)!.color).toBe(RED);     // clamped
     expect(bandAtZ([], 1, P)).toBeNull();
+  });
+});
+
+describe('parseLayerColorsSpec', () => {
+  it('normalises and sorts valid input', () => {
+    expect(parseLayerColorsSpec([{ z: 8, color: 'DC1E1E' }, { z: 0, color: '#F0F0F0' }], { layerHeight: 0.16 })).toEqual({
+      changes: [{ z: 0, color: WHITE }, { z: 8, color: RED }],
+      layerHeight: 0.16,
+    });
+    expect(parseLayerColorsSpec([])).toEqual({ changes: [] });
+  });
+
+  it('rejects bad shapes with a message that names the problem', () => {
+    expect(() => parseLayerColorsSpec({ z: 0, color: WHITE })).toThrow(/array/);
+    expect(() => parseLayerColorsSpec([[0, WHITE]])).toThrow(/change 0 must be an object/);
+    expect(() => parseLayerColorsSpec([{ z: 0, color: WHITE, slot: 2 }])).toThrow(/unknown key "slot"/);
+    expect(() => parseLayerColorsSpec([{ z: '8', color: WHITE }])).toThrow(/non-negative number/);
+    expect(() => parseLayerColorsSpec([{ z: 8, color: 'red' }])).toThrow(/#rrggbb/);
+    expect(() => parseLayerColorsSpec([], { layerHeight: 0 })).toThrow(/layerHeight/);
+    expect(() => parseLayerColorsSpec([], { nozzle: 0.4 })).toThrow(/unknown option "nozzle"/);
+    expect(() => parseLayerColorsSpec([], [])).toThrow(/options must be an object/);
+    expect(() => parseLayerColorsSpec(Array.from({ length: MAX_LAYER_COLOR_CHANGES + 1 }, (_, i) => ({ z: i, color: WHITE })))).toThrow(/at most/);
+  });
+
+  it('splits off the base colour: an entry on the bed, else the fallback', () => {
+    const spec = parseLayerColorsSpec([{ z: 0, color: WHITE }, { z: 8, color: RED }]);
+    expect(splitBaseColor(spec, P, '#d9d9d9')).toEqual({ base: WHITE, changes: [{ z: 8, color: RED }] });
+    const noBase = parseLayerColorsSpec([{ z: 8, color: RED }]);
+    expect(splitBaseColor(noBase, P, 'D9D9D9')).toEqual({ base: '#d9d9d9', changes: [{ z: 8, color: RED }] });
+    // 0.05 mm still snaps to the bed at 0.2 mm layers.
+    expect(splitBaseColor(parseLayerColorsSpec([{ z: 0.05, color: BLUE }]), P, '#d9d9d9').base).toBe(BLUE);
   });
 });
 

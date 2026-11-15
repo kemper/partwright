@@ -530,6 +530,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       paintOps: (msg.paintOps as MeshResult['paintOps']) ?? undefined,
       surfaceOps: (msg.surfaceOps as MeshResult['surfaceOps']) ?? undefined,
       materialSpec: msg.materialSpec ?? undefined,
+      layerColors: (msg.layerColors as MeshResult['layerColors']) ?? undefined,
       renderOnly: !!msg.renderOnly,
       lostLabels: lostLabels && lostLabels.length > 0 ? lostLabels : undefined,
       // The validator's normalized schema (re-run through normalizeParamSchema),
