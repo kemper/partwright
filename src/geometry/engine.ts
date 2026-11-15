@@ -796,6 +796,11 @@ export async function executeCodeAsync(
 ): Promise<MeshResult> {
   const l = pickLang(lang);
 
+  // Attachment images the code reads via api.image('<id>') (none otherwise).
+  // Decoded BEFORE claiming the Worker: nothing may await between the claim
+  // and the postMessage, or a cancel/recycle in between strands this call.
+  const images = l === 'manifold-js' && sourceImageRefs(source).length > 0 ? await collectModelImages(source) : [];
+
   // Ensure the Worker is booted.
   const worker = ensureClaim(await claimAndWait(opts?.domain));
 
@@ -806,9 +811,6 @@ export async function executeCodeAsync(
   // specific version's code without disturbing — or depending on — the live
   // active-imports register, which another tab/run may be mutating.
   const imports = (explicitImports ?? getActiveImports()).map(cloneImportForWorker);
-  // Attachment images the code reads via api.image('<id>') (none otherwise).
-  const images = l === 'manifold-js' && sourceImageRefs(source).length > 0 ? await collectModelImages(source) : [];
-
   return new Promise<MeshResult>((resolve, reject) => {
     // No hard timeout on the render path: a slow model is bounded by the user,
     // not the clock. The live elapsed-time counter shows how long it's taking

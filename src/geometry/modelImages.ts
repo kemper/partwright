@@ -24,15 +24,17 @@ export function sourceImageRefs(code: string): string[] {
   return [...out];
 }
 
-/** Cheap content hash: dimensions + a strided FNV-1a over the pixels. */
+/** Content hash over EVERY pixel (two independent FNV-1a lanes): it keys the
+ *  Worker's solve cache, so a small local edit to a photo must change it. Runs
+ *  once per decode (the main thread caches decoded attachments). */
 export function hashImagePixels(width: number, height: number, data: Uint8ClampedArray): string {
-  let h = 0x811c9dc5 ^ width ^ (height << 16);
-  const step = Math.max(1, Math.floor(data.length / 65536));
-  for (let i = 0; i < data.length; i += step) {
-    h ^= data[i];
-    h = Math.imul(h, 0x01000193) >>> 0;
+  let a = (0x811c9dc5 ^ width) >>> 0;
+  let b = (0x01000193 ^ (height << 8)) >>> 0;
+  for (let i = 0; i < data.length; i++) {
+    a = Math.imul(a ^ data[i], 0x01000193) >>> 0;
+    b = Math.imul(b ^ data[i] ^ (i & 0xff), 0x5bd1e995) >>> 0;
   }
-  return `${width}x${height}:${h.toString(16)}:${data.length}`;
+  return `${width}x${height}:${a.toString(16)}${b.toString(16)}`;
 }
 
 // ── Worker-side registry for the current run ────────────────────────────────

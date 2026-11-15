@@ -76,6 +76,33 @@ test.describe('Layered print from photo', () => {
     expect(res.created.meanDeltaE).toBeLessThan(20);
     expect(res.plan.instructions).toMatch(/swap to/);
 
+    // Reload: the model reads its photo attachment again and rebuilds the plan.
+    await page.reload();
+    await page.waitForFunction(() => !!(window as any).partwright?.getLayeredPrintPlan);
+    await page.waitForFunction(() => {
+      const p = (window as any).partwright.getLayeredPrintPlan();
+      return p && !p.error;
+    }, null, { timeout: 90_000 });
+
+    // Switching objects (mesh-cache hits) swaps the plan with the geometry:
+    // a plain object has none, switching back restores it.
+    const sw = await page.evaluate(async () => {
+      const pw = (window as any).partwright;
+      await pw.createObject('plain');
+      await pw.runAndSave('return api.Manifold.cube([10, 10, 10]);', 'plain cube', {});
+      const onPlain = pw.getLayeredPrintPlan();
+      await pw.changeObject(0);
+      const back = pw.getLayeredPrintPlan();
+      await pw.changeObject(1);
+      const plainAgain = pw.getLayeredPrintPlan();
+      await pw.changeObject(0);
+      return { onPlain, back, plainAgain, final: pw.getLayeredPrintPlan() };
+    });
+    expect(sw.onPlain.error).toBeTruthy();
+    expect(sw.back.error).toBeUndefined();
+    expect(sw.plainAgain.error).toBeTruthy();
+    expect(sw.final.error).toBeUndefined();
+
     const download = page.waitForEvent('download');
     const exp = await page.evaluate(() => (window as any).partwright.exportLayeredPrint3MF({ swapMode: 'ams', printer: 'p1s' }));
     expect(exp.error).toBeUndefined();

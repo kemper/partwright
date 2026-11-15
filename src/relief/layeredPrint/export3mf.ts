@@ -50,7 +50,7 @@ export function buildPlan3MF(plan: LayeredPrintPlanRecord, mesh: MeshData, opts:
   });
 }
 
-export function planToLayerSwapPlan(p: LayeredPrintPlanRecord, swapMode: LayerSwapPlan['swapMode']): LayerSwapPlan {
+function planToLayerSwapPlan(p: LayeredPrintPlanRecord, swapMode: LayerSwapPlan['swapMode']): LayerSwapPlan {
   return {
     filamentColors: p.blocks.map((b) => b.hex),
     filamentNames: p.blocks.map((b) => b.name),

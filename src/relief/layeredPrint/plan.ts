@@ -59,7 +59,10 @@ export function layeredPrintZRegions(mesh: MeshData, p: LayeredPrintPlanRecord):
   let minZ = Infinity, maxZ = -Infinity;
   for (let v = 0; v < mesh.numVert; v++) { const z = vp[v * np + 2]; if (z < minZ) minZ = z; if (z > maxZ) maxZ = z; }
   if (!Number.isFinite(minZ)) return [];
-  const L = Math.max(p.totalLayers, Math.ceil((maxZ - minZ - spec.firstLayerHeight) / spec.layerHeight) + 1, 1);
+  // Layers the mesh spans (a composed model can be taller than the print),
+  // capped so a very tall model can't allocate an enormous colour ladder.
+  const MAX_COLOUR_LAYERS = 4000;
+  const L = Math.min(MAX_COLOUR_LAYERS, Math.max(p.totalLayers, Math.ceil((maxZ - minZ - spec.firstLayerHeight) / spec.layerHeight) + 1, 1));
   const ladder = computeLadder(blocks, L, spec);
   const filCols = p.blocks.map((b) => hexToRgb01(b.hex));
   const blockAtLayer = (k: number) => { let bi = 0; for (let j = 0; j < blocks.length; j++) if (blocks[j].startLayer <= k) bi = j; return bi; };

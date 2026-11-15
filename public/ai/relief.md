@@ -151,6 +151,11 @@ return print;   // a Manifold — compose freely: print.add(frame), .subtract(ho
   or text you add takes the filament loaded at its height.
 - `api.image(id)` only works with a literal attachment id; list them with
   `getImages()`. Runs in the browser engine (not the headless `model:preview`).
+  A session opened from a **share link** has its photos stripped, so its layered
+  print can't run there — share the session file instead.
+- With `schedule`, the search-only options (`colors`, `filaments`,
+  `baseFilament`, `effort`, `seed`) are refused; the first entry (the base)
+  must start on layer 1.
 
 **Start from a photo** (solves, attaches the photo, writes the code above with
 the solved schedule pinned, opens it as a new session):

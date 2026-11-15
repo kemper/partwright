@@ -305,7 +305,7 @@ import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } fro
 import { startProgress, updateProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
 import { startExportProgress } from './ui/exportProgressModal';
 import { buildInPool, disposeEnginePool, setEnginePoolSize } from './geometry/enginePool';
-import { setEngineTrustDomain, getEngineTrustDomain } from './geometry/trustDomain';
+import { setEngineTrustDomain, getEngineTrustDomain, onEngineTrustDomainChange } from './geometry/trustDomain';
 import { FIT_DIMS, DEFAULT_FIT, applyDims, startValues, humanCode, fitCoordinateDescent, fitSilhouetteIoU, photoSilhouetteWarnings, fitScoreWarnings } from './human/humanFit';
 import { syncLockState, disableRun, enableRun } from './color/editorLock';
 import { setReadOnlyReason } from './editor/editorAccess';
@@ -540,20 +540,25 @@ async function decodeAttachmentPixels(src: string): Promise<ImageData> {
   return ctx.getImageData(0, 0, w, h);
 }
 
-/** Decoded attachments for api.image, cached per id + src. */
-const modelImageCache = new Map<string, { src: string; image: ModelImage }>();
+/** Decoded attachments for api.image: a small LRU keyed on id + src + the
+ *  decode size setting (which changes the pixels), cleared on session change. */
+const modelImageCache = new Map<string, ModelImage>();
+const MODEL_IMAGE_CACHE_MAX = 4;
+onEngineTrustDomainChange(() => modelImageCache.clear());
 setModelImageProvider(async (ids) => {
   const out: ModelImage[] = [];
   for (const id of ids) {
     const att = _getAttachments().find((a) => a.id === id && a.kind === 'image');
-    if (!att) continue;
-    const hit = modelImageCache.get(id);
-    if (hit && hit.src === att.src) { out.push(hit.image); continue; }
+    if (!att || !att.src) continue;
+    const key = `${id}|${getConfig().import.layeredPrintMaxImagePx}|${att.src.length}|${att.src.slice(-64)}`;
+    const hit = modelImageCache.get(key);
+    if (hit) { modelImageCache.delete(key); modelImageCache.set(key, hit); out.push(hit); continue; }
     try {
       const img = await decodeAttachmentPixels(att.src);
       const data = new Uint8ClampedArray(img.data);
       const image: ModelImage = { id, width: img.width, height: img.height, data, hash: hashImagePixels(img.width, img.height, data) };
-      modelImageCache.set(id, { src: att.src, image });
+      modelImageCache.set(key, image);
+      while (modelImageCache.size > MODEL_IMAGE_CACHE_MAX) modelImageCache.delete(modelImageCache.keys().next().value as string);
       out.push(image);
     } catch (e) {
       errorLog.capture({ level: 'warn', source: 'import', message: `api.image('${id}'): could not decode the attachment`, detail: e instanceof Error ? e.message : String(e) });
@@ -1144,6 +1149,9 @@ type PartMeshCacheEntry = {
   /** What the run that made this mesh printed, so a cache hit restores the
    *  console (and getGeometryData().logs) along with the geometry. */
   logs: string[] | undefined;
+  /** The api.layeredPrint plan of the run that made this mesh (or null), so a
+   *  cache hit restores — or clears — the plan the export and colouring use. */
+  layeredPlan: LayeredPrintPlanRecord | null;
 };
 const PART_MESH_CACHE_SIZE = 8;
 const partMeshCache = new Map<string, PartMeshCacheEntry>();
@@ -3747,6 +3755,7 @@ async function saveCurrentVersion(label?: string, opts: { importedMeshes?: Impor
         manifoldFacts: manifoldFactsFor(meshToCache),
         engineRun: lastEngineRun?.shown === meshToCache ? lastEngineRun : null,
         logs: lastRunLogs,
+        layeredPlan: currentLayeredPlan,
       };
       partMeshCache.delete(version.id);
       partMeshCache.set(version.id, entry);
@@ -4749,7 +4758,11 @@ async function main() {
     const code = layeredPrintCode(photo.id, result.options, layeredPrintRecord(result));
     setValue(code);
     const ok = await runCodeSync(code);
-    if (!ok || !currentLayeredPlan) throw new Error('the layered-print model did not run — see the editor error');
+    if (!ok || !currentLayeredPlan) {
+      // Don't leave an empty session (with the photo attached) behind.
+      try { await deleteSession(session.id); } catch { /* best-effort cleanup */ }
+      throw new Error('the layered-print model did not run — see the Diagnostic Log');
+    }
     const thumbnail = await captureThumbnail();
     const geometryData = enrichGeometryDataWithColors(getGeometryDataObj());
     await saveVersion(code, geometryData, thumbnail, 'layered print', undefined, { force: true });
@@ -6800,6 +6813,11 @@ async function main() {
       labelMesh: mesh,
       colorsBelow: (n: number) => composeTriColors(n, [modelLayer, manualLayer]),
     };
+    // Layered print (api.layeredPrint): colour by height first, so labels and
+    // paint below draw on top — same order as the live run.
+    if (result.layeredPrint) {
+      for (const g of layeredPrintZRegions(mesh, result.layeredPrint as LayeredPrintPlanRecord)) modelLayer.push(mkRegion(g.color, g.triangles));
+    }
     if (result.labelColors && result.labelMap) {
       for (const [labelName, color] of result.labelColors) {
         const tris = result.labelMap.get(labelName);
@@ -10777,6 +10795,10 @@ async function main() {
     // The previous run describes the outgoing model; the cache hit below
     // restores this version's own, and a cache miss records a fresh one.
     lastEngineRun = null;
+    // This session's attachments must be live BEFORE its code runs: model
+    // code can read them (api.image), and a stale list would hand it the
+    // previous session's images — or none, failing the run on reload.
+    await restoreAttachmentsForActiveSession();
     // Preserve the user's interactive camera angle across version switches
     // *within* a session. Loading a version re-renders the geometry, whose
     // updateMesh auto-frames the camera back to the default 3/4 view — undoing
@@ -10845,6 +10867,7 @@ async function main() {
       setPaintLabels(currentLabelMap);
       noteLabelMapChanged();
       setModelColorRegions(cachedEntry.modelColorDecls);
+      currentLayeredPlan = cachedEntry.layeredPlan;
       syncParamsPanel(cachedEntry.paramsSchema);
       // The grid behind a cached voxel mesh (null for other engines).
       lastVoxelRun = cachedEntry.voxelRun;
@@ -10968,6 +10991,7 @@ async function main() {
           // runCodeSync assigned it since.)
           engineRun: (lastEngineRun as EngineRunRecord | null)?.shown === currentMeshData ? lastEngineRun : null,
           logs: lastRunLogs,
+          layeredPlan: currentLayeredPlan,
         };
         partMeshCache.delete(version.id);
         partMeshCache.set(version.id, entry);
@@ -12492,8 +12516,10 @@ async function main() {
     resetPaintWorkerState();
     currentMeshData = mesh;
     paintBaseMesh = mesh;
-    // Not the output of a code run, so no run's console output describes it.
+    // Not the output of a code run, so no run's console output describes it —
+    // nor a layered-print plan (the export must not pair it with this mesh).
     lastRunLogs = undefined;
+    currentLayeredPlan = null;
     modelConsolePanel?.setLogs(undefined);
     releaseCurrentManifold();
     const mod = getModule();

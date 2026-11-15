@@ -330,6 +330,13 @@ function checkLayeredPrint(p: unknown): void {
   if (!isPlainObject(p)) fail('layeredPrint must be a plain object');
   onlyKeys(p, ['blocks', 'layerHeight', 'firstLayerHeight', 'totalLayers', 'totalHeightMm', 'widthMm', 'depthMm', 'meanDeltaE'], 'layeredPrint');
   if (!Array.isArray(p.blocks) || p.blocks.length < 1 || p.blocks.length > 16) fail('layeredPrint.blocks must hold 1..16 filaments');
+  // Bounds mirror the solver's own option ranges, so a hostile record can't
+  // drive the main-thread colouring into a divide-by-zero or a huge ladder.
+  const inRange = (v: unknown, lo: number, hi: number) => isFiniteNum(v) && v >= lo && v <= hi;
+  if (!inRange(p.layerHeight, 0.04, 0.4)) fail('layeredPrint.layerHeight must be 0.04..0.4');
+  if (!inRange(p.firstLayerHeight, 0.04, 0.6)) fail('layeredPrint.firstLayerHeight must be 0.04..0.6');
+  if (!isNonNegInt(p.totalLayers) || (p.totalLayers as number) < 1 || (p.totalLayers as number) > 10_000) fail('layeredPrint.totalLayers must be 1..10000');
+  let prevStart = -1;
   for (const b of p.blocks as unknown[]) {
     if (!isPlainObject(b)) fail('layeredPrint.blocks entries must be objects');
     onlyKeys(b, ['name', 'hex', 'td', 'startLayer'], 'layeredPrint block');
@@ -337,11 +344,14 @@ function checkLayeredPrint(p: unknown): void {
     if (typeof b.hex !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(b.hex)) fail('layeredPrint block hex must be "#rrggbb"');
     if (!isFiniteNum(b.td) || b.td <= 0) fail('layeredPrint block td must be a positive number');
     if (!isNonNegInt(b.startLayer)) fail('layeredPrint block startLayer must be a non-negative integer');
+    const start = b.startLayer as number;
+    if (prevStart < 0 ? start !== 0 : start <= prevStart) fail('layeredPrint blocks must start at layer 0 and ascend');
+    if (start >= (p.totalLayers as number)) fail('layeredPrint block starts above the top layer');
+    prevStart = start;
   }
-  for (const k of ['layerHeight', 'firstLayerHeight', 'totalHeightMm', 'widthMm', 'depthMm', 'meanDeltaE'] as const) {
+  for (const k of ['totalHeightMm', 'widthMm', 'depthMm', 'meanDeltaE'] as const) {
     if (!isFiniteNum(p[k]) || (p[k] as number) < 0) fail(`layeredPrint.${k} must be a non-negative number`);
   }
-  if (!isNonNegInt(p.totalLayers)) fail('layeredPrint.totalLayers must be a non-negative integer');
 }
 
 /**

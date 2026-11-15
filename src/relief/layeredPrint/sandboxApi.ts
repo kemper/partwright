@@ -55,7 +55,7 @@ function num(o: Record<string, unknown>, k: string, lo: number, hi: number): num
 function filament(v: unknown, where: string): LayeredPrintFilament {
   const f = v as Record<string, unknown>;
   if (!f || typeof f !== 'object') fail(`${where} must be {name, hex, td}`);
-  if (typeof f.name !== 'string' || !f.name) fail(`${where}.name must be a non-empty string`);
+  if (typeof f.name !== 'string' || !f.name || f.name.length > 80) fail(`${where}.name must be a non-empty string of at most 80 characters`);
   if (typeof f.hex !== 'string' || !/^#?[0-9a-fA-F]{6}$/.test(f.hex)) fail(`${where}.hex must be "#rrggbb"`);
   if (typeof f.td !== 'number' || !(f.td >= 0.05 && f.td <= 50)) fail(`${where}.td must be a number in 0.05..50 (mm)`);
   const hex = (f.hex as string).startsWith('#') ? (f.hex as string) : `#${f.hex as string}`;
@@ -84,7 +84,7 @@ export function parseLayeredPrintOptions(raw: unknown): Partial<LayeredPrintOpti
   const effort = num(o, 'effort', 0.1, 10);
   if (effort !== undefined) out.iterations = Math.round(DEFAULT_LAYERED_PRINT_OPTIONS.iterations * effort);
   if (o.filaments !== undefined) {
-    if (!Array.isArray(o.filaments) || o.filaments.length === 0) fail('filaments must be a non-empty array of {name, hex, td}');
+    if (!Array.isArray(o.filaments) || o.filaments.length === 0 || o.filaments.length > 200) fail('filaments must be an array of 1..200 {name, hex, td}');
     out.filaments = (o.filaments as unknown[]).map((f, i) => filament(f, `filaments[${i}]`));
   }
   if (o.baseFilament !== undefined) {
@@ -92,13 +92,17 @@ export function parseLayeredPrintOptions(raw: unknown): Partial<LayeredPrintOpti
     out.baseFilament = o.baseFilament;
   }
   if (o.schedule !== undefined) {
-    if (!Array.isArray(o.schedule) || o.schedule.length === 0) fail('schedule must be a non-empty array of {name, hex, td, layer}');
+    if (!Array.isArray(o.schedule) || o.schedule.length === 0 || o.schedule.length > 16) fail('schedule must be an array of 1..16 {name, hex, td, layer}');
+    const searchOnly = ['colors', 'filaments', 'baseFilament', 'effort', 'seed'].filter((k) => o[k] !== undefined);
+    if (searchOnly.length > 0) fail(`${searchOnly.join(', ')} only steer the filament search, which a pinned schedule skips — remove ${searchOnly.length > 1 ? 'them' : 'it'}, or remove schedule to re-solve`);
     out.schedule = (o.schedule as unknown[]).map((e, i) => {
       const f = filament(e, `schedule[${i}]`);
       const layer = (e as Record<string, unknown>).layer;
       if (typeof layer !== 'number' || !Number.isInteger(layer) || layer < 1) fail(`schedule[${i}].layer must be the 1-based slicer layer the filament starts on`);
       return { filament: f, startLayer: (layer as number) - 1 };
     });
+    const first = Math.min(...out.schedule.map((b) => b.startLayer));
+    if (first !== 0) fail('the first schedule entry (the base filament) must start on layer 1');
   }
   for (const k of Object.keys(out) as Array<keyof typeof out>) if (out[k] === undefined) delete out[k];
   return out;
@@ -108,7 +112,10 @@ export function parseLayeredPrintOptions(raw: unknown): Partial<LayeredPrintOpti
 export function modelImageHandle(id: unknown): ModelImageHandle {
   if (typeof id !== 'string' || !id) throw new Error("api.image: expected an attachment id string, e.g. api.image('a1b2c3'). List attachments with partwright.getImages().");
   const im = getActiveModelImage(id);
-  if (!im) throw new Error(`api.image('${id}'): no image attachment with that id in this session. Attach the photo (Attachments tab, or partwright.addAttachment) and use its id. Images reach the model only through a literal api.image('<id>') call.`);
+  if (!im) {
+    if (typeof document === 'undefined' && typeof self === 'undefined') throw new Error(`api.image('${id}'): attachment images are only available in the browser app, not in headless preview.`);
+    throw new Error(`api.image('${id}'): no usable image attachment with that id in this session. Attach the photo (Attachments tab) and use its id — images reach the model only through a literal api.image('<id>') call. (A session opened from a share link has its photos removed; ask for the session file instead.)`);
+  }
   return Object.freeze({ kind: 'image' as const, id: im.id, width: im.width, height: im.height });
 }
 
@@ -152,7 +159,7 @@ export function planToScheduleOption(plan: LayeredPrintPlanRecord): Array<{ name
 export function layeredPrintCode(attachmentId: string, options: LayeredPrintOptions, plan: LayeredPrintPlanRecord): string {
   const d = DEFAULT_LAYERED_PRINT_OPTIONS;
   const lines: string[] = [];
-  const opt = (k: string, v: number) => lines.push(`  ${k}: ${Number(v.toFixed(4))},`);
+  const opt = (k: string, v: number) => lines.push(`  ${k}: ${String(v)},`);
   opt('widthMm', options.widthMm);
   opt('maxHeightMm', options.maxHeightMm);
   if (options.baseHeightMm !== d.baseHeightMm) opt('baseHeightMm', options.baseHeightMm);
