@@ -62,6 +62,27 @@ function bambuProject(): Buffer {
   ]));
 }
 
+/** A Bambu project whose one object sits on its one filament — what any
+ *  unpainted single-filament project looks like. */
+function singleColourProject(): Buffer {
+  const root = `<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+  <metadata name="Application">BambuStudio-02.00.01.50</metadata>
+  <metadata name="Title">Bracket</metadata>
+  <resources><object id="1" type="model">${boxMesh(0, 0, 0, 10)}</object></resources>
+  <build><item objectid="1" transform="1 0 0 0 1 0 0 0 1 128 128 0"/></build>
+</model>`;
+  const settings = `<?xml version="1.0" encoding="UTF-8"?>
+<config><object id="1"><metadata key="name" value="Bracket"/><metadata key="extruder" value="1"/></object></config>`;
+  const project = JSON.stringify({ filament_colour: ['#C02525'], filament_type: ['PLA'] });
+  return Buffer.from(buildZip([
+    { name: '_rels/.rels', data: enc(RELS) },
+    { name: '3D/3dmodel.model', data: enc(root) },
+    { name: 'Metadata/model_settings.config', data: enc(settings) },
+    { name: 'Metadata/project_settings.config', data: enc(project) },
+  ]));
+}
+
 function plainColorgroup3MF(): Buffer {
   const model = `<?xml version="1.0" encoding="UTF-8"?>
 <model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
@@ -149,6 +170,85 @@ test.describe('3MF import', () => {
     expect(res.regions).toEqual([
       { name: 'Color 1', triangles: 2 },
       { name: 'Color 2', triangles: 10 },
+    ]);
+  });
+
+  test('a single-colour project imports unpainted and keeps the active palette', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 15000 });
+    const paletteBefore = await page.evaluate(async () => (await import('/src/color/palette.ts')).getActivePaletteName());
+
+    await page.locator('#import-wrapper input[type="file"]').setInputFiles({
+      name: 'bracket.3mf',
+      mimeType: 'model/3mf',
+      buffer: singleColourProject(),
+    });
+    await expect(page.getByText('Imported bracket.3mf: 12 triangles. The file uses one colour (F1 PLA), so it came in unpainted.')).toBeVisible({ timeout: 20000 });
+
+    const state = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: Record<string, (...a: unknown[]) => unknown> }).partwright;
+      const palette = await import('/src/color/palette.ts');
+      return {
+        regions: (pw.listRegions() as unknown[]).length,
+        triangles: (pw.getGeometryData() as { triangleCount: number }).triangleCount,
+        paletteName: palette.getActivePaletteName(),
+      };
+    });
+    expect(state.regions).toBe(0);
+    expect(state.triangles).toBe(12);
+    expect(state.paletteName).toBe(paletteBefore);
+
+    // The console API reports the colour it left off.
+    const b64 = singleColourProject().toString('base64');
+    const res = await page.evaluate(async (data) => {
+      const pw = (window as unknown as { partwright: Record<string, (...a: unknown[]) => Promise<unknown>> }).partwright;
+      return pw.importMeshData(data, 'bracket.3mf');
+    }, b64);
+    expect(res).toMatchObject({
+      colorSource: 'filaments',
+      colorRegions: 0,
+      singleColor: { name: 'F1 PLA', hex: '#c02525' },
+      activePalette: null,
+    });
+  });
+
+  test('colours land on the import when it is added to an object that has geometry (Worker match)', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 15000 });
+    await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: Record<string, (...a: unknown[]) => Promise<unknown>> }).partwright;
+      // Treat every mesh as "big" so the colour match takes the Worker path.
+      await pw.setAppConfig('renderer', 'lazyManifoldMinTriangles', 0);
+      await pw.createSession('host');
+      await pw.runAndSave("const { Manifold } = api; return Manifold.sphere(8, 48).translate([0, 0, 8]);", 'base');
+    });
+
+    await page.locator('#import-wrapper input[type="file"]').setInputFiles({
+      name: 'two-boxes.3mf',
+      mimeType: 'model/3mf',
+      buffer: bambuProject(),
+    });
+    await page.getByRole('dialog').locator('[data-target="current-part"]').click();
+    await expect(page.getByText(/Imported two-boxes\.3mf: 24 triangles, 3 colours/)).toBeVisible({ timeout: 30000 });
+
+    const state = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: Record<string, (...a: unknown[]) => unknown> }).partwright;
+      const geo = pw.getGeometryData() as { triangleCount: number };
+      const { errorLog } = await import('/src/diagnostics/errorLog.ts');
+      return {
+        triangles: geo.triangleCount,
+        regions: (pw.listRegions() as { name: string; triangles: number }[]).map(r => ({ name: r.name, triangles: r.triangles })),
+        workerFallbacks: errorLog.getEntries().filter(e => /worker failed/i.test(e.message)).map(e => e.message),
+      };
+    });
+    // The match ran in the Worker, not the main-thread fallback.
+    expect(state.workerFallbacks).toEqual([]);
+    // The sphere's own triangles stay unpainted; only the import's 24 are coloured.
+    expect(state.triangles).toBeGreaterThan(24);
+    expect(state.regions).toEqual([
+      { name: 'F1 PLA', triangles: 10 },
+      { name: 'F2 PLA', triangles: 12 },
+      { name: 'F3 PLA', triangles: 2 },
     ]);
   });
 });
