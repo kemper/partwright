@@ -106,11 +106,12 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
   },
   {
     id: 'import',
-    summary: 'imports and reconstruction: URL import, image/SVG relief, HueForge-style filament-layering print from a photo, image→voxels, convert a mesh to code, score a remake',
+    summary: 'imports and reconstruction: URL import, image/SVG relief, HueForge-style filament-layering print from a photo, image tools (prep an attached image, make / re-apply objects from it), image→voxels, convert a mesh to code, score a remake',
     tools: [
       'importFromUrl', 'importImageAsRelief', 'importSvgAsRelief', 'getReliefSwapGuide',
       'setReliefPreviewMode', 'importImageAsVoxels', 'convertToCode', 'evalAgainstImport',
       'createLayeredPrint', 'getLayeredPrintPlan', 'listLayeredPrintFilaments', 'exportLayeredPrint3MF',
+      'applyImageTool', 'getImageToolOp', 'listImageTools', 'prepImage',
     ],
   },
   {

@@ -371,6 +371,9 @@ await partwright.importStepData(base64, filename, {mode?: 'brep'|'mesh', session
 await partwright.importFromUrl(url, {target?, sessionName?, stepMode?, geometryOnly?})  // Share link (decoded locally) or http(s) .partwright.json/.stl/.step/.vox/.js/.scad -> {kind, source?, sessionId, target?, object?}; geometryOnly:true refuses code-bearing sources
 // Image / SVG -> colour tile or stepped relief (new session). See /ai/relief.md.
 await partwright.importImageAsRelief({src, mode?: 'luminance'|'quantized'|'ai', options?, quantized?, preprocess?, crop?}) // -> {sessionId} or {error}
+// Image tools: attach an image once, make/re-apply objects from it (settings stored as a code header). See /ai/relief.md#image-tools.
+await partwright.applyImageTool({tool: 'tile'|'silhouette'|'steppedRelief'|'lithophane'|'layeredPrint'|'voxel', image?: attachmentId, src?, params?, replace?}) // getImageToolOp(), listImageTools(), openImageTools()
+await partwright.prepImage({image, crop?, brightness?, contrast?, saturation?, levelsLow?, levelsHigh?, removeBackground?}) // -> {image: newAttachmentId} — a prepped copy for the tools
 // Photo -> HueForge-style filament-layering print: model code api.layeredPrint(api.image(id), {schedule}); createLayeredPrint solves + writes it. See /ai/relief.md#layered-photo-prints.
 await partwright.createLayeredPrint({src, colors?: 8, widthMm?, maxHeightMm?, filaments?: [{name, hex, td}], ...}) // -> {sessionId, blocks, swaps, meanDeltaE} or {error}
 partwright.getLayeredPrintPlan()                       // filaments, swap layers, instructions text

@@ -15,6 +15,7 @@
 // read as a back-compat fallback (never written), so pre-split settings survive.
 
 import type { ReliefSettings, PreviewMode } from './types';
+import { imageToolOpFromCode, imageToolInfo } from '../imageTools/descriptor';
 
 const LEGACY_MAP_KEY = 'partwright.relief.settings';
 const KEY_PREFIX = 'partwright.relief.settings:';
@@ -63,10 +64,6 @@ export function getReliefSettings(sessionId: string): ReliefSettings | null {
   return readOne(sessionId);
 }
 
-export function setReliefSettings(sessionId: string, settings: ReliefSettings): void {
-  writeOne(sessionId, settings);
-}
-
 export function updateReliefSettings(sessionId: string, patch: Partial<ReliefSettings>): ReliefSettings {
   const next: ReliefSettings = { ...DEFAULTS, ...readOne(sessionId), ...patch };
   writeOne(sessionId, next);
@@ -96,9 +93,37 @@ export function clearReliefSettings(sessionId: string): void {
   }
 }
 
-export function isReliefSession(sessionId: string | null | undefined): boolean {
-  if (!sessionId) return false;
-  return getReliefSettings(sessionId)?.isRelief === true;
+/** Persist a relief made into object `partId` of session `sessionId`: the
+ *  session-level knobs (layer height, preview mode, wizard options) plus the
+ *  object in `objects`. A session already marked relief before per-object
+ *  tracking (no `objects` list) stays a whole-session relief, so its older
+ *  objects keep their studio. */
+export function recordReliefObject(sessionId: string, partId: string | null, settings: Omit<ReliefSettings, 'objects'>): ReliefSettings {
+  const prev = readOne(sessionId);
+  const legacy = prev?.isRelief === true && !Array.isArray(prev.objects);
+  const next: ReliefSettings = { ...settings };
+  if (!legacy) {
+    const objects = new Set(prev?.objects ?? []);
+    if (partId) objects.add(partId);
+    next.objects = [...objects];
+  }
+  writeOne(sessionId, next);
+  return next;
+}
+
+/** Is the open object a relief (Relief Studio, relief preview, layer-height
+ *  readouts)? Pure, given the session's relief settings, the object's id and
+ *  its code:
+ *  - an `@image-tool` header decides by the tool's engine (a tile is a relief,
+ *    a voxel or layered print made from the same image is not);
+ *  - otherwise a session with a per-object list checks the list;
+ *  - otherwise a legacy relief session (no list) counts every object. */
+export function isReliefObject(settings: ReliefSettings | null, partId: string | null | undefined, code: string | null | undefined): boolean {
+  const op = code ? imageToolOpFromCode(code) : null;
+  if (op) return imageToolInfo(op.tool).engine === 'relief';
+  if (!settings?.isRelief) return false;
+  if (Array.isArray(settings.objects)) return !!partId && settings.objects.includes(partId);
+  return true;
 }
 
 export function getPreviewModeFor(sessionId: string | null | undefined): PreviewMode {

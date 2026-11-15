@@ -116,6 +116,74 @@ Import the `.stl` normally, then in the Relief Studio panel use **Detect levels*
 to seed a color region per existing Z plateau (or, programmatically, paint Z
 slabs). Then preview + read the swap guide as above.
 
+## Image tools
+
+Attach an image to the session once, then turn it into objects with **image
+tools** — and re-open a tool's settings later. Each tool stores its settings in
+the object's code as a header comment, so they persist, version and export
+with the session:
+
+```js
+// @image-tool {"tool":"tile","image":"<attachment id>","params":{...}}
+```
+
+| tool | makes |
+|---|---|
+| `tile` | flat tile with the image's colour regions (keychain, badge) |
+| `silhouette` | flat tile cut to the subject's outline |
+| `steppedRelief` | each colour cluster at its own height |
+| `lithophane` | smooth brightness → height relief |
+| `layeredPrint` | HueForge-style filament layering (its code, `api.layeredPrint`, is the record) |
+| `voxel` | pixel-art cubes |
+
+```js
+partwright.listImageTools()
+await partwright.applyImageTool({ tool: 'tile', image: '<attachment id>', params: { quantized: { clusters: 5, shape: 'rounded' } } })
+// or src: 'data:image/…' to attach a new image first
+partwright.getImageToolOp()   // -> { tool, image, params } of the open object
+// Re-apply to the open object (a NEW VERSION — undo is version history).
+// Same tool: params MERGE over the stored ones, so tweak one setting at a time:
+await partwright.applyImageTool({ tool: 'tile', replace: true, params: { quantized: { clusters: 7 } } })
+partwright.openImageTools()   // the Image tools panel (Import → Image tools…)
+```
+
+- Relief tools (`tile`, `silhouette`, `steppedRelief`, `lithophane`) take
+  `ReliefOptions` sections: `common`, `quantized`, `luminance`, `preprocess`
+  (see `importImageAsRelief` above). `voxel` takes the `importImageAsVoxels`
+  options; `layeredPrint` the `api.layeredPrint` options.
+- Results land in the current session (where the image is attached) as a new
+  object; `replace: true` re-applies to the open object.
+- The **Relief Studio** follows the open object: it shows for an object a
+  relief tool made, and hides for a voxel or layered-print object made from
+  the same image. (Reliefs from before image tools keep their studio.)
+- The panel previews the selected tool on the selected image (a small sampled
+  raster, before its wizard opens).
+
+### Image prep
+
+Crop, tone and background removal happen **once, on the image**, before any
+tool: `prepImage` saves a NEW image attachment (`"<name> (prepped)"`) and the
+original stays, so every tool reads plain pixels. In the panel: **Prep image**
+(drag the crop box, sliders, "Remove background"); opening a tool with unsaved
+prep saves the copy first.
+
+```js
+const { image } = await partwright.prepImage({
+  image: '<attachment id>',
+  crop: { left: 0.1, top: 0, right: 0.9, bottom: 1 },   // normalised 0..1
+  contrast: 0.2, brightness: 0,                            // -1..1
+  levelsLow: 10, levelsHigh: 245,                          // black / white points
+  removeBackground: true,                                  // or backgroundColor: [r, g, b]
+});
+await partwright.applyImageTool({ tool: 'silhouette', image });
+```
+
+- `removeBackground` makes the dominant border colour transparent; the result
+  says `backgroundRemoved: false` when the image has no clear backdrop. Tools
+  that read alpha (voxel, silhouette, layered print) drop the transparent area.
+- The tone sliders are the same maths as a relief tool's `preprocess`; prep
+  them once on the image when several tools should share the look.
+
 ## Layered photo prints
 
 A layered (HueForge-style) print is a heightmap printed in thin layers, with

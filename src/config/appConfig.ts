@@ -455,6 +455,12 @@ export interface AppConfig {
     layeredPrintMaxLayers: number;
     /** Longest side (px) a layered-print photo is stored and solved at. */
     layeredPrintMaxImagePx: number;
+    /** Longest side (px) of a prepped image copy (Image tools → Prep, the
+     *  `prepImage` API). Bigger sources are downscaled when prepped. */
+    imagePrepMaxPx: number;
+    /** Longest side (px) an image picked in an import dialog is stored at when
+     *  it's attached to the session as the object's source (image tools). */
+    imageToolMaxImagePx: number;
     /** Max objects one import may be split into (a multi-object 3MF imported
      *  one object per 3MF object / plate, or an STL split into one object per
      *  piece). Each becomes its own object with a version, so this bounds the
@@ -648,6 +654,12 @@ export interface AppConfig {
     reliefPreviewDebounceMs: number;
     /** Debounce delay (ms) for the relief import 3D preview. */
     reliefPreview3dDebounceMs: number;
+    /** Debounce delay (ms) for the Image tools panel's live tool preview
+     *  (re-rendered as the image, tool or prep settings change). */
+    imageToolPreviewDebounceMs: number;
+    /** Long-side cap (px) of the Image tools panel's live preview — and of the
+     *  decoded image it samples (×2), so the preview stays cheap on big photos. */
+    imageToolPreviewMaxPx: number;
     /** Delay (ms) before the progress modal appears (hides fast operations). */
     progressModalShowDelayMs: number;
     /** Heartbeat interval (ms) for the cross-tab session leader lock. */
@@ -954,6 +966,8 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     layeredPrintMaxCells: 1_000_000,
     layeredPrintMaxLayers: 160,
     layeredPrintMaxImagePx: 1600,
+    imagePrepMaxPx: 2048,
+    imageToolMaxImagePx: 2048,
     maxSplitObjects: 100,
     maxImportFiles: 50,
     multiImportGridGap: 0.2,
@@ -1016,6 +1030,8 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     characterPreviewDebounceMs: 450,
     reliefPreviewDebounceMs: 120,
     reliefPreview3dDebounceMs: 250,
+    imageToolPreviewDebounceMs: 150,
+    imageToolPreviewMaxPx: 160,
     progressModalShowDelayMs: 250,
     sessionLockHeartbeatMs: 3000,
     sessionLockStaleMs: 8000,
