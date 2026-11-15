@@ -64,3 +64,33 @@ triangles coloured, no fallback).
 triangle object still has 5–10 s stalls unrelated to colour matching, and the
 engine rebuild of a big import takes ~3× longer in the browser than the same
 `ofMesh` in Node.
+
+## Assistant
+
+## Review follow-ups (same session)
+
+**Single-colour skip narrowed to big models.** The reviewer pointed out that
+skipping unconditionally breaks round-trips: a uniformly painted model
+exported as 3MF, or a CAD file with one material, would come back grey with no
+filament slot. The costs the skip avoids only exist at size, so it now applies
+at or above `renderer.lazyManifoldMinTriangles` (the same big-mesh threshold
+the Worker uses). Small single-colour files import exactly as on main. This is
+narrower than what the human approved; flagged to them in the report.
+
+**Stale results do nothing lasting.** The seeder gets an `isStale` callback
+and returns before adopting a palette or counting colours when the live mesh
+changed during the match; `seedImportRegions` then shows a warn toast instead
+of only logging.
+
+**The Worker match sits behind the progress modal** (with Cancel = import
+without colours), so the model can't be switched under it. That closes the
+window the async match would otherwise have widened, rather than threading a
+"stale" result through every save path.
+
+**Colours never fail an import.** A Worker failure falls back to the main
+thread (bounded now that the search is capped); if that throws too, the import
+lands uncoloured with a warn toast.
+
+**Tolerance scales with coordinate size** as well as the source's diagonal:
+"Add to object" shifts the import beside the object and back in float32, which
+for a small part far from the origin exceeded `diag × 1e-5`.

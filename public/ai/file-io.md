@@ -202,10 +202,12 @@ const imp = await partwright.importMeshData(base64, 'part.stl', { sessionName: '
 // if an identical one exists) with regions bound to its slots, so a re-export
 // maps back onto the same AMS/MMU slots. Pass { adoptPalette: false } to keep
 // the current palette. Round-trips with export3MFData().base64.
-// A file whose triangles ALL carry one colour (any unpainted single-filament
-// slicer project) imports unpainted and leaves the active palette alone: one
-// region over the whole model tells nothing apart. `singleColor` reports that
-// colour ({ name, hex }, else null) — paint it yourself if you want it shown.
+// Exception: a BIG file (at or over the big-mesh threshold, 250k triangles by
+// default) whose triangles ALL carry one colour — any unpainted single-filament
+// slicer project — imports unpainted and leaves the active palette alone. One
+// region over the whole model tells nothing apart and is costly at that size.
+// `singleColor` then reports that colour ({ name, hex }, else null); it does
+// not round-trip its filament slot, so paint it yourself if you want it kept.
 const tmf = await partwright.importMeshData(base64, 'model.3mf')
 // -> { sessionId, isManifold, triangleCount, vertexCount, format: '3mf',
 //      flavor: 'bambu'|'prusa'|'generic', colorSource: 'filaments'|'materials'|'none',

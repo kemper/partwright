@@ -161,7 +161,7 @@ import { probeIndexedInWorker, probeSTLInWorker, STLProbeAbortError, type STLPro
 import { parse3MFInWorker } from './import/threemfParseClient';
 import { matchImportColors, singleColorIndex, type ColorSeedGroup } from './import/colorSeed';
 import { matchImportColorsInWorker } from './import/colorSeedClient';
-import { ImportWorkerError } from './import/importWorkerJob';
+import { ImportCancelledError, ImportWorkerError } from './import/importWorkerJob';
 import { parse3MF, type ThreeMFParseResult } from './import/parsers/threemf';
 import { looksLikeZip } from './import/zipReader';
 import { parseVox } from './import/parsers/vox';
@@ -4249,17 +4249,20 @@ async function main() {
   // `matchMesh` is the mesh to match against when it isn't the live one as it
   // stands (an import placed beside other geometry is matched at the file's
   // own position).
-  type SeedRegionsInput = SeedRegion[] | ((mesh: MeshData) => SeedRegion[] | Promise<SeedRegion[]>);
+  // The seeder gets `isStale` to check after its own awaits, before it does
+  // anything lasting (adopting a palette).
+  type SeedRegionsInput = SeedRegion[] | ((mesh: MeshData, isStale: () => boolean) => SeedRegion[] | Promise<SeedRegion[]>);
   async function seedImportRegions(seedInput: SeedRegionsInput | undefined, matchMesh?: MeshData): Promise<void> {
     let seedRegions: SeedRegion[] | undefined;
     if (typeof seedInput === 'function') {
       const live = currentMeshData;
       if (!live) return;
-      seedRegions = await seedInput(matchMesh ?? live);
       // The ids describe the mesh that was live when the match started. A
       // newer run or an object switch in the meantime replaced it.
-      if (currentMeshData !== live) {
-        errorLog.capture({ level: 'warn', source: 'import', message: 'The model changed while the import’s colours were being matched, so they were not applied.' });
+      const isStale = () => currentMeshData !== live;
+      seedRegions = await seedInput(matchMesh ?? live, isStale);
+      if (isStale()) {
+        showToast('The model changed while the import’s colours were being matched, so they were not applied.', { variant: 'warn', source: 'import' });
         return;
       }
     } else {
@@ -5637,14 +5640,35 @@ async function main() {
 
   /** `matchImportColors`, in a Worker when the meshes are big enough for it to
    *  stall the page (seconds at a couple of million triangles); on the main
-   *  thread for small ones, or if the Worker can't run. */
+   *  thread for small ones, or if the Worker can't run. The Worker match sits
+   *  behind the progress modal, so the model can't be switched under it; its
+   *  Cancel brings the import in without colours. Colours are optional: a
+   *  match that fails never fails the import. */
   async function matchImportColorsOffThread(source: MeshData, out: MeshData, triColor: Int32Array): Promise<ColorSeedGroup[]> {
     if (Math.max(source.numTri, out.numTri) < getConfig().renderer.lazyManifoldMinTriangles) return matchImportColors(source, out, triColor);
+    const abort = new AbortController();
+    const progressId = startProgress({
+      title: 'Applying colours',
+      message: 'Matching the file’s colours to the model…',
+      indeterminate: true,
+      onCancel: () => abort.abort(),
+    });
     try {
-      return await matchImportColorsInWorker(source, out, triColor);
+      return await matchImportColorsInWorker(source, out, triColor, { signal: abort.signal });
     } catch (e) {
+      if (e instanceof ImportCancelledError) {
+        showToast('Skipped the file’s colours.', { variant: 'neutral', source: 'import' });
+        return [];
+      }
       errorLog.capture({ level: 'warn', source: 'import', message: `Colour match worker failed; matching on the main thread instead: ${(e as Error).message}` });
-      return matchImportColors(source, out, triColor);
+      try {
+        return matchImportColors(source, out, triColor);
+      } catch (err) {
+        showToast(`Could not apply the file’s colours: ${(err as Error).message}`, { variant: 'warn', source: 'import' });
+        return [];
+      }
+    } finally {
+      endProgress(progressId);
     }
   }
 
@@ -5657,12 +5681,16 @@ async function main() {
    *  lazily here — i.e. only once the user actually placed the import (a
    *  cancelled target modal never creates a palette).
    *
-   *  A file whose triangles all carry ONE colour (any unpainted single-filament
-   *  slicer project) imports unpainted: a paint region over the whole model
-   *  tells nothing apart, and on a big model it costs a triangle-by-triangle
-   *  match, a region holding every triangle id in each saved version, and the
-   *  per-triangle-coloured render path. `info.singleColor` reports the colour. */
-  function build3MFSeeder(p3: Parsed3MF, paletteName: string, adoptPalette: boolean): { seed: (out: MeshData) => SeedRegion[] | Promise<SeedRegion[]>; info: ThreeMFColorInfo } | undefined {
+   *  A BIG file whose triangles all carry ONE colour (any unpainted single-
+   *  filament slicer project) imports unpainted: a paint region over the whole
+   *  model tells nothing apart, and at this size it costs a triangle-by-
+   *  triangle match, a region holding every triangle id in each saved version,
+   *  and the per-triangle-coloured render path. `info.singleColor` reports the
+   *  colour. Below the big-mesh threshold those costs are nothing, so a small
+   *  single-colour file keeps its colour and filament slot (and round-trips).
+   *  Judged on the whole file (for several files imported together, on the
+   *  batch), never per object: objects on different filaments keep theirs. */
+  function build3MFSeeder(p3: Parsed3MF, paletteName: string, adoptPalette: boolean): { seed: (out: MeshData, isStale?: () => boolean) => SeedRegion[] | Promise<SeedRegion[]>; info: ThreeMFColorInfo } | undefined {
     const { result, source } = p3;
     if (result.colorSource === 'none' || result.palette.length === 0) return undefined;
     // A per-triangle-coloured scan can carry thousands of distinct colours;
@@ -5670,13 +5698,15 @@ async function main() {
     if (result.palette.length > getConfig().import.threeMfMaxColors) {
       return { seed: () => [], info: { paletteName: null, coloredTriangles: 0, colors: 0, skippedColors: result.palette.length } };
     }
-    const single = fileSingleColor(result);
+    const single = result.mesh.numTri >= getConfig().renderer.lazyManifoldMinTriangles ? fileSingleColor(result) : undefined;
     if (single) {
       return { seed: () => [], info: { paletteName: null, coloredTriangles: 0, colors: 0, skippedColors: 0, singleColor: { name: single.name, hex: single.hex } } };
     }
     const info: ThreeMFColorInfo = { paletteName: null, coloredTriangles: 0, colors: 0, skippedColors: 0 };
-    const seed = async (out: MeshData): Promise<SeedRegion[]> => {
+    const seed = async (out: MeshData, isStale?: () => boolean): Promise<SeedRegion[]> => {
       const groups = await matchImportColorsOffThread(source, out, p3.triColor);
+      // The model moved on during the match: no palette, no colour counts.
+      if (isStale?.()) return [];
       const slotIds = adoptPalette ? adopt3MFPalette(paletteName, result.palette) : null;
       if (slotIds) info.paletteName = paletteName;
       const regions: SeedRegion[] = [];
@@ -5700,7 +5730,7 @@ async function main() {
     let msg = parts.join(', ');
     if (info?.paletteName) msg += ` — palette “${info.paletteName}” (${result.palette.length} slot${result.palette.length === 1 ? '' : 's'}) is now active`;
     if (info && info.skippedColors > 0) msg += `. Its ${info.skippedColors.toLocaleString()} colours exceed the ${getConfig().import.threeMfMaxColors}-colour import limit, so it came in uncoloured`;
-    if (info?.singleColor) msg += `. The file uses one colour (${info.singleColor.name}), so it came in unpainted`;
+    if (info?.singleColor) msg += `. The file uses one colour (${info.singleColor.name}), so this large model came in unpainted`;
     if (result.skippedParts > 0) msg += `. Skipped ${result.skippedParts} modifier/support part${result.skippedParts === 1 ? '' : 's'}`;
     return msg + '.';
   }

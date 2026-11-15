@@ -83,6 +83,21 @@ describe('matchImportColors', () => {
     for (const g of groups) for (const t of g.triangleIds) expect(t).toBeGreaterThanOrEqual(src.numTri);
   });
 
+  it('matches a small part that was shifted far away and back (float32 rounding)', () => {
+    // What "Add to object" does: place the import beside the object, then
+    // shift the result back to the file's position for the match.
+    const src = grid(4);
+    for (let i = 0; i < src.vertProperties.length; i++) src.vertProperties[i] *= 0.05; // a 0.2-unit part
+    const shifted = Float32Array.from(src.vertProperties, (v, i) => (i % 3 === 0 ? v + 4000 : v));
+    const back = Float32Array.from(shifted, (v, i) => (i % 3 === 0 ? v - 4000 : v));
+    const other = grid(4, 4000); // the object it sits beside
+    const out = concat(other, { ...src, vertProperties: back });
+    const groups = matchImportColors(src, out, new Int32Array(src.numTri).fill(0));
+    expect(groups).toHaveLength(1);
+    expect(groups[0].triangleIds.length).toBe(src.numTri);
+    for (const t of groups[0].triangleIds) expect(t).toBeGreaterThanOrEqual(other.numTri);
+  });
+
   it('stays fast when most of the output is far from a dense import', () => {
     // 20,000 source triangles; 5,000 output triangles one model-width away.
     // Uncapped, every far triangle walked the whole grid: minutes, not ms.

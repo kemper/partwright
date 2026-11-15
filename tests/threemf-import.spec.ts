@@ -173,9 +173,36 @@ test.describe('3MF import', () => {
     ]);
   });
 
-  test('a single-colour project imports unpainted and keeps the active palette', async ({ page }) => {
+  test('a small single-colour project keeps its colour', async ({ page }) => {
     await page.goto('/editor');
     await page.waitForSelector('text=Ready', { timeout: 15000 });
+    await page.locator('#import-wrapper input[type="file"]').setInputFiles({
+      name: 'bracket.3mf',
+      mimeType: 'model/3mf',
+      buffer: singleColourProject(),
+    });
+    await expect(page.getByText(/Imported bracket\.3mf: 12 triangles, 1 colour/)).toBeVisible({ timeout: 20000 });
+    const state = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: Record<string, (...a: unknown[]) => unknown> }).partwright;
+      const palette = await import('/src/color/palette.ts');
+      return {
+        regions: (pw.listRegions() as { name: string; triangles: number }[]).map(r => ({ name: r.name, triangles: r.triangles })),
+        paletteName: palette.getActivePaletteName(),
+      };
+    });
+    expect(state.regions).toEqual([{ name: 'F1 PLA', triangles: 12 }]);
+    expect(state.paletteName).toBe('Bracket (3MF)');
+  });
+
+  test('a big single-colour project imports unpainted and keeps the active palette', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 15000 });
+    // Treat every mesh as "big" so this 12-triangle box takes the path a
+    // multi-million-triangle single-filament project would.
+    await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: Record<string, (...a: unknown[]) => Promise<unknown>> }).partwright;
+      await pw.setAppConfig('renderer', 'lazyManifoldMinTriangles', 0);
+    });
     const paletteBefore = await page.evaluate(async () => (await import('/src/color/palette.ts')).getActivePaletteName());
 
     await page.locator('#import-wrapper input[type="file"]').setInputFiles({
@@ -183,7 +210,7 @@ test.describe('3MF import', () => {
       mimeType: 'model/3mf',
       buffer: singleColourProject(),
     });
-    await expect(page.getByText('Imported bracket.3mf: 12 triangles. The file uses one colour (F1 PLA), so it came in unpainted.')).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText('Imported bracket.3mf: 12 triangles. The file uses one colour (F1 PLA), so this large model came in unpainted.')).toBeVisible({ timeout: 20000 });
 
     const state = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: Record<string, (...a: unknown[]) => unknown> }).partwright;

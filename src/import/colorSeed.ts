@@ -32,9 +32,22 @@ export function singleColorIndex(triColor: Int32Array): number {
   return first;
 }
 
+/** The largest absolute coordinate of a mesh's vertices. */
+function reach(m: CentroidMesh): number {
+  const v = m.vertProperties, n = m.numProp;
+  let r = 0;
+  for (let i = 0; i + 2 < v.length; i += n) {
+    const a = Math.max(Math.abs(v[i]), Math.abs(v[i + 1]), Math.abs(v[i + 2]));
+    if (a > r) r = a;
+  }
+  return r;
+}
+
 /** How far apart two centroids may be and still count as the same triangle:
- *  a hair of the source's size (float rounding through the import wrapper). */
-function matchTolerance(source: CentroidMesh): number {
+ *  a hair of the source's size, or of how far from the origin either mesh
+ *  reaches — float32 rounding grows with the coordinates, and an import placed
+ *  beside other geometry was shifted there and back before the match. */
+function matchTolerance(source: CentroidMesh, out: CentroidMesh): number {
   const v = source.vertProperties, n = source.numProp;
   let minX = Infinity, minY = Infinity, minZ = Infinity;
   let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
@@ -45,7 +58,7 @@ function matchTolerance(source: CentroidMesh): number {
     if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
   }
   const diag = minX <= maxX ? Math.hypot(maxX - minX, maxY - minY, maxZ - minZ) : 1;
-  return Math.max(diag, 1e-3) * 1e-5;
+  return Math.max(diag, reach(source), reach(out), 1e-3) * 1e-5;
 }
 
 /** Group `out`'s triangles by the palette entry of the `source` triangle each
@@ -53,7 +66,7 @@ function matchTolerance(source: CentroidMesh): number {
  *  Triangles with no coinciding source triangle, or an uncoloured one, are in
  *  no group. Groups come back in palette order. */
 export function matchImportColors(source: CentroidMesh, out: CentroidMesh, triColor: Int32Array): ColorSeedGroup[] {
-  const nearest = nearestTriangleMap(source, out, { maxDistance: matchTolerance(source) });
+  const nearest = nearestTriangleMap(source, out, { maxDistance: matchTolerance(source, out) });
   const counts = new Map<number, number>();
   for (let t = 0; t < nearest.length; t++) {
     const o = nearest[t];
