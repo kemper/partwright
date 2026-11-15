@@ -2,7 +2,7 @@
 // heights. One object (the heightmap), one plate, the slicer's layer heights
 // and 100% infill set to match the plan.
 
-import { build3MFProject, type LayerSwapPlan } from '../../export/threemfProject';
+import { build3MFProject, build3MFProjectAsync, type Build3MFProjectOptions, type LayerSwapPlan, type PartExport } from '../../export/threemfProject';
 import type { BuiltExport } from '../../export/gltf';
 import type { MeshData } from '../../geometry/types';
 import type { LayeredPrintResult } from './solver';
@@ -57,15 +57,34 @@ export interface LayeredPrintExport {
   swaps: number;
 }
 
+/** Synchronous, uncompressed (ZIP STORE) build — see {@link buildLayeredPrint3MFAsync}. */
 export function buildLayeredPrint3MF(r: LayeredPrintResult, opts: LayeredPrint3MFOptions = {}): LayeredPrintExport {
   return buildPlan3MF(layeredPrintRecord(r), opts.mesh ?? layeredPrintMeshData(r), opts);
+}
+
+/** {@link buildLayeredPrint3MF} with the 3MF DEFLATE-compressed (~4× smaller). */
+export function buildLayeredPrint3MFAsync(r: LayeredPrintResult, opts: LayeredPrint3MFOptions = {}): Promise<LayeredPrintExport> {
+  return buildPlan3MFAsync(layeredPrintRecord(r), opts.mesh ?? layeredPrintMeshData(r), opts);
 }
 
 /** The single export path for a layered print (dialog, editor, API, CLI).
  *  Layer-swap mode drops any per-triangle colours on `mesh` (the plan colours
  *  it); painted mode uses them when present (the editor's colours, incl. any
- *  labels/paint), else the plan's predicted colours by height. */
-export function buildPlan3MF(plan: LayeredPrintPlanRecord, mesh: MeshData, opts: LayeredPrint3MFOptions = {}): LayeredPrintExport {
+ *  labels/paint), else the plan's predicted colours by height.
+ *  Synchronous and uncompressed — downloads use {@link buildPlan3MFAsync}. */
+function buildPlan3MF(plan: LayeredPrintPlanRecord, mesh: MeshData, opts: LayeredPrint3MFOptions = {}): LayeredPrintExport {
+  const job = planProject(plan, mesh, opts);
+  return { ...job.result, built: build3MFProject(job.parts, job.projectOpts) };
+}
+
+/** {@link buildPlan3MF} with the 3MF DEFLATE-compressed (STORE fallback). */
+export async function buildPlan3MFAsync(plan: LayeredPrintPlanRecord, mesh: MeshData, opts: LayeredPrint3MFOptions = {}): Promise<LayeredPrintExport> {
+  const job = planProject(plan, mesh, opts);
+  return { ...job.result, built: await build3MFProjectAsync(job.parts, job.projectOpts) };
+}
+
+/** What to hand the 3MF builder for a plan, plus the export summary. */
+function planProject(plan: LayeredPrintPlanRecord, mesh: MeshData, opts: LayeredPrint3MFOptions): { parts: PartExport[]; projectOpts: Build3MFProjectOptions; result: Omit<LayeredPrintExport, 'built'> } {
   const name = opts.name ?? 'layered-print';
   const mode = opts.mode ?? 'layer-swap';
   const bare: MeshData = { vertProperties: mesh.vertProperties, triVerts: mesh.triVerts, numVert: mesh.numVert, numTri: mesh.numTri, numProp: mesh.numProp };
@@ -79,20 +98,24 @@ export function buildPlan3MF(plan: LayeredPrintPlanRecord, mesh: MeshData, opts:
       }
     }
     const snapped = snapTriColorsToFilaments(source, mesh.numTri, opts.slots ?? 8, opts.paintFilaments ?? LAYERED_PRINT_FILAMENT_LIBRARY);
-    const built = build3MFProject([{ name, mesh: { ...bare, triColors: snapped.triColors } }], {
-      bambu: true, customName: name, printer: opts.printer, nozzle: opts.nozzle, filament: 'pla',
-    });
-    return { built, mode, filaments: snapped.filaments, swaps: 0 };
+    return {
+      parts: [{ name, mesh: { ...bare, triColors: snapped.triColors } }],
+      projectOpts: { bambu: true, customName: name, printer: opts.printer, nozzle: opts.nozzle, filament: 'pla' },
+      result: { mode, filaments: snapped.filaments, swaps: 0 },
+    };
   }
-  const built = build3MFProject([{ name, mesh: bare }], {
-    bambu: true,
-    customName: name,
-    printer: opts.printer,
-    nozzle: opts.nozzle,
-    filament: 'pla',
-    layerPlan: planToLayerSwapPlan(plan, opts.swapMode ?? 'ams'),
-  });
-  return { built, mode, filaments: plan.blocks.map((b) => ({ name: b.name, hex: b.hex })), swaps: plan.blocks.length - 1 };
+  return {
+    parts: [{ name, mesh: bare }],
+    projectOpts: {
+      bambu: true,
+      customName: name,
+      printer: opts.printer,
+      nozzle: opts.nozzle,
+      filament: 'pla',
+      layerPlan: planToLayerSwapPlan(plan, opts.swapMode ?? 'ams'),
+    },
+    result: { mode, filaments: plan.blocks.map((b) => ({ name: b.name, hex: b.hex })), swaps: plan.blocks.length - 1 },
+  };
 }
 
 function planToLayerSwapPlan(p: LayeredPrintPlanRecord, swapMode: LayerSwapPlan['swapMode']): LayerSwapPlan {

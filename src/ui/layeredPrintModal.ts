@@ -22,7 +22,7 @@ export interface LayeredPrintModalOptions {
   /** Open the solved print as a new code session with the photo attached. */
   onCreate: (result: LayeredPrintResult, name: string, photoDataUrl: string) => Promise<void>;
   /** Download a 3MF for the solve (the same export path as the editor's). */
-  onDownload: (result: LayeredPrintResult, args: { mode: LayeredExportMode; swapMode?: 'ams' | 'pause'; slots?: number; paintFilaments?: 'library' | 'palette' | 'exact'; printer: string }) => void;
+  onDownload: (result: LayeredPrintResult, args: { mode: LayeredExportMode; swapMode?: 'ams' | 'pause'; slots?: number; paintFilaments?: 'library' | 'palette' | 'exact'; printer: string }) => unknown;
 }
 
 function numberField(label: string, value: number, min: number, max: number, step: number, hint: string): { row: HTMLElement; input: HTMLInputElement } {
@@ -238,10 +238,12 @@ export function openLayeredPrintModal(opts: LayeredPrintModalOptions): void {
   solveBtn.addEventListener('click', () => { void runSolve(); });
   downloadBtn.addEventListener('click', () => {
     if (!result) return;
+    const solved = result;
     const v = swap.select.value;
-    opts.onDownload(result, v === 'painted'
+    Promise.resolve().then(() => opts.onDownload(solved, v === 'painted'
       ? { mode: 'painted', slots: Math.round(readNum(slots.input, 8)), paintFilaments: paintSource.select.value as 'library' | 'palette' | 'exact', printer: printer.select.value }
-      : { mode: 'layer-swap', swapMode: v as 'ams' | 'pause', printer: printer.select.value });
+      : { mode: 'layer-swap', swapMode: v as 'ams' | 'pause', printer: printer.select.value }))
+      .catch((e: unknown) => { status.textContent = `Could not export the 3MF: ${e instanceof Error ? e.message : String(e)}`; });
   });
   createBtn.addEventListener('click', async () => {
     if (!result) return;

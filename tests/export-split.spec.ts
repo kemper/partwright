@@ -1,5 +1,6 @@
 import { test, expect, type Page } from 'playwright/test';
 import { waitForEditorReady } from './helpers/aiPanel';
+import { zipText } from './helpers/zipText';
 
 // Splitting one object into several export items: the export picker's
 // Split menu (Whole / Pieces / Parts), its per-item rows, the Bambu Custom
@@ -85,7 +86,7 @@ test.describe('export split (pieces / parts)', () => {
     await colors.locator('[data-action="export-colors"]').click();
     const file = await download;
     expect(file.suggestedFilename()).toMatch(/\.3mf$/);
-    const text = new TextDecoder('utf-8').decode(new Uint8Array(await (await import('node:fs/promises')).readFile((await file.path())!)));
+    const text = await zipText(new Uint8Array(await (await import('node:fs/promises')).readFile((await file.path())!)));
     expect(bambuObjectFiles(text)).toHaveLength(3);
     expect(text).toContain('Chess bits · King');
     expect(text).not.toContain('Piece 4');
@@ -112,7 +113,6 @@ test.describe('export split (pieces / parts)', () => {
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
-      const decode = (b64: string) => new TextDecoder('latin1').decode(Uint8Array.from(atob(b64), ch => ch.charCodeAt(0)));
       const listing = await pw.listExportItems();
       const bambu = await pw.export3MFObjectsData(undefined, 'chess', {
         split: { 'Chess bits': 'pieces' }, exclude: ['Chess bits · Piece 4'],
@@ -123,7 +123,7 @@ test.describe('export split (pieces / parts)', () => {
       const whole = await pw.export3MFObjectsData(undefined, 'chess', { bambu: false });
       return {
         listing,
-        bambu: { objects: bambu.objects, items: bambu.items, text: decode(bambu.base64) },
+        bambu: { objects: bambu.objects, items: bambu.items, base64: bambu.base64 as string },
         parts: { objects: parts.objects, itemCount: parts.itemCount },
         stl: { objects: stl.objects, itemCount: stl.itemCount, error: stl.error },
         whole: { objects: whole.objects, items: whole.items },
@@ -136,6 +136,7 @@ test.describe('export split (pieces / parts)', () => {
       };
     });
 
+    const bambuText = await zipText(out.bambu.base64);
     const obj = out.listing.objects[0];
     expect(obj.pieceCount).toBe(4);
     expect(obj.splits).toEqual(['whole', 'pieces', 'parts']);
@@ -144,9 +145,9 @@ test.describe('export split (pieces / parts)', () => {
 
     expect(out.bambu.objects).toBe(1);
     expect(out.bambu.items).toEqual(['Chess bits · board', 'Chess bits · King', 'Chess bits · Queen']);
-    expect(bambuObjectFiles(out.bambu.text)).toHaveLength(3);
+    expect(bambuObjectFiles(bambuText)).toHaveLength(3);
     // Two plates: King + Queen share one, the board has its own.
-    expect([...out.bambu.text.matchAll(/<metadata key="plater_id" value="(\d+)"/g)].length).toBe(2);
+    expect([...bambuText.matchAll(/<metadata key="plater_id" value="(\d+)"/g)].length).toBe(2);
 
     expect(out.parts).toEqual({ objects: 1, itemCount: 4 });
     expect(out.stl).toEqual({ objects: 1, itemCount: 4 });

@@ -174,14 +174,14 @@ await partwright.createLayeredPrint({
 partwright.getLayeredPrintPlan()        // last run's plan + `instructions` + `schedule` (paste-ready)
 partwright.listLayeredPrintFilaments()  // the built-in candidate list
 
-partwright.exportLayeredPrint3MF({ swapMode: 'ams', printer: 'p1s' })
+await partwright.exportLayeredPrint3MF({ swapMode: 'ams', printer: 'p1s' })
 // Layer-swap 3MF (the default, mode: 'layer-swap'): layer height + first layer
 // + 100% infill set to match, and a filament change at each swap layer.
 //   swapMode 'ams'   — automatic filament changes (one AMS slot per filament)
 //   swapMode 'pause' — prints with filament 1; the printer pauses at each swap
 //                      for a manual change (all filaments listed as documentation)
 
-partwright.exportLayeredPrint3MF({ mode: 'painted', slots: 8, paintFilaments: 'library' })
+await partwright.exportLayeredPrint3MF({ mode: 'painted', slots: 8, paintFilaments: 'library' })
 // Painted 3MF: each region printed in its own filament, coloured like the
 // preview and reduced to `slots` AMS filaments — snapped to real filaments
 // ('library' = built-in list, 'palette' = your palette) or 'exact' preview

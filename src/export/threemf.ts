@@ -2,12 +2,25 @@ import type { MeshData } from '../geometry/types';
 import { get3MFUnitString } from '../geometry/units';
 import { downloadBlob, getExportFilename, getExportTitle } from './download';
 import type { BuiltExport } from './gltf';
-import { buildZip } from './zip';
+import { buildZip, buildZipAsync, type ZipEntry } from './zip';
 import { assertFiniteMesh, assertExportableMesh, cleanMeshForExport, triColorHex, hasAnyPainted } from './meshClean';
 import { listFilaments } from '../color/palette';
 
-/** Build a 3MF export blob without triggering a download. */
+const MIME_3MF = 'application/vnd.ms-package.3dmanufacturing';
+
+/** Build a 3MF export blob without triggering a download. Synchronous and
+ *  uncompressed (ZIP STORE) — prefer {@link build3MFAsync}, which DEFLATEs it. */
 export function build3MF(meshData: MeshData, customName?: string): BuiltExport {
+  return { blob: new Blob([buildZip(build3MFEntries(meshData)) as BlobPart], { type: MIME_3MF }), filename: getExportFilename('3mf', customName), mimeType: MIME_3MF };
+}
+
+/** {@link build3MF} with DEFLATE-compressed ZIP entries (STORE fallback). */
+export async function build3MFAsync(meshData: MeshData, customName?: string): Promise<BuiltExport> {
+  const entries = build3MFEntries(meshData);
+  return { blob: new Blob([await buildZipAsync(entries) as BlobPart], { type: MIME_3MF }), filename: getExportFilename('3mf', customName), mimeType: MIME_3MF };
+}
+
+function build3MFEntries(meshData: MeshData): ZipEntry[] {
   assertFiniteMesh(meshData);
   const { triVerts, triColors } = meshData;
 
@@ -124,19 +137,16 @@ ${triangles.join('\n')}
   <Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel" />
 </Relationships>`;
 
-  const zip = buildZip([
+  return [
     { name: '[Content_Types].xml', data: new TextEncoder().encode(contentTypesXml) },
     { name: '_rels/.rels', data: new TextEncoder().encode(relsXml) },
     { name: '3D/3dmodel.model', data: new TextEncoder().encode(modelXml) },
-  ]);
-
-  const mimeType = 'application/vnd.ms-package.3dmanufacturing';
-  const blob = new Blob([zip], { type: mimeType });
-  return { blob, filename: getExportFilename('3mf', customName), mimeType };
+  ];
 }
 
-export function export3MF(meshData: MeshData, customName?: string): string {
-  const built = build3MF(meshData, customName);
+/** Build a compressed 3MF and download it; resolves to the filename. */
+export async function export3MF(meshData: MeshData, customName?: string): Promise<string> {
+  const built = await build3MFAsync(meshData, customName);
   downloadBlob(built.blob, built.filename, '3MF');
   return built.filename;
 }

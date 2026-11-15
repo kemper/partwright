@@ -47,7 +47,7 @@ import type { MeshData } from '../geometry/types';
 import { get3MFUnitString } from '../geometry/units';
 import { getExportFilename, getExportTitle } from './download';
 import type { BuiltExport } from './gltf';
-import { buildZip } from './zip';
+import { buildZip, buildZipAsync, type ZipEntry } from './zip';
 import { assertFiniteMesh, assertExportableMesh, cleanMeshForExport, triColorHex, hasAnyPainted } from './meshClean';
 import { listFilaments } from '../color/palette';
 import { encodePaintColorState } from './paintColor3mf';
@@ -596,10 +596,26 @@ interface PreparedPart {
   halfHeight: number;          // half of Z extent (unused in current code, kept for possible future use)
 }
 
+const MIME_3MF = 'application/vnd.ms-package.3dmanufacturing';
+
 /**
  * Build a multi-part 3MF blob. See the module header for the two modes.
+ * Synchronous and uncompressed (ZIP STORE) — prefer {@link build3MFProjectAsync}
+ * for downloads, which DEFLATEs the package (~4× smaller for large meshes).
  */
 export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOptions = {}): BuiltExport {
+  return { blob: new Blob([buildZip(build3MFProjectEntries(parts, opts)) as BlobPart], { type: MIME_3MF }), filename: getExportFilename('3mf', opts.customName), mimeType: MIME_3MF };
+}
+
+/** {@link build3MFProject} with the ZIP entries DEFLATE-compressed (STORE
+ *  fallback when the runtime has no `CompressionStream`). Same package contents. */
+export async function build3MFProjectAsync(parts: PartExport[], opts: Build3MFProjectOptions = {}): Promise<BuiltExport> {
+  const entries = build3MFProjectEntries(parts, opts);
+  return { blob: new Blob([await buildZipAsync(entries) as BlobPart], { type: MIME_3MF }), filename: getExportFilename('3mf', opts.customName), mimeType: MIME_3MF };
+}
+
+/** The 3MF package's ZIP entries (shared by the sync and async builders). */
+function build3MFProjectEntries(parts: PartExport[], opts: Build3MFProjectOptions): ZipEntry[] {
   if (parts.length === 0) throw new Error('Cannot export: no parts selected.');
   const bambu = opts.bambu ?? true;
   const gridGap = opts.gridGapMm ?? DEFAULT_GRID_GAP_MM;
@@ -737,12 +753,9 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
     : '';
 
   const packStrategy = opts.packStrategy ?? DEFAULT_PACK_STRATEGY;
-  const built = bambu
+  return bambu
     ? buildBambuPackage(prepared, bambuFilamentColors, resolvePrinter(opts.printer), opts.nozzle ?? '0.4', resolveFilament(opts.filament), parts, opts.plateLayout ?? 'separate', gridGap, packStrategy, plan)
     : buildGenericPackage(prepared, colorgroupXml, anyColour, colorGroupId, gridGap, packStrategy);
-
-  const mimeType = 'application/vnd.ms-package.3dmanufacturing';
-  return { blob: new Blob([built], { type: mimeType }), filename: getExportFilename('3mf', opts.customName), mimeType };
 }
 
 // ── Generic: single inline model, parts arranged per the packing strategy ──
@@ -753,7 +766,7 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
 // A uniform max-footprint pitch keeps every cell non-overlapping (no bed to balloon
 // off, so the pitch that was a bug for Bambu is fine here). The block is centred on
 // the origin.
-function buildGenericPackage(prepared: PreparedPart[], colorgroupXml: string, anyColour: boolean, _cgid: number, gridGap: number, packStrategy: PackStrategy = DEFAULT_PACK_STRATEGY): Uint8Array {
+function buildGenericPackage(prepared: PreparedPart[], colorgroupXml: string, anyColour: boolean, _cgid: number, gridGap: number, packStrategy: PackStrategy = DEFAULT_PACK_STRATEGY): ZipEntry[] {
   const N = prepared.length;
   const cols = packStrategy === 'horizontal' ? N
     : packStrategy === 'vertical' ? 1
@@ -809,11 +822,11 @@ ${buildItems}
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Target="/3D/3dmodel.model" Id="rel0" Type="${REL_TYPE}" />
 </Relationships>`;
-  return buildZip([
+  return [
     { name: '[Content_Types].xml', data: enc(contentTypes) },
     { name: '_rels/.rels', data: enc(rels) },
     { name: '3D/3dmodel.model', data: enc(modelXml) },
-  ]);
+  ];
 }
 
 // ── Bambu/Orca: production-extension split files, one plate per part ──────
@@ -833,7 +846,7 @@ ${buildItems}
 //   - identify_id in each <model_instance>
 //   - filament_map_mode / filament_maps / filament_volume_maps / thumbnail* in <plate>
 //   - <assemble> block at the end
-function buildBambuPackage(prepared: PreparedPart[], filamentColors: string[], printer: BambuPrinterSpec, nozzle: string, filament: BambuFilamentType, parts: PartExport[], plateLayout: BambuPlateLayout, gap: number, packStrategy: PackStrategy = DEFAULT_PACK_STRATEGY, plan?: LayerSwapPlan): Uint8Array {
+function buildBambuPackage(prepared: PreparedPart[], filamentColors: string[], printer: BambuPrinterSpec, nozzle: string, filament: BambuFilamentType, parts: PartExport[], plateLayout: BambuPlateLayout, gap: number, packStrategy: PackStrategy = DEFAULT_PACK_STRATEGY, plan?: LayerSwapPlan): ZipEntry[] {
   const unit = get3MFUnitString();
   const [bedW, bedH] = printer.bed;                  // selected printer's bed footprint
   const filamentCount = filamentColors.length;       // AMS slots = distinct colours
@@ -1062,7 +1075,7 @@ ${assembleItems.join('\n')}
 </Relationships>`;
 
   const empty = new Uint8Array(0);
-  return buildZip([
+  return [
     { name: '[Content_Types].xml', data: enc(contentTypes) },
     { name: '3D/', data: empty },
     { name: '3D/Objects/', data: empty },
@@ -1076,7 +1089,7 @@ ${assembleItems.join('\n')}
     { name: 'Metadata/model_settings.config', data: enc(modelSettings) },
     { name: 'Metadata/project_settings.config', data: enc(projectSettings) },
     ...(plan && plan.changes.length > 0 ? [{ name: 'Metadata/custom_gcode_per_layer.xml', data: enc(buildCustomGcodePerLayerXml(plan)) }] : []),
-  ]);
+  ];
 }
 
 /** True if `key` holds a per-filament array (so it must scale with filament count). */
