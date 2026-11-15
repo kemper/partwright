@@ -2545,6 +2545,47 @@ Returns { ok, stats, metrics, version } or { error }.`,
     },
   },
   {
+    name: 'applyImageTool',
+    description: "Turn an image attached to the session into an object with an IMAGE TOOL, or re-apply a tool to the open object with new settings. REQUIRES USER CONFIRMATION. tool: 'tile' (flat colour keychain/tile), 'silhouette' (tile cut to the subject), 'steppedRelief' (each colour cluster at its own height), 'lithophane' (brightness → height), 'layeredPrint' (HueForge-style filament layering), 'voxel' (pixel-art cubes). Image: `image` = attachment id (from getAttachments), `imageRef` (1-based getReferenceImages index), or `src` (attaches a new image). replace: true re-applies to the open object (a new version; undo = version history), and params for the same tool MERGE over its stored ones — so tweak one setting at a time (e.g. {quantized: {clusters: 6}}). params: relief tools take ReliefOptions sections {common: {widthMm, maxHeight, baseThickness, resolution, smoothing, removeBackground}, quantized: {clusters, output, shape, cornerRadiusMm, holes, …}, luminance: {invert, gamma, levels}, preprocess: {brightness, contrast, saturation, levelsLow, levelsHigh}}; voxel takes importImageAsVoxels options; layeredPrint takes api.layeredPrint options. The tool's settings are stored in the object's code (`// @image-tool {...}` header) — read them with getImageToolOp.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        tool: { type: 'string', enum: ['tile', 'silhouette', 'steppedRelief', 'lithophane', 'layeredPrint', 'voxel'] },
+        image: { type: 'string', description: 'Attachment id of the image (getAttachments).' },
+        imageRef: { type: 'integer', minimum: 1, description: '1-based index into getReferenceImages, instead of image.' },
+        src: { type: 'string', description: 'Attach this image (data: or http(s) URL) and use it.' },
+        params: {
+          type: 'object',
+          description: "The tool's settings (see description). With replace + the same tool they merge over the stored ones.",
+          properties: {
+            common: { type: 'object', description: 'Relief tools: {widthMm, layerHeight, baseThickness, maxHeight, resolution, smoothing, removeBackground}.', properties: { widthMm: { type: 'number' }, maxHeight: { type: 'number' }, baseThickness: { type: 'number' }, resolution: { type: 'integer' }, smoothing: { type: 'number' }, removeBackground: { type: 'boolean' } } },
+            quantized: { type: 'object', description: 'tile / silhouette / steppedRelief: {clusters, colorSpace, dither, shape, cornerRadiusMm, chamferMm, holes}.', properties: { clusters: { type: 'integer' }, shape: { type: 'string', enum: ['rect', 'rounded', 'circle'] }, cornerRadiusMm: { type: 'number' }, chamferMm: { type: 'number' } } },
+            luminance: { type: 'object', description: 'lithophane: {invert, gamma, levels}.', properties: { invert: { type: 'boolean' }, gamma: { type: 'number' }, levels: { type: 'integer' } } },
+            preprocess: { type: 'object', description: 'Relief tools: {brightness, contrast, saturation, levelsLow, levelsHigh}.', properties: { brightness: { type: 'number' }, contrast: { type: 'number' }, saturation: { type: 'number' } } },
+            maxSize: { type: 'integer', description: 'voxel: longest side in voxels.' },
+            mode: { type: 'string', enum: ['billboard', 'heightmap'], description: 'voxel mode.' },
+            colors: { type: 'integer', description: 'layeredPrint: max filaments.' },
+            widthMm: { type: 'number', description: 'layeredPrint: width.' },
+            maxHeightMm: { type: 'number', description: 'layeredPrint: max height.' },
+          },
+        },
+        replace: { type: 'boolean', description: 'Re-apply to the open object instead of making a new one.' },
+        name: { type: 'string' },
+      },
+      required: ['tool'],
+    },
+  },
+  {
+    name: 'getImageToolOp',
+    description: "The open object's image-tool record {tool, image, params} — the settings an image tool made it with (its `// @image-tool` code header, or a layered print's api.layeredPrint call). Errors when the object wasn't made by an image tool.",
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'listImageTools',
+    description: 'The image tools applyImageTool can run: id, label, description.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
     name: 'getLayeredPrintPlan',
     description: "The current model's layered print (from api.layeredPrint in its code, as of the last run): filaments bottom→top with TD, swap layers + heights, size, predicted ΔE, a printable instructions text, and `schedule` — the exact array to paste into api.layeredPrint's `schedule` option to pin or edit the plan. Errors when the model has no layered print.",
     input_schema: { type: 'object', properties: {} },
@@ -3084,6 +3125,8 @@ const ALWAYS_AVAILABLE = new Set([
   'listCatalog',
   // Creates a NEW session from an image (confirmed), like importImageAsVoxels.
   'createLayeredPrint',
+  'getImageToolOp',
+  'listImageTools',
   'getLayeredPrintPlan',
   'listLayeredPrintFilaments',
 ]);
@@ -3094,6 +3137,7 @@ export const CONFIRM_REQUIRED_TOOLS = new Set([
   'importImageAsRelief',
   'createLayeredPrint',
   'exportLayeredPrint3MF',
+  'applyImageTool',
   'importSvgAsRelief',
   // Irreversible: a deleted version has no recycle bin (unlike deleteObject).
   'deleteVersion',
@@ -3252,7 +3296,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams', 'setCurvatureQuality']);
-const SAVE_GATED = new Set(['setLayerColors', 'clearLayerColors', 'runAndSave', 'fitHumanToPhoto', 'forkVersion', 'loadVersion', 'saveVersion', 'resolveModelDrift', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts', 'partAction', 'undoPartEdit', 'splitIntoPieces']);
+const SAVE_GATED = new Set(['applyImageTool', 'setLayerColors', 'clearLayerColors', 'runAndSave', 'fitHumanToPhoto', 'forkVersion', 'loadVersion', 'saveVersion', 'resolveModelDrift', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts', 'partAction', 'undoPartEdit', 'splitIntoPieces']);
 /** SAVE_GATED tools that touch version history WITHOUT executing new code, so
  *  they only need the saveVersions scope (not runCode). */
 const SAVE_NON_RUNNING = new Set(['loadVersion', 'saveVersion', 'renameVersion', 'deleteVersion', 'saveAllObjects']);
@@ -3297,6 +3341,7 @@ export function aiDefaultImportTarget(api: PartwrightAPI): 'new-object' | 'new-s
 export function describeToolConfirmation(name: string, input: Record<string, unknown>): string {
   if (name === 'importImageAsRelief') return 'import an image as a 3D relief';
   if (name === 'importSvgAsRelief') return 'import an SVG as a 3D relief tile';
+  if (name === 'applyImageTool') return `${input.replace === true ? 're-apply' : 'apply'} the image tool "${String(input.tool)}"${input.replace === true ? ' to the open object (a new version)' : ' as a new object'}`;
   if (name === 'createLayeredPrint') return `turn ${typeof input.imageRef === 'number' ? `reference image ${input.imageRef}` : 'an image'} into a HueForge-style filament-layering print (new session)`;
   if (name === 'exportLayeredPrint3MF') return `download the layered print as a 3MF (${input.mode === 'painted' ? `painted regions, ${typeof input.slots === 'number' ? input.slots : 8} AMS filaments` : input.swapMode === 'pause' ? 'layer swaps, manual pauses' : 'layer swaps, AMS filament changes'})`;
   if (name === 'setAppConfig') return `change the setting ${String(input.setting)} to ${String(input.value)} (saved for this browser)`;
@@ -4794,6 +4839,23 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       const opts = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== null));
       return api.createLayeredPrint({ src, ...opts });
     }
+    case 'applyImageTool': {
+      const { imageRef, ...rest } = input;
+      const args = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== null)) as Record<string, unknown>;
+      if (typeof imageRef === 'number') {
+        // Same indexing as getReferenceImages: only images that carry pixels.
+        const raw = typeof api.getImages === 'function' ? (api.getImages() as Array<{ id?: string; src?: string }>) : [];
+        const imgs = Array.isArray(raw) ? raw.filter((im) => typeof im.src === 'string' && im.src.length > 0) : [];
+        const entry = imgs[imageRef - 1];
+        if (!entry?.id) return { error: `applyImageTool: no reference image at index ${imageRef}. Call getReferenceImages to list them.` };
+        args.image = entry.id;
+      }
+      return api.applyImageTool(args);
+    }
+    case 'getImageToolOp':
+      return api.getImageToolOp();
+    case 'listImageTools':
+      return api.listImageTools();
     case 'getLayeredPrintPlan':
       return api.getLayeredPrintPlan();
     case 'listLayeredPrintFilaments':

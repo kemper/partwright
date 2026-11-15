@@ -455,6 +455,9 @@ export interface AppConfig {
     layeredPrintMaxLayers: number;
     /** Longest side (px) a layered-print photo is stored and solved at. */
     layeredPrintMaxImagePx: number;
+    /** Longest side (px) an image picked in an import dialog is stored at when
+     *  it's attached to the session as the object's source (image tools). */
+    imageToolMaxImagePx: number;
     /** Max objects one import may be split into (a multi-object 3MF imported
      *  one object per 3MF object / plate, or an STL split into one object per
      *  piece). Each becomes its own object with a version, so this bounds the
@@ -954,6 +957,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     layeredPrintMaxCells: 1_000_000,
     layeredPrintMaxLayers: 160,
     layeredPrintMaxImagePx: 1600,
+    imageToolMaxImagePx: 2048,
     maxSplitObjects: 100,
     maxImportFiles: 50,
     multiImportGridGap: 0.2,

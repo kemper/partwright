@@ -70,6 +70,60 @@ test.describe('AI panel image drop', () => {
     await page.waitForFunction((n) => (window as any).partwright.getImages().length === n + 1, before);
   });
 
+  test('a voxel import from the chooser attaches the image and records the tool (#1256)', async ({ page }) => {
+    // A 4×4 opaque PNG drawn in the page (voxel import needs opaque pixels).
+    const b64 = await page.evaluate(() => {
+      const c = document.createElement('canvas'); c.width = 4; c.height = 4;
+      const g = c.getContext('2d')!; g.fillStyle = '#d2452b'; g.fillRect(0, 0, 4, 4); g.fillStyle = '#2f6fd0'; g.fillRect(2, 0, 2, 4);
+      return c.toDataURL('image/png').split(',')[1];
+    });
+    await dropFile(page, '#viewport', 'tile.png', 'image/png', b64);
+    const dialog = page.getByRole('dialog', { name: 'Import image as…' });
+    await dialog.locator('[data-kind="voxel"]').click();
+    await page.getByRole('button', { name: 'Import', exact: true }).click();
+    await page.waitForFunction(() => (window as any).partwright.getImageToolOp()?.tool === 'voxel', null, { timeout: 30_000 });
+    const res = await page.evaluate(() => {
+      const pw = (window as any).partwright;
+      return { op: pw.getImageToolOp(), images: pw.getImages().map((i: { id: string }) => i.id) };
+    });
+    expect(res.op?.tool).toBe('voxel');
+    expect(res.images).toContain(res.op.image);
+  });
+
+  test('a voxel import into a NEW session attaches only its own image, and it persists (#1256)', async ({ page }) => {
+    test.setTimeout(120_000);
+    // Session A: real work plus an unrelated reference image.
+    await page.evaluate(async () => {
+      const pw = (window as any).partwright;
+      for (let i = 0; i < 60; i++) {
+        const r = await pw.runAndSave('return api.Manifold.cube([1, 1, 1], true);', 'probe', {});
+        if (r && !r.error && r.version) break;
+        await new Promise((res) => setTimeout(res, 1000));
+      }
+      const c = document.createElement('canvas'); c.width = 2; c.height = 2;
+      const g = c.getContext('2d')!; g.fillStyle = '#00ff00'; g.fillRect(0, 0, 2, 2);
+      pw.setAttachments([{ src: c.toDataURL('image/png'), label: 'reference' }]);
+    });
+    const b64 = await page.evaluate(() => {
+      const c = document.createElement('canvas'); c.width = 4; c.height = 4;
+      const g = c.getContext('2d')!; g.fillStyle = '#d2452b'; g.fillRect(0, 0, 4, 4);
+      return c.toDataURL('image/png').split(',')[1];
+    });
+    await dropFile(page, '#viewport', 'tile.png', 'image/png', b64);
+    await page.getByRole('dialog', { name: 'Import image as…' }).locator('[data-kind="voxel"]').click();
+    await page.getByRole('button', { name: 'Import', exact: true }).click();
+    await page.getByRole('button', { name: /^New session/ }).click();
+    await page.waitForFunction(() => (window as any).partwright.getImageToolOp()?.tool === 'voxel', null, { timeout: 30_000 });
+    const labels = () => page.evaluate(() => (window as any).partwright.getImages().map((i: { label?: string }) => i.label));
+    expect(await labels()).toEqual(['tile.png']);
+    // Persisted on the new session's record: the stored list, not just the
+    // in-memory one, holds only the imported image.
+    await expect.poll(async () => page.evaluate(async () => {
+      const sm = await import('/src/storage/sessionManager.ts');
+      return ((await sm.getAttachmentsFromSession()) ?? []).map((a: { label?: string }) => a.label);
+    }), { timeout: 10_000 }).toEqual(['tile.png']);
+  });
+
   // CodeMirror preventDefault()s every file drop on the editor, so the
   // document import must not treat a prevented drop as already handled.
   test('dropping an image on the code editor still opens the import chooser', async ({ page }) => {

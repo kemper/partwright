@@ -220,12 +220,14 @@ import { openReliefImportModal, type ReliefStagedOptions } from './ui/reliefImpo
 import { solveLayeredPrintAsync } from './relief/layeredPrint/layeredPrintClient';
 import { layeredPrintMeshData, buildPlan3MF, type LayeredExportMode } from './relief/layeredPrint/export3mf';
 import { layeredPrintRecord, layeredPrintZRegions, planSwaps, planSwapText } from './relief/layeredPrint/plan';
-import { layeredPrintCode, planToScheduleOption } from './relief/layeredPrint/sandboxApi';
+import { layeredPrintCode, planToScheduleOption, parseLayeredPrintOptions } from './relief/layeredPrint/sandboxApi';
 import { setModelImageProvider, hashImagePixels, type ModelImage } from './geometry/modelImages';
 import type { LayeredPrintPlanRecord } from './relief/types';
 import { LAYERED_PRINT_FILAMENT_LIBRARY, type LayeredPrintFilament } from './relief/layeredPrint/filamentLibrary';
 import { DEFAULT_LAYERED_PRINT_OPTIONS, type LayeredPrintOptions, type LayeredPrintResult } from './relief/layeredPrint/solver';
 import { openLayeredPrintModal } from './ui/layeredPrintModal';
+import { openImageToolsModal } from './ui/imageToolsModal';
+import { IMAGE_TOOLS, imageToolInfo, imageToolOpFromCode, isImageToolId, formatImageToolHeader, withImageToolHeader, reliefOptionsForOp, toolForReliefOptions, voxelParams, type ImageToolId, type ImageToolOp } from './imageTools/descriptor';
 import { mountReliefStudio, type ReliefStudioHandle } from './ui/reliefStudio';
 import type { BuiltExport } from './export/gltf';
 
@@ -494,6 +496,71 @@ import { extractPositions, maxEdgeLength, minEdgeLength, estimateRefineTriangles
 
 /** The viewport clip-plane Z slider + typed box (bound in initClipControls). */
 let clipZEntry: SliderEntry | null = null;
+
+/** Where an image tool's result goes (#1256): the session attachment it
+ *  reads, and whether it replaces the open object (re-apply → a new version)
+ *  or adds a new object. */
+type ImageToolTarget = { image: string; replace: boolean };
+
+/** An image picked inside a menu-launched tool (Import → "Image → voxel…",
+ *  the relief wizard, the layered-print dialog) that isn't attached yet. The
+ *  id is derived from the image itself, so the tool record can name it before
+ *  the destination session exists, and re-importing the same image into a
+ *  session reuses its attachment instead of adding a copy. */
+type PendingImageAttach = { id: string; src: string; label: string };
+
+function imageAttachmentIdFor(src: string): string {
+  // FNV-1a over the data URL — unique enough within one session's attachments.
+  let h = 0x811c9dc5;
+  for (let i = 0; i < src.length; i++) { h ^= src.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return `img_${(h >>> 0).toString(36)}${src.length.toString(36)}`;
+}
+
+/** Validate image → voxel options (shared by importImageAsVoxels and the
+ *  voxel image tool). Throws a ValidationError naming `fn`. */
+function assertVoxelImageOptions(opts: ImageToVoxelOptions, fn: string): void {
+  assertNoUnknownKeys(opts as Record<string, unknown>, ['maxSize', 'mode', 'depth', 'maxHeight', 'baseThickness', 'invert', 'alphaThreshold', 'colorMode', 'flatColor', 'gamma', 'brightness', 'contrast', 'saturation', 'posterizeColors', 'palette', 'constrainToPalette', 'removeBackground', 'backgroundColor', 'codeStyle'], `${fn}(opts)`);
+  if (opts.maxSize !== undefined) assertNumber(opts.maxSize, `${fn}(opts.maxSize)`, { min: 1, integer: true });
+  if (opts.mode !== undefined) assertEnum(opts.mode, ['billboard', 'heightmap'], `${fn}(opts.mode)`);
+  if (opts.depth !== undefined) assertNumber(opts.depth, `${fn}(opts.depth)`, { min: 1, integer: true });
+  if (opts.maxHeight !== undefined) assertNumber(opts.maxHeight, `${fn}(opts.maxHeight)`, { min: 1, integer: true });
+  if (opts.baseThickness !== undefined) assertNumber(opts.baseThickness, `${fn}(opts.baseThickness)`, { min: 0, integer: true });
+  if (opts.invert !== undefined) assertBoolean(opts.invert, `${fn}(opts.invert)`);
+  if (opts.alphaThreshold !== undefined) assertNumber(opts.alphaThreshold, `${fn}(opts.alphaThreshold)`, { min: 0, max: 255, integer: true });
+  if (opts.colorMode !== undefined) assertEnum(opts.colorMode, ['original', 'grayscale', 'flat'], `${fn}(opts.colorMode)`);
+  if (opts.flatColor !== undefined) {
+    const c = assertNumberTuple(opts.flatColor, 3, `${fn}(opts.flatColor)`);
+    c.forEach((n, i) => assertNumber(n, `${fn}(opts.flatColor[${i}])`, { min: 0, max: 255, integer: true }));
+  }
+  if (opts.gamma !== undefined) assertNumber(opts.gamma, `${fn}(opts.gamma)`, { min: 0.01 });
+  if (opts.brightness !== undefined) assertNumber(opts.brightness, `${fn}(opts.brightness)`, { min: -1, max: 1 });
+  if (opts.contrast !== undefined) assertNumber(opts.contrast, `${fn}(opts.contrast)`, { min: -1, max: 1 });
+  if (opts.saturation !== undefined) assertNumber(opts.saturation, `${fn}(opts.saturation)`, { min: -1, max: 1 });
+  if (opts.posterizeColors !== undefined) assertNumber(opts.posterizeColors, `${fn}(opts.posterizeColors)`, { min: 0, integer: true });
+  if (opts.palette !== undefined && opts.palette !== null) {
+    if (!Array.isArray(opts.palette)) throw new Error(`${fn}(opts.palette) must be an array of [r,g,b] triples`);
+    opts.palette.forEach((c, i) => {
+      const t = assertNumberTuple(c, 3, `${fn}(opts.palette[${i}])`);
+      t.forEach((n, j) => assertNumber(n, `${fn}(opts.palette[${i}][${j}])`, { min: 0, max: 255, integer: true }));
+    });
+  }
+  if (opts.codeStyle !== undefined) assertEnum(opts.codeStyle, ['decode', 'calls'], `${fn}(opts.codeStyle)`);
+  if (opts.removeBackground !== undefined) assertBoolean(opts.removeBackground, `${fn}(opts.removeBackground)`);
+  if (opts.backgroundColor !== undefined) {
+    const c = assertNumberTuple(opts.backgroundColor, 3, `${fn}(opts.backgroundColor)`);
+    c.forEach((n, i) => assertNumber(n, `${fn}(opts.backgroundColor[${i}])`, { min: 0, max: 255, integer: true }));
+  }
+}
+
+/** data: URL → Blob without fetch() (the CSP blocks fetching data: URLs). */
+function dataUrlToBlob(src: string): Blob {
+  const m = /^data:([^;,]*)(;base64)?,(.*)$/s.exec(src);
+  if (!m) throw new Error('expected a data: URL');
+  const raw = m[2] ? atob(m[3]) : decodeURIComponent(m[3]);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return new Blob([bytes], { type: m[1] || 'application/octet-stream' });
+}
 
 /** Swap plan recorded by the last successful run's `api.layeredPrint` (null
  *  when the model has none). Module scope: set by the run handler, read by the
@@ -4498,6 +4565,9 @@ async function main() {
   async function importCodePayload(code: string, language: Language, sessionName?: string, companions?: Record<string, string>): Promise<{ sessionId: string }> {
     if (language !== getActiveLanguage()) await switchLanguage(language);
     const session = await createSession(sessionName, language, sessionName);
+    // createSession doesn't reset the in-memory attachment list; a new session
+    // must not inherit (and later persist) the previous session's attachments.
+    _clearAttachments();
     // Register companions right after session creation so their tabs appear in
     // the bar immediately — before the (potentially slow) first compile. createSession
     // calls setCompanionFiles({}) internally, so companions must be re-applied here.
@@ -4569,16 +4639,17 @@ async function main() {
   // so the imports survive a reload and so future saveVersion calls (which
   // carry forward `importedMeshes` from the prior version) have something to
   // build on.
-  async function importMeshPayload(mesh: ImportedMesh, sessionName: string, opts: { manifold: boolean; seedRegions?: SeedRegionsInput } = { manifold: true }): Promise<{ sessionId: string }> {
+  async function importMeshPayload(mesh: ImportedMesh, sessionName: string, opts: { manifold: boolean; seedRegions?: SeedRegionsInput; header?: string } = { manifold: true }): Promise<{ sessionId: string }> {
     if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
     const session = await createSession(sessionName, 'manifold-js', sessionName);
+    _clearAttachments(); // see importCodePayload
     // Fresh session: drop the previous model's paint before running the import
     // wrapper (same reason as importCodePayload). seedRegions below are added
     // AFTER this clear, so an imported colored mesh's own seeds survive.
     cancelVoxelPaintIfActive();
     dropPaintState();
     setActiveImports([mesh]);
-    const code = generateImportCode([mesh], { manifold: opts.manifold });
+    const code = (opts.header ?? '') + generateImportCode([mesh], { manifold: opts.manifold });
     setValue(code);
     await runCodeSync(code);
     await seedImportRegions(opts.seedRegions);
@@ -4816,7 +4887,7 @@ async function main() {
   // ImportedMesh, persist the relief settings, and open the studio. Used by
   // both the raster (createReliefFromImageData) and SVG (createReliefFromSvgText)
   // entry points so the post-generation flow stays in lockstep.
-  async function commitGeneratedRelief(result: GenerateReliefResult, opts: ReliefOptions, sourceName: string, sourceFile: File | null = null, isSvg = false, interactive = false): Promise<{ sessionId: string }> {
+  async function commitGeneratedRelief(result: GenerateReliefResult, opts: ReliefOptions, sourceName: string, sourceFile: File | null = null, isSvg = false, interactive = false, imageTool?: ImageToolTarget, pending?: PendingImageAttach | null): Promise<{ sessionId: string }> {
     if (result.mesh.numTri === 0) throw new Error('Source too small to build a relief — use a larger image or SVG.');
     const mesh: ImportedMesh = {
       id: generateId(),
@@ -4852,9 +4923,29 @@ async function main() {
     // part" is disabled here: relief's seed-region triangle ids are indexed
     // against the relief mesh's own triangle order, which compose-into would
     // scramble — same out-of-scope call BREP imports make.
+    // A menu-launched wizard whose image isn't attached yet: record the tool
+    // under the image's content id; the image is attached wherever it lands.
+    const pendingHeader = () => pending ? formatImageToolHeader({ tool: toolForReliefOptions(opts), image: pending.id, params: opts as unknown as Record<string, unknown> }) : '';
     let sessionId: string;
-    if (!interactive || nothingToProtect()) {
-      ({ sessionId } = await importMeshPayload(mesh, sourceName, { manifold: useManifold, seedRegions }));
+    if (imageTool) {
+      // Image tools: the result lands in THIS session (where the image is
+      // attached) — as a new object, or replacing the open one — with the
+      // tool record as a header on the generated code.
+      // An SVG isn't an image attachment, so an SVG relief carries no record.
+      const header = isSvg ? '' : formatImageToolHeader({ tool: toolForReliefOptions(opts), image: imageTool.image, params: opts as unknown as Record<string, unknown> });
+      if (imageTool.replace) {
+        await preserveCurrentEditsIfNeeded();
+        await applyImportWrapper([mesh], useManifold, seedRegions, header);
+      } else if (currentPartIsExpendable()) {
+        await applyImportWrapper([mesh], useManifold, seedRegions, header);
+        await nameFilledObject(sourceName);
+      } else {
+        await seedNewPartWithMesh(mesh, `${sourceName}.relief`, useManifold, seedRegions, header);
+      }
+      sessionId = getState().session?.id ?? '';
+    } else if (!interactive || nothingToProtect()) {
+      ({ sessionId } = await importMeshPayload(mesh, sourceName, { manifold: useManifold, seedRegions, header: pendingHeader() }));
+      attachPendingImage(pending);
     } else {
       const target = await showImportTargetModal({
         title: 'Import relief',
@@ -4867,14 +4958,15 @@ async function main() {
       // Cancel: leave the current part untouched and skip relief-state persistence.
       if (!target) return { sessionId: getState().session?.id ?? '' };
       if (target === 'new-session') {
-        ({ sessionId } = await importMeshPayload(mesh, sourceName, { manifold: useManifold, seedRegions }));
+        ({ sessionId } = await importMeshPayload(mesh, sourceName, { manifold: useManifold, seedRegions, header: pendingHeader() }));
       } else {
         // 'new-part' (default; 'current-part' is disabled above so never reached).
         // seedNewPartWithMesh runs + saves the import wrapper as the new part's
         // v1; seed the relief colours onto that version so they persist with it.
-        await seedNewPartWithMesh(mesh, `${sourceName}.relief`, useManifold, seedRegions);
+        await seedNewPartWithMesh(mesh, `${sourceName}.relief`, useManifold, seedRegions, pendingHeader());
         sessionId = getState().session?.id ?? '';
       }
+      attachPendingImage(pending);
     }
     setReliefSettings(sessionId, {
       isRelief: true,
@@ -4908,7 +5000,7 @@ async function main() {
     return null;
   }
 
-  async function createReliefFromImageData(image: ImageData, options: ReliefOptions, sourceName: string, sourceFile: File | null = null, interactive = false): Promise<{ sessionId: string }> {
+  async function createReliefFromImageData(image: ImageData, options: ReliefOptions, sourceName: string, sourceFile: File | null = null, interactive = false, imageTool?: ImageToolTarget, pending?: PendingImageAttach | null): Promise<{ sessionId: string }> {
     const opts: ReliefOptions = {
       ...options,
       common: clampReliefCommon(options.common),
@@ -4918,10 +5010,10 @@ async function main() {
     const fitError = steppedReliefLayerFitError(opts);
     if (fitError) throw new Error(fitError);
     const result = generateRelief(image, opts);
-    return commitGeneratedRelief(result, opts, sourceName, sourceFile, false, interactive);
+    return commitGeneratedRelief(result, opts, sourceName, sourceFile, false, interactive, imageTool, pending);
   }
 
-  async function createReliefFromSvgText(svgText: string, options: ReliefOptions, sourceName: string, sourceFile: File | null = null, interactive = false): Promise<{ sessionId: string }> {
+  async function createReliefFromSvgText(svgText: string, options: ReliefOptions, sourceName: string, sourceFile: File | null = null, interactive = false, imageTool?: ImageToolTarget): Promise<{ sessionId: string }> {
     const opts: ReliefOptions = {
       ...options,
       common: clampReliefCommon(options.common),
@@ -4932,7 +5024,7 @@ async function main() {
     const fitError = steppedReliefLayerFitError(opts);
     if (fitError) throw new Error(fitError);
     const result = await generateReliefFromSvg(svgText, opts);
-    return commitGeneratedRelief(result, opts, sourceName, sourceFile, true, interactive);
+    return commitGeneratedRelief(result, opts, sourceName, sourceFile, true, interactive, imageTool);
   }
 
   // === Layered (HueForge-style) filament prints — code-native ===
@@ -4959,7 +5051,7 @@ async function main() {
     cancelVoxelPaintIfActive();
     dropPaintState();
     setActiveImports([]);
-    const photo = normalizeAttachment({ src: photoDataUrl, kind: 'image', mediaType: 'image/jpeg', label: `${name} photo`, description: 'Source photo for the layered print (read by api.image in the model code).', addedAt: Date.now(), source: 'user' }, generateId());
+    const photo = normalizeAttachment({ src: photoDataUrl, kind: 'image', mediaType: 'image/jpeg', label: `${name} photo`, description: 'Source photo for the layered print (read by api.image in the model code).', addedAt: Date.now(), source: 'user' }, imageAttachmentIdFor(photoDataUrl));
     commitAttachments([photo]);
     const code = layeredPrintCode(photo.id, result.options, layeredPrintRecord(result));
     setValue(code);
@@ -4992,6 +5084,38 @@ async function main() {
     return { filename: out.built.filename, bytes: out.built.blob.size, mode: out.mode, ...(out.mode === 'layer-swap' ? { swapMode: args.swapMode ?? 'ams' } : {}), filaments: out.filaments, swaps: out.swaps };
   }
 
+  /** Where the dialog's print lands: a fresh session when there's no work to
+   *  protect (as before), otherwise the user picks a new object here, the open
+   *  (empty) object, or a new session. The photo is attached to that session
+   *  and the print's code (its own tool record) reads it. False on cancel. */
+  async function placeLayeredPrint(photoDataUrl: string, result: LayeredPrintResult, name: string): Promise<boolean> {
+    if (nothingToProtect()) { await createLayeredPrintSession(photoDataUrl, result, name); return true; }
+    const empty = currentPartIsExpendable();
+    const target = await showImportTargetModal({
+      title: 'Layered filament print',
+      filename: name,
+      currentPartName: getState().currentPart?.name ?? null,
+      canAddToCurrent: empty,
+      addReplacesStarter: empty,
+      addDisabledReason: 'A layered print is its own object — add it as a new object or a new session.',
+      recommend: empty ? 'current-part' : 'new-part',
+    });
+    if (!target) return false;
+    if (target === 'new-session') { await createLayeredPrintSession(photoDataUrl, result, name); return true; }
+    // The print's code reads the photo, so it's attached before the run — and
+    // removed again if the run fails and nothing else used it.
+    const had = _getAttachments().some((a) => a.src === photoDataUrl);
+    const att = attachImageSrc(photoDataUrl, `${name} photo`, imageAttachmentIdFor(photoDataUrl));
+    try {
+      // 'current-part' is only offered for an empty starter, which is filled.
+      await commitLayeredImageTool(result, name, { image: att.id, replace: false }, { fillEmpty: target === 'current-part' });
+    } catch (e) {
+      if (!had) commitAttachments(_getAttachments().filter((a) => a.id !== att.id));
+      throw e;
+    }
+    return true;
+  }
+
   function openLayeredPrintDialog(initialSrc?: string, initialFile?: File): void {
     openLayeredPrintModal({
       initialSrc,
@@ -4999,8 +5123,9 @@ async function main() {
       decode: (src) => decodePhotoForLayeredPrint(src),
       solve: (image, options, signal) => solveLayeredPrintAsync(image, { ...options, ...layeredPrintLimits() }, signal),
       onCreate: async (result, name, photoDataUrl) => {
-        await createLayeredPrintSession(photoDataUrl, result, name);
+        if (!(await placeLayeredPrint(photoDataUrl, result, name))) return false;
         showToast(`Layered print created — ${result.blocks.length} filaments, ${result.swaps.length} swaps`, { variant: 'success', source: 'import' });
+        return true;
       },
       onDownload: (result, exportArgs) => {
         downloadLayeredPrint3MF(layeredPrintRecord(result), layeredPrintMeshData(result), exportArgs);
@@ -5008,23 +5133,200 @@ async function main() {
     });
   }
 
-  /** "Import raw": attach an image to the session as-is (creating a session
-   *  when none is open) — a reference photo, or a source for later tools. */
-  async function attachRawImage(file: File): Promise<void> {
-    const src = await new Promise<string>((resolve, reject) => {
+  // === Image tools (#1256 Stage A): one attached image → tools that make objects ===
+
+  function imageAttachments(): SessionAttachment[] {
+    return _getAttachments().filter((a) => a.kind === 'image' && !!a.src);
+  }
+
+  /** Image tools work inside a session (the image is its attachment). */
+  async function ensureSessionForImageTools(name: string): Promise<void> {
+    if (getState().session) return;
+    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
+    await createSession(name, 'manifold-js', name);
+    _clearAttachments(); // see importCodePayload
+  }
+
+  function attachImageSrc(src: string, label: string, id?: string): SessionAttachment {
+    const existing = _getAttachments().find((a) => (id !== undefined && a.id === id) || a.src === src);
+    if (existing) return existing;
+    const att = normalizeAttachment({ src, kind: 'image', label, description: 'Source image for image tools.', addedAt: Date.now(), source: 'user' }, id ?? generateId());
+    commitAttachments([..._getAttachments(), att]);
+    return att;
+  }
+
+  function readFileAsDataUrl(file: Blob): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
       const fr = new FileReader();
       fr.onload = () => resolve(String(fr.result));
       fr.onerror = () => reject(fr.error ?? new Error('could not read the file'));
       fr.readAsDataURL(file);
     });
-    if (!getState().session) {
-      const name = file.name.replace(/\.[^.]+$/, '') || 'image';
-      if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
-      await createSession(name, 'manifold-js', name);
+  }
+
+  /** The image a menu-launched tool used, ready to attach where its result
+   *  lands: the picked file's bytes, else the decoded pixels as a PNG. Null
+   *  when neither is available (the result then carries no record). */
+  async function pendingImageFor(file: File | null | undefined, image: ImageData | null, label: string): Promise<PendingImageAttach | null> {
+    try {
+      let src: string | null = null;
+      const maxPx = getConfig().import.imageToolMaxImagePx;
+      const tooBig = !!image && Math.max(image.width, image.height) > maxPx;
+      if (!tooBig && file && file.size > 0 && /^image\/(png|jpe?g|webp|gif|bmp)$/i.test(file.type)) src = await readFileAsDataUrl(file);
+      else if (image) src = await imageDataToDataUrl(image, maxPx);
+      return src ? { id: imageAttachmentIdFor(src), src, label: file?.name || label } : null;
+    } catch {
+      return null;
     }
-    const att = normalizeAttachment({ src, kind: 'image', label: file.name, addedAt: Date.now(), source: 'user' }, generateId());
-    commitAttachments([..._getAttachments(), att]);
-    showToast(`Attached ${file.name} to this session (see Attachments).`, { variant: 'success', source: 'import' });
+  }
+
+  /** Encode pixels as a PNG data URL, downscaled so the longest side is at
+   *  most `maxPx` (attachments live in the session row and its exports). */
+  async function imageDataToDataUrl(image: ImageData, maxPx = getConfig().import.imageToolMaxImagePx): Promise<string> {
+    const c = document.createElement('canvas');
+    c.width = image.width; c.height = image.height;
+    c.getContext('2d')?.putImageData(image, 0, 0);
+    const k = Math.min(1, maxPx / Math.max(image.width, image.height));
+    if (k >= 1) return c.toDataURL('image/png');
+    const d = document.createElement('canvas');
+    d.width = Math.max(1, Math.round(image.width * k)); d.height = Math.max(1, Math.round(image.height * k));
+    const g = d.getContext('2d');
+    if (g) { g.imageSmoothingQuality = 'high'; g.drawImage(c, 0, 0, d.width, d.height); }
+    return d.toDataURL('image/png');
+  }
+
+  /** Attach a pending image to the session the result just landed in. */
+  function attachPendingImage(p: PendingImageAttach | null | undefined): void {
+    if (p && getState().session) attachImageSrc(p.src, p.label, p.id);
+  }
+
+  async function attachImageFile(file: File): Promise<SessionAttachment> {
+    const src = await readFileAsDataUrl(file);
+    await ensureSessionForImageTools(file.name.replace(/\.[^.]+$/, '') || 'image');
+    return attachImageSrc(src, file.name);
+  }
+
+  function attachmentFile(att: SessionAttachment): File {
+    const blob = att.src.startsWith('data:') ? dataUrlToBlob(att.src) : new Blob([]);
+    return new File([blob], att.label || 'image', { type: blob.type || att.mediaType || 'image/png' });
+  }
+
+  /** The open object's image-tool record (header, or a layered print's call). */
+  function currentImageToolOp(): ImageToolOp | null {
+    const op = imageToolOpFromCode(getValue());
+    return op && imageAttachments().some((a) => a.id === op.image) ? op : null;
+  }
+
+  async function commitVoxelImageTool(image: ImageData, options: ImageToVoxelOptions, name: string, target: ImageToolTarget): Promise<void> {
+    const grid = imageDataToVoxelGrid(image, options);
+    if (grid.size === 0) throw new Error('these settings produced no voxels — try a lower transparency cutoff');
+    const code = withImageToolHeader(generateVoxelImportCode(grid, name, { style: options.codeStyle }), { tool: 'voxel', image: target.image, params: voxelParams(options) });
+    await commitImageToolCode(code, name, 'voxel', target);
+  }
+
+  async function commitLayeredImageTool(result: LayeredPrintResult, name: string, target: ImageToolTarget, opts: { fillEmpty?: boolean } = {}): Promise<void> {
+    const code = layeredPrintCode(target.image, result.options, layeredPrintRecord(result));
+    await commitImageToolCode(code, name, 'manifold-js', target, opts);
+    if (!currentLayeredPlan) throw new Error('the layered-print model did not produce a print — see the Diagnostic Log');
+  }
+
+  /** Commit an image tool's code: replace the open object (a new version),
+   *  fill it when it's an empty starter, or add a new object. Throws when the
+   *  code didn't run, so callers never report a broken object as created. */
+  async function commitImageToolCode(code: string, name: string, language: Language, target: ImageToolTarget, opts: { fillEmpty?: boolean } = {}): Promise<void> {
+    let ok: boolean;
+    if (target.replace) {
+      await preserveCurrentEditsIfNeeded();
+      ok = await applyCodeToCurrentPart(code, language);
+    } else if ((opts.fillEmpty ?? true) && currentPartIsExpendable()) {
+      ok = await applyCodeToCurrentPart(code, language);
+      if (ok) await nameFilledObject(name);
+    } else {
+      await preserveCurrentEditsIfNeeded();
+      const part = await createPart(name);
+      if (!part) throw new Error('could not add a new object');
+      ok = await applyCodeToCurrentPart(code, language);
+    }
+    if (!ok) throw new Error('the model did not run — see the Diagnostic Log');
+  }
+
+  /** The attachment a tool's dialog actually used. The dialogs let the user
+   *  swap the image, so the record must follow what was picked, not the one
+   *  the panel opened the tool on. `initial` is the File the dialog was given. */
+  async function pickedImageTarget(target: ImageToolTarget, initial: File, file: File | null | undefined, image: ImageData | null, label: string): Promise<ImageToolTarget> {
+    if (file === initial) return target;
+    const p = await pendingImageFor(file, image, label);
+    if (!p) return target;
+    return { ...target, image: attachImageSrc(p.src, p.label, p.id).id };
+  }
+
+  /** Open `tool`'s own UI on attachment `imageId`, committing to `target`. */
+  async function launchImageTool(tool: ImageToolId, imageId: string, opts: { replace: boolean; params?: Record<string, unknown> }): Promise<void> {
+    const att = imageAttachments().find((a) => a.id === imageId);
+    if (!att) { showToast('That image is no longer attached to this session.', { variant: 'warn', source: 'import' }); return; }
+    const target: ImageToolTarget = { image: att.id, replace: opts.replace };
+    const name = (att.label || 'image').replace(/\.[^.]+$/, '');
+    const engine = imageToolInfo(tool).engine;
+    const initialFile = attachmentFile(att);
+    if (engine === 'relief') {
+      openReliefImportModal({
+        aiAvailable: true,
+        initialFile,
+        initialOptions: reliefOptionsForOp(tool, opts.params ?? {}),
+        onAiAssist: async (image, o) => suggestReliefOptions(image, o),
+        onCreate: async (image, o, srcName, sourceFile) => {
+          const t = await pickedImageTarget(target, initialFile, sourceFile, image, srcName || name);
+          await createReliefFromImageData(image, o, srcName || name, null, true, t);
+        },
+        onCreateSvg: async (svg, o, srcName) => { await createReliefFromSvgText(svg, o, srcName || name, null, true, target); },
+      });
+    } else if (engine === 'voxel') {
+      const image = await dataUrlToImageData(att.src);
+      const result = await showImageVoxelImportModal({ filename: att.label || 'image', image, file: initialFile, initialOptions: (opts.params ?? {}) as ImageToVoxelOptions });
+      if (!result) return;
+      try {
+        const t = await pickedImageTarget(target, initialFile, result.file, result.image as ImageData, result.filename || name);
+        await commitVoxelImageTool(result.image as ImageData, result.options, name, t);
+      } catch (e) {
+        showToast(`Voxel art: ${e instanceof Error ? e.message : String(e)}`, { variant: 'warn', source: 'import' });
+      }
+    } else {
+      openLayeredPrintModal({
+        initialSrc: att.src,
+        decode: (src) => decodePhotoForLayeredPrint(src),
+        solve: (image, options, signal) => solveLayeredPrintAsync(image, { ...options, ...layeredPrintLimits() }, signal),
+        onCreate: async (result, _name, photoDataUrl, fromInitial) => {
+          // The dialog lets the user pick another photo — record that one.
+          const t = fromInitial ? target : { ...target, image: attachImageSrc(photoDataUrl, `${name} photo`, imageAttachmentIdFor(photoDataUrl)).id };
+          await commitLayeredImageTool(result, name, t);
+          showToast(`Layered print ${target.replace ? 'updated' : 'created'} — ${result.blocks.length} filaments, ${result.swaps.length} swaps`, { variant: 'success', source: 'import' });
+        },
+        onDownload: (result, exportArgs) => {
+          downloadLayeredPrint3MF(layeredPrintRecord(result), layeredPrintMeshData(result), exportArgs);
+        },
+      });
+    }
+  }
+
+  function openImageToolsPanel(selectedImage?: string): void {
+    openImageToolsModal({
+      images: imageAttachments().map((a) => ({ id: a.id, src: a.src, label: a.label })),
+      selectedImage,
+      currentOp: currentImageToolOp(),
+      addImage: async (file) => {
+        const a = await attachImageFile(file);
+        return { id: a.id, src: a.src, label: a.label };
+      },
+      onChooseTool: (tool, image, o) => { void launchImageTool(tool, image, o); },
+    });
+  }
+
+  /** "Import raw": attach an image to the session as-is (creating a session
+   *  when none is open), then offer the image tools on it. */
+  async function attachRawImage(file: File): Promise<void> {
+    const att = await attachImageFile(file);
+    showToast(`Attached ${file.name} to this session.`, { variant: 'success', source: 'import' });
+    openImageToolsPanel(att.id);
   }
 
   // Seed color regions from an imported stepped-relief STL's existing Z plateaus so the
@@ -5105,7 +5407,10 @@ async function main() {
       onCreate: async (image, opts, name, sourceFile) => {
         // interactive: true → the wizard is the only entry point that may show
         // the import-target modal (console/AI imports stay modal-free).
-        await createReliefFromImageData(image, opts, name || 'relief', sourceFile, true);
+        // Attach the image where the result lands and record the tool, so the
+        // object can be re-opened from Image tools later (#1256).
+        const pending = await pendingImageFor(sourceFile, image, name || 'image');
+        await createReliefFromImageData(image, opts, name || 'relief', sourceFile, true, undefined, pending);
         // Colour reliefs bring their own palette of cluster colours — nudge the
         // user to reconcile them. Tonal (luminance) reliefs have no colours.
         if (opts.mode === 'quantized') nudgePaletteAfterColorImport();
@@ -5458,7 +5763,11 @@ async function main() {
       showToast(`"${chosenName}" produced no voxels at the chosen settings. Try lowering the transparency cutoff.`, { variant: 'warn', source: 'import' });
       return false;
     }
-    const code = generateVoxelImportCode(grid, chosenName, { style: opts.codeStyle });
+    // Record the tool (#1256) under the image's content id; placeImportedCode
+    // attaches the image wherever the code lands.
+    const pending = await pendingImageFor(sourceFile, chosenImage as ImageData, chosenName);
+    const baseCode = generateVoxelImportCode(grid, chosenName, { style: opts.codeStyle });
+    const code = pending ? withImageToolHeader(baseCode, { tool: 'voxel', image: pending.id, params: voxelParams(opts) }) : baseCode;
     const sessionName = chosenName.replace(/\.[^.]+$/, '');
     // With a session open (and real work to protect), let the user pick
     // new-part / current-part / new-session (default new-part). A fresh /
@@ -5471,6 +5780,7 @@ async function main() {
       filename: chosenName,
       title: 'Import voxels',
       composable: true,
+      attach: pending,
     });
     if (!placed) return false;
     // Register in Recent Imports tagged as a voxel import, with the chosen
@@ -6984,7 +7294,7 @@ async function main() {
 
   /** Drop an import wrapper for `components` into the current part: set the
    *  active imports, render, and save a version that carries the mesh data. */
-  async function applyImportWrapper(components: ImportedMesh[], manifold: boolean, seedRegions?: SeedRegionsInput): Promise<void> {
+  async function applyImportWrapper(components: ImportedMesh[], manifold: boolean, seedRegions?: SeedRegionsInput, header = ''): Promise<void> {
     // Same reset as the other import chokepoints: an import wrapper replaces the
     // part's geometry, so the previous part's regions can't survive (compose
     // even rebuilds topology wholesale). Callers run preserveCurrentEditsIfNeeded
@@ -6998,7 +7308,7 @@ async function main() {
     // composing into a SCAD/BREP/voxel part would run the wrapper through the
     // wrong engine and persist the version tagged with the wrong language.
     if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
-    const code = generateImportCode(components, { manifold });
+    const code = header + generateImportCode(components, { manifold });
     setActiveImports(components);
     setValue(code);
     await runCodeSync(code);
@@ -7435,10 +7745,10 @@ async function main() {
 
   /** Add the imported mesh as a brand-new part (becomes current). Optional
    *  seedRegions (relief's per-colour bands) are painted onto the saved v1. */
-  async function seedNewPartWithMesh(mesh: ImportedMesh, filename: string, manifold: boolean, seedRegions?: SeedRegionsInput): Promise<void> {
+  async function seedNewPartWithMesh(mesh: ImportedMesh, filename: string, manifold: boolean, seedRegions?: SeedRegionsInput, header = ''): Promise<void> {
     const part = await createPart(filename.replace(/\.[^.]+$/, ''));
     if (!part) return;
-    await applyImportWrapper([mesh], manifold, seedRegions);
+    await applyImportWrapper([mesh], manifold, seedRegions, header);
   }
 
   /** Run `code` under `language` in the current part and save it as a version.
@@ -7446,7 +7756,7 @@ async function main() {
    *  right kernel and saveVersion (which snapshots getActiveLanguage()) tags the
    *  version correctly — a voxel part must read back as `voxel`, a BREP part as
    *  `replicad` (per-version language). */
-  async function applyCodeToCurrentPart(code: string, language: Language, companions?: Record<string, string>): Promise<void> {
+  async function applyCodeToCurrentPart(code: string, language: Language, companions?: Record<string, string>): Promise<boolean> {
     // An import replaces the part's geometry, so the previous part's regions /
     // live paint can't survive — clear them before running, or runCodeSync
     // re-resolves stale regions onto the new mesh and locks the editor.
@@ -7474,14 +7784,15 @@ async function main() {
     const ran = await runCodeSync(code);
     // Cancelled (user navigated away mid-compile): preserveCurrentEditsIfNeeded
     // will have saved a draft version; don't double-save here.
-    if (!ran) return;
-    if (getState().currentPart?.id !== partIdBeforeRun) return;
+    if (!ran) return false;
+    if (getState().currentPart?.id !== partIdBeforeRun) return false;
     const thumbnail = await captureThumbnail();
     // captureThumbnail uses macro-task callbacks (toBlob/setTimeout), so a
     // click event can fire between runCodeSync returning and here.  Recheck.
-    if (getState().currentPart?.id !== partIdBeforeRun) return;
+    if (getState().currentPart?.id !== partIdBeforeRun) return false;
     const geometryData = getGeometryDataObj();
     await saveVersion(code, geometryData, thumbnail, 'imported', undefined, { force: true, companionFiles: companions });
+    return true;
   }
 
   /** Add code (voxel / BREP starter) as a brand-new part's first version.
@@ -7521,6 +7832,10 @@ async function main() {
     title: string;
     composable: boolean;
     composeDisabledReason?: string;
+    /** An image the code was made from (image tools, #1256): attached to the
+     *  session the code lands in. Not attached when it's composed into the
+     *  current object, whose code then no longer carries the tool record. */
+    attach?: PendingImageAttach | null;
   }): Promise<boolean> {
     const { code, language, sessionName, filename, title } = opts;
     const state = getState();
@@ -7529,6 +7844,7 @@ async function main() {
     // protect real work, and a fresh/expendable editor has none to protect.
     if (nothingToProtect()) {
       await importCodePayload(code, language, sessionName);
+      attachPendingImage(opts.attach);
       return true;
     }
 
@@ -7550,18 +7866,20 @@ async function main() {
     });
     if (!target) return false;
     if (target === 'current-part' && empty) {
-      await applyCodeToCurrentPart(code, language);
+      if (await applyCodeToCurrentPart(code, language)) attachPendingImage(opts.attach);
       await nameFilledObject(sessionName);
       return true;
     }
 
     if (target === 'new-session') {
       await importCodePayload(code, language, sessionName);
+      attachPendingImage(opts.attach);
       return true;
     }
     if (target === 'new-part') {
       await preserveCurrentEditsIfNeeded();
       await seedNewPartWithCode(code, sessionName, language);
+      attachPendingImage(opts.attach);
       return true;
     }
     // current-part: compose the import's baked mesh into the existing part
@@ -9256,6 +9574,7 @@ async function main() {
     },
     onCreateVoxel: () => { void openVoxelImportFlow(); },
     onCreateLayeredPrint: () => { openLayeredPrintDialog(); },
+    onImageTools: () => { openImageToolsPanel(); },
     onLanguageHelp: async () => { await showLanguageHelpModal(); },
     onToggleAi: () => { void toggleAiPanelFromToolbar(); },
     onLanguageSwitch: async (lang: 'manifold-js' | 'scad' | 'replicad' | 'voxel') => {
@@ -10929,6 +11248,7 @@ async function main() {
     { id: 'export-stl', title: 'Export STL', hint: 'Export', keywords: 'download print', run: actionExportSTL, enabled: () => currentMeshData !== null },
     { id: 'export-obj', title: 'Export OBJ', hint: 'Export', keywords: 'download wavefront', run: actionExportOBJ, enabled: () => currentMeshData !== null },
     { id: 'export-3mf', title: 'Export 3MF', hint: 'Export', keywords: 'download print color', run: actionExport3MF, enabled: () => currentMeshData !== null },
+    { id: 'image-tools', title: 'Image tools…', hint: 'Create', keywords: 'image photo picture tools keychain tile silhouette relief lithophane layered voxel re-apply settings', run: () => openImageToolsPanel() },
     { id: 'layered-print-create', title: 'Photo → layered filament print…', hint: 'Create', keywords: 'hueforge-style filament layering lithophane photo portrait swap color change translucent td', run: () => openLayeredPrintDialog() },
     { id: 'export-layered-print-3mf', title: 'Export layered print 3MF (filament swaps, AMS)', hint: 'Export', keywords: 'hueforge-style bambu orca layer swap color change ams filament', run: () => { const r = partwrightAPI.exportLayeredPrint3MF({ swapMode: 'ams' }) as { error?: string }; if (r?.error) showToast(r.error, { variant: 'warn', source: 'export' }); }, enabled: () => currentLayeredPrintPlan() !== null },
     { id: 'export-layered-print-3mf-painted', title: 'Export layered print 3MF (painted regions, AMS)', hint: 'Export', keywords: 'hueforge-style bambu orca painted ams colour regions filament slots', run: () => { const r = partwrightAPI.exportLayeredPrint3MF({ mode: 'painted' }) as { error?: string }; if (r?.error) showToast(r.error, { variant: 'warn', source: 'export' }); }, enabled: () => currentLayeredPrintPlan() !== null },
@@ -16949,37 +17269,7 @@ async function main() {
       const check = guard(() => {
         assertString(imageUrl, 'importImageAsVoxels(imageUrl)', { allowEmpty: false });
         assertObject(opts, 'importImageAsVoxels(opts)', { optional: true });
-        if (opts) assertNoUnknownKeys(opts as Record<string, unknown>, ['maxSize', 'mode', 'depth', 'maxHeight', 'baseThickness', 'invert', 'alphaThreshold', 'colorMode', 'flatColor', 'gamma', 'brightness', 'contrast', 'saturation', 'posterizeColors', 'palette', 'constrainToPalette', 'removeBackground', 'backgroundColor', 'codeStyle'], 'importImageAsVoxels(opts)');
-        if (opts.maxSize !== undefined) assertNumber(opts.maxSize, 'importImageAsVoxels(opts.maxSize)', { min: 1, integer: true });
-        if (opts.mode !== undefined) assertEnum(opts.mode, ['billboard', 'heightmap'], 'importImageAsVoxels(opts.mode)');
-        if (opts.depth !== undefined) assertNumber(opts.depth, 'importImageAsVoxels(opts.depth)', { min: 1, integer: true });
-        if (opts.maxHeight !== undefined) assertNumber(opts.maxHeight, 'importImageAsVoxels(opts.maxHeight)', { min: 1, integer: true });
-        if (opts.baseThickness !== undefined) assertNumber(opts.baseThickness, 'importImageAsVoxels(opts.baseThickness)', { min: 0, integer: true });
-        if (opts.invert !== undefined) assertBoolean(opts.invert, 'importImageAsVoxels(opts.invert)');
-        if (opts.alphaThreshold !== undefined) assertNumber(opts.alphaThreshold, 'importImageAsVoxels(opts.alphaThreshold)', { min: 0, max: 255, integer: true });
-        if (opts.colorMode !== undefined) assertEnum(opts.colorMode, ['original', 'grayscale', 'flat'], 'importImageAsVoxels(opts.colorMode)');
-        if (opts.flatColor !== undefined) {
-          const c = assertNumberTuple(opts.flatColor, 3, 'importImageAsVoxels(opts.flatColor)');
-          c.forEach((n, i) => assertNumber(n, `importImageAsVoxels(opts.flatColor[${i}])`, { min: 0, max: 255, integer: true }));
-        }
-        if (opts.gamma !== undefined) assertNumber(opts.gamma, 'importImageAsVoxels(opts.gamma)', { min: 0.01 });
-        if (opts.brightness !== undefined) assertNumber(opts.brightness, 'importImageAsVoxels(opts.brightness)', { min: -1, max: 1 });
-        if (opts.contrast !== undefined) assertNumber(opts.contrast, 'importImageAsVoxels(opts.contrast)', { min: -1, max: 1 });
-        if (opts.saturation !== undefined) assertNumber(opts.saturation, 'importImageAsVoxels(opts.saturation)', { min: -1, max: 1 });
-        if (opts.posterizeColors !== undefined) assertNumber(opts.posterizeColors, 'importImageAsVoxels(opts.posterizeColors)', { min: 0, integer: true });
-        if (opts.palette !== undefined && opts.palette !== null) {
-          if (!Array.isArray(opts.palette)) throw new Error('importImageAsVoxels(opts.palette) must be an array of [r,g,b] triples');
-          opts.palette.forEach((c, i) => {
-            const t = assertNumberTuple(c, 3, `importImageAsVoxels(opts.palette[${i}])`);
-            t.forEach((n, j) => assertNumber(n, `importImageAsVoxels(opts.palette[${i}][${j}])`, { min: 0, max: 255, integer: true }));
-          });
-        }
-        if (opts.codeStyle !== undefined) assertEnum(opts.codeStyle, ['decode', 'calls'], 'importImageAsVoxels(opts.codeStyle)');
-        if (opts.removeBackground !== undefined) assertBoolean(opts.removeBackground, 'importImageAsVoxels(opts.removeBackground)');
-        if (opts.backgroundColor !== undefined) {
-          const c = assertNumberTuple(opts.backgroundColor, 3, 'importImageAsVoxels(opts.backgroundColor)');
-          c.forEach((n, i) => assertNumber(n, `importImageAsVoxels(opts.backgroundColor[${i}])`, { min: 0, max: 255, integer: true }));
-        }
+        if (opts) assertVoxelImageOptions(opts, 'importImageAsVoxels');
       });
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       let imageData: ImageData;
@@ -18150,6 +18440,84 @@ async function main() {
     /** HueForge-style filament-layering print from a photo: solves which
      *  filaments to stack, where to swap, and each pixel's height, then opens
      *  it as a new session. See /ai/relief.md#layered-photo-prints. */
+    /** The image tools (#1256): id, label, description, engine. */
+    listImageTools(): Array<{ id: string; label: string; description: string; engine: string }> {
+      return IMAGE_TOOLS.map((t) => ({ ...t }));
+    },
+    /** The open object's image-tool record ({tool, image, params}), or {error}. */
+    getImageToolOp(): unknown {
+      return currentImageToolOp() ?? { error: 'getImageToolOp: the open object was not made by an image tool (no @image-tool header or api.layeredPrint call).' };
+    },
+    /** Open the Image tools panel for the user. */
+    openImageTools(): { ok: true } {
+      openImageToolsPanel();
+      return { ok: true };
+    },
+    /** Apply an image tool without UI: to an attached image (`image` id) or a
+     *  new one (`src`), as a NEW object or replacing the open one (`replace`,
+     *  re-apply). With replace and the same tool, `params` merge over the
+     *  object's stored params (so you can tweak one setting). */
+    async applyImageTool(args: { tool: string; image?: string; src?: string; params?: Record<string, unknown>; replace?: boolean; name?: string }): Promise<unknown> {
+      const checked = guard(() => {
+        assertObject(args, 'applyImageTool(args)');
+        assertNoUnknownKeys(args as unknown as Record<string, unknown>, ['tool', 'image', 'src', 'params', 'replace', 'name'], 'applyImageTool(args)');
+        if (!isImageToolId(args.tool)) throw new ValidationError(`applyImageTool(tool) must be one of ${IMAGE_TOOLS.map((t) => t.id).join(', ')}`);
+        assertString(args.image, 'applyImageTool(image)', { optional: true });
+        assertString(args.src, 'applyImageTool(src)', { optional: true });
+        if (args.image !== undefined && args.src !== undefined) throw new ValidationError('applyImageTool: pass image (an attachment id) or src, not both');
+        assertObject(args.params, 'applyImageTool(params)', { optional: true });
+        assertBoolean(args.replace, 'applyImageTool(replace)', { optional: true });
+        assertString(args.name, 'applyImageTool(name)', { optional: true });
+        return true;
+      });
+      if (typeof checked === 'object' && checked !== null && 'error' in checked) return checked;
+      const tool = args.tool as ImageToolId;
+      const replace = args.replace === true;
+      const prior = replace ? currentImageToolOp() : null;
+      if (replace && !prior) return { error: 'applyImageTool: replace needs the open object to have been made by an image tool (see getImageToolOp).' };
+      try {
+        // Resolve the image: an attachment id, a new src, or (re-apply) the record's.
+        let att: SessionAttachment | undefined;
+        if (args.src) {
+          // Keep the pixels (an http(s) image becomes a data: URL), so the
+          // panel can re-open the tool on it later.
+          const src = args.src.startsWith('data:') ? args.src : await imageDataToDataUrl(await dataUrlToImageData(args.src));
+          await ensureSessionForImageTools(args.name ?? 'image');
+          att = attachImageSrc(src, args.name ?? 'image', imageAttachmentIdFor(src));
+        } else {
+          const id = args.image ?? prior?.image;
+          if (!id) return { error: 'applyImageTool: pass image (an attachment id from getImages()) or src.' };
+          att = imageAttachments().find((a) => a.id === id);
+          if (!att) return { error: `applyImageTool: no image attachment "${id}" in this session. List them with getImages().` };
+        }
+        // Same tool re-applied: tweak = stored params + the given overrides.
+        const base = prior && prior.tool === tool ? prior.params : {};
+        const params = { ...base, ...(args.params ?? {}) } as Record<string, unknown>;
+        for (const k of ['common', 'luminance', 'quantized', 'preprocess'] as const) {
+          if (base[k] && args.params?.[k]) params[k] = { ...(base[k] as object), ...(args.params[k] as object) };
+        }
+        const target: ImageToolTarget = { image: att.id, replace };
+        const name = args.name ?? (att.label || 'image').replace(/\.[^.]+$/, '');
+        const engine = imageToolInfo(tool).engine;
+        if (engine === 'relief') {
+          const relief = reliefOptionsForOp(tool, params);
+          validateReliefOptionArgs({ options: relief.common, quantized: relief.quantized, preprocess: relief.preprocess, crop: relief.crop }, 'applyImageTool');
+          await createReliefFromImageData(await dataUrlToImageData(att.src), relief, name, null, false, target);
+        } else if (engine === 'voxel') {
+          assertVoxelImageOptions(params as ImageToVoxelOptions, 'applyImageTool');
+          await commitVoxelImageTool(await dataUrlToImageData(att.src), params as ImageToVoxelOptions, name, target);
+        } else {
+          const options = parseLayeredPrintOptions(params);
+          const result = await solveLayeredPrintAsync(await decodeAttachmentPixels(att.src), { ...options, ...layeredPrintLimits() });
+          await commitLayeredImageTool(result, name, target);
+        }
+        const op = currentImageToolOp();
+        // A relief `params.mode` can turn e.g. a tile into a lithophane; report what was recorded.
+        return { tool: op?.tool ?? tool, image: op?.image ?? att.id, replace, object: getState().currentPart ? { id: getState().currentPart!.id, name: getState().currentPart!.name } : null, op };
+      } catch (e) {
+        return { error: `applyImageTool failed: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    },
     async createLayeredPrint(args: {
       src: string; colors?: number; widthMm?: number; maxHeightMm?: number; baseHeightMm?: number;
       layerHeight?: number; firstLayerHeight?: number; pixelSizeMm?: number;
@@ -25101,6 +25469,10 @@ async function main() {
         'splitImportIntoObjects': { signature: 'await splitImportIntoObjects() -- Split the open object (a single unedited mesh import, e.g. a multi-body STL) into one object per piece -> {objects:[{id,name}]} or {error}', docs: '/ai/file-io.md' },
         'importImageAsRelief': { signature: "await importImageAsRelief({src, mode?: 'luminance'|'quantized'|'ai', options?, quantized?, preprocess?, crop?}) -- Colour tile / stepped-relief object from an image (data: or http(s) URL) -> {sessionId} or {error}", docs: '/ai/relief.md' },
         'importSvgAsRelief': { signature: 'await importSvgAsRelief({svgText, options?, quantized?, preprocess?}) -- Multi-colour tile from raw SVG; each <path fill> becomes one crisp region -> {sessionId} or {error}', docs: '/ai/relief.md#make-a-part-from-an-svg' },
+        'listImageTools': { signature: 'listImageTools() -- The image tools: [{id, label, description, engine}] (tile, silhouette, steppedRelief, lithophane, layeredPrint, voxel)', docs: '/ai/relief.md#image-tools' },
+        'getImageToolOp': { signature: 'getImageToolOp() -- The open object\'s image-tool record {tool, image, params} (from its @image-tool code header), or {error}', docs: '/ai/relief.md#image-tools' },
+        'applyImageTool': { signature: "await applyImageTool({tool, image?: attachmentId, src?, params?, replace?, name?}) -- Make an object from an attached image with a tool (new object), or re-apply to the open object (replace: true; same-tool params merge over the stored ones) -> {tool, image, object, op} or {error}", docs: '/ai/relief.md#image-tools' },
+        'openImageTools': { signature: 'openImageTools() -- Open the Image tools panel for the user', docs: '/ai/relief.md#image-tools' },
         'createLayeredPrint': { signature: "await createLayeredPrint({src, colors?: 8, widthMm?: 120, maxHeightMm?: 2.4, baseHeightMm?, layerHeight?: 0.08, firstLayerHeight?: 0.16, pixelSizeMm?: 0.3, filaments?: [{name, hex, td}], baseFilament?, chromaWeight?, smoothing?, effort?, seed?, name?}) -- HueForge-style filament-layering print from a photo: picks filaments + swap layers + per-pixel heights, opens a new session -> {sessionId, blocks, swaps, meanDeltaE, ...} or {error}", docs: '/ai/relief.md#layered-photo-prints' },
         'getLayeredPrintPlan': { signature: 'getLayeredPrintPlan() -- The current layered print: filaments, swap layers/heights, instructions text -> plan or {error}', docs: '/ai/relief.md#layered-photo-prints' },
         'listLayeredPrintFilaments': { signature: 'listLayeredPrintFilaments() -- Built-in filament list (name, hex, TD mm) createLayeredPrint chooses from', docs: '/ai/relief.md#layered-photo-prints' },
