@@ -36,3 +36,9 @@ lower so "textr" prefers "textures" over "text".
 compete with real results (and broke specs that find rows by text), so the
 "Ask the AI" row appears only when nothing matches; it prefills the chat
 input without sending, like the ideas page.
+
+**CI follow-up — keep the hints strip visible**: at 1280 px the full-width
+search button left the "Did you know?" strip's slot at 147 px, under its
+200 px minimum, so the strip hid (and editor-hints e2e failed). The button now
+reads just "Search" below 2xl (1536 px) and shows "Search tools… ⌘K" above it;
+the slot is back to ~243 px at 1280.
