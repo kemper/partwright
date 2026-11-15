@@ -260,6 +260,7 @@ export const APP_CONFIG_FIELD_BOUNDS: { [S in ConfigSection]: Partial<Record<key
     reliefPreviewDebounceMs: { min: 0, max: 2_000, integer: true },
     reliefPreview3dDebounceMs: { min: 0, max: 2_000, integer: true },
     progressModalShowDelayMs: { min: 0, max: 2_000, integer: true },
+    paintWaitTimeoutMs: { min: 0, max: 2_000, integer: true },
     sessionLockHeartbeatMs: { min: 500, max: 30_000, integer: true },
     sessionLockStaleMs: { min: 1_000, max: 60_000, integer: true },
     defaultQuality: { min: 3, max: 4096, integer: true },
