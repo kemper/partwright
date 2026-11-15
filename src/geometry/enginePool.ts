@@ -292,7 +292,7 @@ export function buildInPool(req: PoolBuildRequest): Promise<PoolBuildResult> {
   }
   // Code that reads attachment images (api.image('<id>')) needs them decoded
   // first; everything else queues synchronously, as before.
-  if (req.lang === 'manifold-js' && !req.images && sourceImageRefs(req.code).length > 0) {
+  if ((req.lang === 'manifold-js' || req.lang === 'voxel') && !req.images && sourceImageRefs(req.code).length > 0) {
     return collectModelImages(req.code).then((images) => buildInPool({ ...req, images }));
   }
   ensureWorkers();

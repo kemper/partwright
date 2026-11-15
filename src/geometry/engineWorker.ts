@@ -392,6 +392,7 @@ self.onmessage = async (event: MessageEvent) => {
       if (effectiveLang === 'voxel') {
         // Pure-JS voxel meshing — no WASM, no lazy init, synchronous.
         setActiveImports(runImports);
+        setActiveModelImages(images);
         result = withLogs(log.run(() => voxelEngine.run(code as string, params ?? undefined)), log);
       } else if (effectiveLang === 'scad') {
         // Ensure the OpenSCAD engine is loaded (lazy init).
@@ -799,11 +800,12 @@ self.onmessage = async (event: MessageEvent) => {
   // Voxel Studio activation when the main thread has no up-to-date grid from
   // the last render. The main thread never evaluates model code (#1090).
   if (msg.type === 'voxel_grid') {
-    const { callId, code, params, voxelSdfMaxSamples } = msg as unknown as { callId: string; code: string; params?: Record<string, unknown> | null; voxelSdfMaxSamples?: number };
+    const { callId, code, params, voxelSdfMaxSamples, images } = msg as unknown as { callId: string; code: string; params?: Record<string, unknown> | null; voxelSdfMaxSamples?: number; images?: ModelImage[] };
     // Same v.sdf budget seed as `execute` — a respawned Worker may never have
     // seen an execute message before its first voxel_grid.
     if (typeof voxelSdfMaxSamples === 'number') applyWorkerImportConfig({ voxelSdfMaxSamples });
     try {
+      setActiveModelImages(images);
       const r = runVoxelGrid(code, params ?? undefined);
       if (!r.ok) {
         self.postMessage({ type: 'voxel_grid_result', callId, grid: null, error: r.error });

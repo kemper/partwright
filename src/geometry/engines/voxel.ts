@@ -7,6 +7,8 @@ import { createParamCapture, type ParamCapture } from '../params';
 import { createSdfNamespace, SdfNode } from '../sdf';
 import { ValidationError } from '../../validation/apiValidation';
 import { assertModelCodeRealm } from '../workerLockdown';
+import { modelImageHandle } from '../modelImages';
+import { runVoxelImageOp } from '../../imageTools/sandboxOps';
 
 // The `voxel` engine: user code builds a sparse VoxelGrid and returns it; we
 // mesh the exposed faces into welded `MeshData` (with per-voxel colors) that
@@ -79,8 +81,14 @@ function createVoxelApi(params: ParamCapture['params'] | undefined, removedPiece
     }
     removedPieces.push(point as [number, number, number]);
   };
+  // Image tools as code (#1256 Stage B): `api.image(id)` reads a session
+  // attachment (pixels shipped with the run, as in manifold-js) and
+  // `api.voxelsFromImage(img, opts)` turns it into a fresh grid with the
+  // image→voxel import's own conversion — returnable as-is or editable.
+  const image = (id: unknown) => modelImageHandle(id);
+  const voxelsFromImage = (img: unknown, opts?: unknown): VoxelGrid => runVoxelImageOp(img, opts);
   return {
-    voxels, VoxelGrid, sdf, removePiece,
+    voxels, VoxelGrid, sdf, removePiece, image, voxelsFromImage,
     paint: manifoldOnlyNamespaceGuard('paint'),
     surface: manifoldOnlyNamespaceGuard('surface'),
     ...(params ? { params } : {}),

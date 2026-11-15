@@ -116,6 +116,84 @@ Import the `.stl` normally, then in the Relief Studio panel use **Detect levels*
 to seed a color region per existing Z plateau (or, programmatically, paint Z
 slabs). Then preview + read the swap guide as above.
 
+## Image tools
+
+Attach an image to the session once, then turn it into objects with **image
+tools** — and re-open a tool's settings later. Each tool stores its settings in
+the object's code as a header comment, so they persist, version and export
+with the session:
+
+```js
+// @image-tool {"tool":"tile","image":"<attachment id>","params":{...}}
+```
+
+| tool | makes |
+|---|---|
+| `tile` | flat tile with the image's colour regions (keychain, badge) |
+| `silhouette` | flat tile cut to the subject's outline |
+| `steppedRelief` | each colour cluster at its own height |
+| `lithophane` | smooth brightness → height relief |
+| `layeredPrint` | HueForge-style filament layering (its code, `api.layeredPrint`, is the record) |
+| `voxel` | pixel-art cubes |
+
+```js
+partwright.listImageTools()
+await partwright.applyImageTool({ tool: 'tile', image: '<attachment id>', params: { quantized: { clusters: 5, shape: 'rounded' } } })
+// or src: 'data:image/…' to attach a new image first
+partwright.getImageToolOp()   // -> { tool, image, params } of the open object
+// Re-apply to the open object (a NEW VERSION — undo is version history).
+// Same tool: params MERGE over the stored ones, so tweak one setting at a time:
+await partwright.applyImageTool({ tool: 'tile', replace: true, params: { quantized: { clusters: 7 } } })
+partwright.openImageTools()   // the Image tools panel (Import → Image tools…)
+```
+
+- Relief tools (`tile`, `silhouette`, `steppedRelief`, `lithophane`) take
+  `ReliefOptions` sections: `common`, `quantized`, `luminance`, `preprocess`
+  (see `importImageAsRelief` above). `voxel` takes the `importImageAsVoxels`
+  options; `layeredPrint` the `api.layeredPrint` options.
+- Results land in the current session (where the image is attached) as a new
+  object; `replace: true` re-applies to the open object.
+
+## Image tools as code
+
+Every image tool is also a model-code call. The image stays an attachment and
+the geometry is rebuilt from it on each run (memoized on the image + settings,
+so unrelated edits re-run instantly). Nothing is baked into the code, and the
+result composes like any other shape.
+
+```js
+const img = api.image('<attachment id>');          // literal id — see getImages()
+const tile = api.imageTile(img, {
+  common: { widthMm: 60, resolution: 120 },
+  quantized: { clusters: 5, shape: 'rounded', holes: [{ cxMm: -24, cyMm: 16, diameterMm: 4 }] },
+});
+return tile;   // a Manifold: tile.add(...), tile.subtract(...), …
+```
+
+| call | tool | sections it reads |
+|---|---|---|
+| `api.imageTile(img, params)` | `tile` | `common`, `quantized`, `preprocess`, `crop` |
+| `api.silhouetteTile(img, params)` | `silhouette` | same |
+| `api.steppedRelief(img, params)` | `steppedRelief` | same |
+| `api.lithophane(img, params)` | `lithophane` | `common`, `luminance`, `preprocess`, `crop` |
+| `api.voxelsFromImage(img, opts)` | `voxel` (**voxel** sessions) | the `importImageAsVoxels` options; returns a grid |
+
+- `params` is the record the `// @image-tool` header stores, merged over the
+  tool's defaults: give only what you change. Validation is strict: an
+  unknown key, wrong type or out-of-range value throws and names the key. A
+  `mode` or `quantized.output` that contradicts the function throws too (the
+  function picks them).
+- **Colours are parts.** Each colour cluster of a tile or stepped relief is a
+  labelled part, `colour-1` (the largest region) to `colour-N`, coloured with
+  the cluster colour. They show in `listObjectParts()` and work with
+  `api.paint.label`, `paintByLabel` and booleans. Sides and bottom are
+  unlabelled; a lithophane has no colour parts.
+- A mesh that isn't watertight comes back render-only (like a non-manifold STL
+  import): it still renders and keeps its parts, but can't be combined.
+- In a voxel session: `return api.voxelsFromImage(api.image(id), { maxSize: 48, mode: 'heightmap' })`.
+  Each call gives a fresh grid, so you can edit it (`v.set`, `v.fillBox`) before returning.
+- Headless: `npm run model:preview -- tile.js --image <id>=photo.png` feeds `api.image(id)`.
+
 ## Layered photo prints
 
 A layered (HueForge-style) print is a heightmap printed in thin layers, with
@@ -150,7 +228,7 @@ return print;   // a Manifold — compose freely: print.add(frame), .subtract(ho
   in the model is coloured by height the way the swaps will print it — a frame
   or text you add takes the filament loaded at its height.
 - `api.image(id)` only works with a literal attachment id; list them with
-  `getImages()`. Runs in the browser engine (not the headless `model:preview`).
+  `getImages()`. Headless `model:preview` takes the image as `--image <id>=photo.png`.
   A session opened from a **share link** has its photos stripped, so its layered
   print can't run there — share the session file instead.
 - With `schedule`, the search-only options (`colors`, `filaments`,

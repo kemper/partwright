@@ -800,7 +800,7 @@ export async function executeCodeAsync(
   // Attachment images the code reads via api.image('<id>') (none otherwise).
   // Decoded BEFORE claiming the Worker: nothing may await between the claim
   // and the postMessage, or a cancel/recycle in between strands this call.
-  const images = l === 'manifold-js' && sourceImageRefs(source).length > 0 ? await collectModelImages(source) : [];
+  const images = (l === 'manifold-js' || l === 'voxel') && sourceImageRefs(source).length > 0 ? await collectModelImages(source) : [];
 
   // Ensure the Worker is booted.
   const worker = ensureClaim(await claimAndWait(opts?.domain));
@@ -846,11 +846,14 @@ export async function runVoxelGridInWorker(
   code: string,
   params?: Record<string, unknown>,
 ): Promise<{ ok: true; grid: VoxelGrid } | { ok: false; error: string }> {
+  // Images for api.image('<id>') (api.voxelsFromImage), decoded before the
+  // claim for the same reason as executeCode's.
+  const images = sourceImageRefs(code).length > 0 ? await collectModelImages(code) : [];
   const worker = ensureClaim(await claimAndWait());
   const callId = `voxgrid-${++callIdCounter}`;
   return new Promise((resolve, reject) => {
     pendingVoxelGrids.set(callId, { resolve, reject });
-    worker.postMessage({ type: 'voxel_grid', callId, code, params: params ?? null, voxelSdfMaxSamples: getConfig().import.voxelSdfMaxSamples });
+    worker.postMessage({ type: 'voxel_grid', callId, code, params: params ?? null, voxelSdfMaxSamples: getConfig().import.voxelSdfMaxSamples, ...(images.length > 0 ? { images } : {}) });
   });
 }
 

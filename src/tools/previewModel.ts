@@ -13,6 +13,7 @@ import { sourceUsesManifoldText, preloadTextFonts } from '../geometry/textGlyphs
 import { resolvePaintOps } from '../color/paintOpsResolve';
 import { sourceUsesHuman, preloadHumanAsset } from '../human/humanAsset';
 import { APP_CONFIG_DEFAULTS } from '../config/appConfig';
+import { setActiveModelImages, hashImagePixels } from '../geometry/modelImages';
 
 export interface PreviewComponent {
   index: number;
@@ -129,7 +130,11 @@ function hexToRgb01(hex: string | undefined): [number, number, number] | null {
 
 export async function previewModel(
   code: string,
-  opts: { params?: Record<string, unknown>; maxComponents?: number; lang?: Language; palette?: Record<string, string> } = {},
+  opts: {
+    params?: Record<string, unknown>; maxComponents?: number; lang?: Language; palette?: Record<string, string>;
+    /** Images for `api.image('<id>')` (the CLI's `--image id=path`): RGBA, row 0 = top. */
+    images?: Array<{ id: string; width: number; height: number; data: Uint8ClampedArray }>;
+  } = {},
 ): Promise<PreviewResult> {
   const engine: Language = opts.lang ?? 'manifold-js';
   // manifold-3d is always needed: the kernel for manifold-js runs, and the
@@ -154,6 +159,10 @@ export async function previewModel(
   if (engine === 'manifold-js' && sourceUsesHuman(code)) {
     try { await preloadHumanAsset(code); } catch { /* api.human reports the missing asset itself */ }
   }
+
+  // Attachment images the code reads with api.image(id) — in the app the main
+  // thread ships them with the run; headless, the CLI passes them in.
+  setActiveModelImages((opts.images ?? []).map((im) => ({ ...im, hash: hashImagePixels(im.width, im.height, im.data) })));
 
   let raw: MeshResult;
   if (engine === 'voxel') {

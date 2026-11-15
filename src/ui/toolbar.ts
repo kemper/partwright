@@ -56,6 +56,8 @@ export interface ToolbarCallbacks {
   onCreateVoxel: () => void;
   /** Open the layered-print (photo → filament-layering print) dialog. */
   onCreateLayeredPrint: () => void;
+  /** Open the Image tools panel (attach an image, apply tools, re-apply). */
+  onImageTools: () => void;
   onLanguageSwitch: (lang: 'manifold-js' | 'scad' | 'replicad' | 'voxel') => void;
   /** "?" link next to the language toggle — opens a modal explaining
    *  what each engine is best for. */
@@ -390,6 +392,15 @@ export function createToolbar(
 
   importDropdown.appendChild(createMenuDivider());
   importDropdown.appendChild(createMenuSectionHeader('Create'));
+  const imageToolsOpt = createDescribedItem(
+    'Image tools…',
+    'Attach an image to this session, then turn it into a keychain, silhouette, relief, lithophane, layered filament print or voxel art — and re-open the settings later.',
+  );
+  imageToolsOpt.addEventListener('click', () => {
+    importDropdown.classList.add('hidden');
+    callbacks.onImageTools();
+  });
+  importDropdown.appendChild(imageToolsOpt);
   const reliefOpt = createDescribedItem(
     'Image → keychain / tile / relief…',
     'Turn an image (or SVG) into a printable colour tile, keychain, sticker, or stepped relief.',
