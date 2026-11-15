@@ -49,6 +49,36 @@ export function getActiveModelImage(id: string): ModelImage | null {
   return active.get(id) ?? null;
 }
 
+/** What `api.image(id)` returns: an opaque handle, plus its size. */
+export interface ModelImageHandle {
+  readonly kind: 'image';
+  readonly id: string;
+  readonly width: number;
+  readonly height: number;
+}
+
+/** `api.image(id)` (manifold-js and voxel sandboxes): the attachment's
+ *  handle, or a clear error. */
+export function modelImageHandle(id: unknown): ModelImageHandle {
+  if (typeof id !== 'string' || !id) throw new Error("api.image: expected an attachment id string, e.g. api.image('a1b2c3'). List attachments with partwright.getImages().");
+  const im = getActiveModelImage(id);
+  if (!im) {
+    if (typeof document === 'undefined' && typeof self === 'undefined') throw new Error(`api.image('${id}'): no image registered for this id in headless preview — pass it with \`--image ${id}=path/to/image.png\`.`);
+    throw new Error(`api.image('${id}'): no usable image attachment with that id in this session. Attach the photo (Attachments tab) and use its id — images reach the model only through a literal api.image('<id>') call. (A session opened from a share link has its photos removed; ask for the session file instead.)`);
+  }
+  return Object.freeze({ kind: 'image' as const, id: im.id, width: im.width, height: im.height });
+}
+
+/** The pixels behind an `api.image` handle passed to `fn` (throws a clear
+ *  error naming `fn` for anything else). */
+export function resolveModelImageArg(handle: unknown, fn: string): ModelImage {
+  const h = handle as ModelImageHandle | null;
+  if (!h || typeof h !== 'object' || h.kind !== 'image') throw new Error(`${fn}: first argument must be an image from api.image('<attachment id>')`);
+  const im = getActiveModelImage(h.id);
+  if (!im) throw new Error(`${fn}: image '${h.id}' is not available in this run`);
+  return im;
+}
+
 // ── Main-thread provider (registered by main.ts) ────────────────────────────
 
 type Provider = (ids: string[]) => Promise<ModelImage[]>;

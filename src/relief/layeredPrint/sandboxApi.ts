@@ -7,20 +7,12 @@
 // content + options, so re-runs that don't change them are instant; a pinned
 // `schedule` skips the filament search and only solves heights.
 
-import { getActiveModelImage, type ModelImage } from '../../geometry/modelImages';
+import { getActiveModelImage, type ModelImage, type ModelImageHandle } from '../../geometry/modelImages';
 import type { LayeredPrintPlanRecord } from '../types';
 import { solveLayeredPrint, DEFAULT_LAYERED_PRINT_OPTIONS, type LayeredPrintOptions } from './solver';
 import { buildHeightfieldMesh } from './mesh';
 import { layeredPrintRecord } from './plan';
 import type { LayeredPrintFilament } from './filamentLibrary';
-
-/** What `api.image(id)` returns: an opaque handle, plus its size. */
-export interface ModelImageHandle {
-  readonly kind: 'image';
-  readonly id: string;
-  readonly width: number;
-  readonly height: number;
-}
 
 const OPTION_KEYS = [
   'colors', 'widthMm', 'maxHeightMm', 'baseHeightMm', 'layerHeight', 'firstLayerHeight', 'pixelSizeMm',
@@ -106,17 +98,6 @@ export function parseLayeredPrintOptions(raw: unknown): Partial<LayeredPrintOpti
   }
   for (const k of Object.keys(out) as Array<keyof typeof out>) if (out[k] === undefined) delete out[k];
   return out;
-}
-
-/** `api.image(id)`: the attachment's handle, or a clear error. */
-export function modelImageHandle(id: unknown): ModelImageHandle {
-  if (typeof id !== 'string' || !id) throw new Error("api.image: expected an attachment id string, e.g. api.image('a1b2c3'). List attachments with partwright.getImages().");
-  const im = getActiveModelImage(id);
-  if (!im) {
-    if (typeof document === 'undefined' && typeof self === 'undefined') throw new Error(`api.image('${id}'): attachment images are only available in the browser app, not in headless preview.`);
-    throw new Error(`api.image('${id}'): no usable image attachment with that id in this session. Attach the photo (Attachments tab) and use its id — images reach the model only through a literal api.image('<id>') call. (A session opened from a share link has its photos removed; ask for the session file instead.)`);
-  }
-  return Object.freeze({ kind: 'image' as const, id: im.id, width: im.width, height: im.height });
 }
 
 export interface LayeredPrintRun {

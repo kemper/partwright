@@ -29,6 +29,10 @@
 // photos) or once per photo; --match-crop/--match-mask once per photo, in order.
 // Same scorer as the browser's partwright.photoMatch (src/tools/photoMatch.ts).
 //
+// IMAGES: `--image <id>=<path.png>` (repeatable) feeds `api.image('<id>')`, so
+// image-tool code (`api.imageTile(api.image('a'), …)`, a voxel session's
+// `api.voxelsFromImage`, `api.layeredPrint`) previews headlessly too.
+//
 // This is a thin back-compat wrapper: the implementation now lives in
 // scripts/cli/preview.mjs and is also exposed as `partwright preview`
 // (bin/partwright.mjs). See docs/headless-cli.md.
@@ -64,7 +68,7 @@ function parseArgs(argv) {
   // are invisible at small sizes. Bump higher (--size 1200+) when scrutinising
   // fine features (faces, eyes, lettering) and crop the PNG natively rather than
   // upscaling a small crop (which only blurs).
-  const a = { params: {}, size: 768, json: false, png: null, file: null, lang: 'manifold-js', explain: false, expect: null, view: null, views: null, requireLabels: null, paletteFile: null, noPalette: false, matchPhoto: [], matchCrop: [], matchBg: [], matchMask: [], matchBgTol: null, matchBgMode: null, matchExclude: null, matchMerge: [], matchIgnore: null, matchBands: null, matchFit: null, matchOverlay: null, matchPixelAspect: [] };
+  const a = { params: {}, size: 768, json: false, png: null, file: null, lang: 'manifold-js', explain: false, expect: null, view: null, views: null, requireLabels: null, paletteFile: null, noPalette: false, matchPhoto: [], matchCrop: [], matchBg: [], matchMask: [], matchBgTol: null, matchBgMode: null, matchExclude: null, matchMerge: [], matchIgnore: null, matchBands: null, matchFit: null, matchOverlay: null, matchPixelAspect: [], images: [] };
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
     if (t === '--json') a.json = true;
@@ -77,6 +81,7 @@ function parseArgs(argv) {
     else if (t === '--expect-components') a.expect = argv[++i];
     else if (t === '--require-labels') a.requireLabels = argv[++i];
     else if (t === '--palette-file') a.paletteFile = argv[++i];
+    else if (t === '--image') a.images.push(argv[++i]);
     else if (t === '--no-palette') a.noPalette = true;
     else if (t === '--match-photo') a.matchPhoto.push(argv[++i]);
     else if (t === '--match-crop') a.matchCrop.push(argv[++i]);
@@ -96,11 +101,25 @@ function parseArgs(argv) {
   }
   return a;
 }
+// `--image id=path` → decoded RGBA for api.image(id).
+async function loadImages(specs, fail) {
+  const out = [];
+  for (const spec of specs) {
+    const eq = spec ? spec.indexOf('=') : -1;
+    if (eq <= 0) fail(`--image expects <attachment id>=<path>, got ${JSON.stringify(spec)}`);
+    const id = spec.slice(0, eq), path = resolve(spec.slice(eq + 1));
+    if (!existsSync(path)) fail(`--image ${id}: no file at ${path}`);
+    const { default: sharp } = await import('sharp');
+    const { data, info } = await sharp(path).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    out.push({ id, width: info.width, height: info.height, data: new Uint8ClampedArray(data.buffer, data.byteOffset, data.length) });
+  }
+  return out;
+}
 function coerce(s) { if (s === 'true') return true; if (s === 'false') return false; const n = Number(s); return Number.isNaN(n) ? s : n; }
 
 async function main() {
   const a = parseArgs(process.argv.slice(2));
-  if (!a.file) { console.error('Usage: npm run model:preview -- <file.js> [--png out.png] [--json] [--size N] [--view "az,el[;az,el…]"] [--views front,iso,…] [--explain-components] [--expect-components N] [--require-labels a,b,c] [--palette-file p.json] [--no-palette] [-p k=v] [--match-photo ref.png[@az,el|@view] (repeatable) [--match-crop x,y,w,h] [--match-bg #rrggbb] [--match-bg-tol N] [--match-bg-mode auto|border|grabcut] [--match-mask mask.png] [--match-exclude base,…] [--match-merge a+b+c] [--match-ignore x,…] [--match-bands N] [--match-fit height|box] [--match-pixel-aspect R] [--match-overlay out.png]]'); process.exit(2); }
+  if (!a.file) { console.error('Usage: npm run model:preview -- <file.js> [--png out.png] [--json] [--size N] [--view "az,el[;az,el…]"] [--views front,iso,…] [--explain-components] [--expect-components N] [--require-labels a,b,c] [--palette-file p.json] [--no-palette] [--image id=path.png] [-p k=v] [--match-photo ref.png[@az,el|@view] (repeatable) [--match-crop x,y,w,h] [--match-bg #rrggbb] [--match-bg-tol N] [--match-bg-mode auto|border|grabcut] [--match-mask mask.png] [--match-exclude base,…] [--match-merge a+b+c] [--match-ignore x,…] [--match-bands N] [--match-fit height|box] [--match-pixel-aspect R] [--match-overlay out.png]]'); process.exit(2); }
   const file = resolve(a.file);
   const { views, error: viewErr } = resolveViews(a.view, a.views);
   if (viewErr) { console.error(viewErr); process.exit(2); }
@@ -134,13 +153,14 @@ async function main() {
   if (a.matchBgMode !== null && !['auto', 'border', 'grabcut'].includes(a.matchBgMode)) fail('--match-bg-mode expects "auto", "border" or "grabcut".');
   if (a.matchBands !== null && !(Number.isInteger(a.matchBands) && a.matchBands >= 2 && a.matchBands <= 60)) fail('--match-bands expects an integer 2–60.');
   if (a.matchFit !== null && a.matchFit !== 'height' && a.matchFit !== 'box') { console.error('--match-fit expects "height" or "box".'); process.exit(2); }
+  const images = await loadImages(a.images, fail);
   let result;
   if (matchViews.length) {
     // Keep the SSR session open past the preview so the photo-match scorer can
     // load through it (one server boot, one model build, every view).
     const session = await createPreviewSession();
     try {
-      result = await session.preview(readFileSync(file, 'utf8'), { params: a.params, lang: a.lang, palette });
+      result = await session.preview(readFileSync(file, 'utf8'), { params: a.params, lang: a.lang, palette, images });
       if (result.ok && result.render) {
         const list = (s) => (s ? s.split(',').map((x) => x.trim()).filter(Boolean) : []);
         const { results, combined } = await runPhotoMatch(session, result.render, {
@@ -157,7 +177,7 @@ async function main() {
       await session.close();
     }
   } else {
-    result = await runPreview(file, { params: a.params, lang: a.lang, palette });
+    result = await runPreview(file, { params: a.params, lang: a.lang, palette, images });
   }
 
   if (!result.ok) {

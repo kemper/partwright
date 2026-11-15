@@ -134,12 +134,177 @@ export function voxelParams(o: ImageToVoxelOptions): Record<string, unknown> {
   return JSON.parse(JSON.stringify(o)) as Record<string, unknown>;
 }
 
-/** The tool record behind `code`: its `@image-tool` header, or — for a layered
- *  print, whose code is already the record — its `api.layeredPrint(api.image(id))`
- *  call. Null when the object wasn't made by an image tool. */
+// ── Stage B: image tools as code ops ─────────────────────────────────────────
+//
+// Each tool also exists as a model-code call that reads the image and builds
+// the geometry in the engine Worker (instead of baking a mesh into the code):
+//
+//   const img = api.image('<attachment id>');
+//   return api.imageTile(img, { quantized: { clusters: 6 } });
+//
+// `params` is the same object the header stores; the call merges it over the
+// tool's defaults (src/imageTools/params.ts validates it strictly).
+
+/** The relief tools and the manifold-js sandbox function that runs each. */
+export const RELIEF_OP_FUNCTIONS = {
+  tile: 'imageTile',
+  silhouette: 'silhouetteTile',
+  steppedRelief: 'steppedRelief',
+  lithophane: 'lithophane',
+} as const;
+
+export type ReliefToolId = keyof typeof RELIEF_OP_FUNCTIONS;
+
+/** The voxel tool's function (voxel-language sessions). */
+export const VOXEL_OP_FUNCTION = 'voxelsFromImage';
+
+const OP_FUNCTION_TOOL: Record<string, ImageToolId> = {
+  imageTile: 'tile',
+  silhouetteTile: 'silhouette',
+  steppedRelief: 'steppedRelief',
+  lithophane: 'lithophane',
+  voxelsFromImage: 'voxel',
+  layeredPrint: 'layeredPrint',
+};
+
+/** The part of a relief record worth writing as code: only values that differ
+ *  from the tool's defaults, minus what the function name already implies
+ *  (`mode`, `quantized.output`) and the sections the tool ignores. */
+export function compactReliefParams(tool: ReliefToolId, params: Record<string, unknown>): Record<string, unknown> {
+  const full = reliefOptionsForOp(tool, params) as unknown as Record<string, unknown>;
+  const defaults = reliefDefaultsForTool(tool) as unknown as Record<string, unknown>;
+  const sections = tool === 'lithophane' ? ['common', 'luminance', 'preprocess'] : ['common', 'quantized', 'preprocess'];
+  const out: Record<string, unknown> = {};
+  for (const sec of sections) {
+    const cur = full[sec] as Record<string, unknown>;
+    const def = defaults[sec] as Record<string, unknown>;
+    const diff: Record<string, unknown> = {};
+    for (const k of Object.keys(cur)) {
+      if (cur[k] === undefined) continue;
+      if (sec === 'quantized' && k === 'output') continue;
+      if (JSON.stringify(cur[k]) !== JSON.stringify(def[k])) diff[k] = cur[k];
+    }
+    if (Object.keys(diff).length > 0) out[sec] = diff;
+  }
+  const crop = full.crop as { left: number; top: number; right: number; bottom: number } | undefined;
+  if (crop && !(crop.left <= 0.001 && crop.top <= 0.001 && crop.right >= 0.999 && crop.bottom >= 0.999)) out.crop = crop;
+  return out;
+}
+
+/** Model code that runs `op` as a real call (not a baked mesh), and the
+ *  language it runs in. Re-reading the code with {@link imageToolOpFromCode}
+ *  gives back an equivalent record. */
+export function imageToolCode(op: ImageToolOp): { code: string; language: 'manifold-js' | 'voxel' } {
+  const info = imageToolInfo(op.tool);
+  if (!/^[^'"`\\\n]{1,200}$/.test(op.image)) throw new Error(`imageToolCode: "${op.image.slice(0, 40)}" is not a usable attachment id`);
+  const head = `// ${info.label} from an attached image. The image is read and the geometry\n// built on every run: edit the settings below and re-run.\nconst img = api.image('${op.image}');\n`;
+  const call = (fn: string, params: Record<string, unknown>) =>
+    `return api.${fn}(${Object.keys(params).length > 0 ? `img, ${JSON.stringify(params, null, 2)}` : 'img'});\n`;
+  if (op.tool === 'voxel') {
+    const params = JSON.parse(JSON.stringify(op.params)) as Record<string, unknown>;
+    delete params.codeStyle; // only steers the baked (decode vs calls) form
+    return { language: 'voxel', code: head + call(VOXEL_OP_FUNCTION, params) };
+  }
+  if (op.tool === 'layeredPrint') return { language: 'manifold-js', code: head + call('layeredPrint', op.params) };
+  const tool = op.tool as ReliefToolId;
+  const note = tool === 'lithophane' ? '' : '// Each colour region is a part (colour-1 = the largest), in its cluster colour.\n';
+  return { language: 'manifold-js', code: head + note + call(RELIEF_OP_FUNCTIONS[tool], compactReliefParams(tool, op.params)) };
+}
+
+/** Index just past the balanced `{…}` starting at `start` (strings and
+ *  comments skipped), or -1. */
+function matchBrace(src: string, start: number): number {
+  let depth = 0;
+  for (let i = start; i < src.length; i++) {
+    const c = src[i];
+    if (c === '"' || c === "'" || c === '`') {
+      for (i++; i < src.length && src[i] !== c; i++) if (src[i] === '\\') i++;
+    } else if (c === '/' && src[i + 1] === '/') {
+      while (i < src.length && src[i] !== '\n') i++;
+    } else if (c === '/' && src[i + 1] === '*') {
+      const end = src.indexOf('*/', i + 2);
+      if (end < 0) return -1;
+      i = end + 1;
+    } else if (c === '{') depth++;
+    else if (c === '}' && --depth === 0) return i + 1;
+  }
+  return -1;
+}
+
+/** A plain JS object literal (quoted or bare keys, single or double quotes,
+ *  comments, trailing commas; literal values only) → its JSON value, or
+ *  undefined when it holds anything else (variables, expressions, calls). */
+export function parseObjectLiteral(src: string): unknown {
+  let out = '';
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (c === '"' || c === "'") {
+      let body = '';
+      for (i++; i < src.length && src[i] !== c; i++) {
+        if (src[i] === '\\') { body += src[i] + (src[i + 1] ?? ''); i++; } else body += src[i] === '"' ? '\\"' : src[i];
+      }
+      if (i >= src.length) return undefined;
+      try { out += JSON.stringify(JSON.parse(`"${body.replace(/\\'/g, "'")}"`)); } catch { return undefined; }
+    } else if (c === '/' && src[i + 1] === '/') {
+      while (i < src.length && src[i] !== '\n') i++;
+    } else if (c === '/' && src[i + 1] === '*') {
+      const end = src.indexOf('*/', i + 2);
+      if (end < 0) return undefined;
+      i = end + 1;
+    } else if (/[A-Za-z_$]/.test(c)) {
+      let j = i;
+      while (j < src.length && /[\w$]/.test(src[j])) j++;
+      const word = src.slice(i, j);
+      if (/^\s*:/.test(src.slice(j))) out += JSON.stringify(word);
+      else if (word === 'true' || word === 'false' || word === 'null') out += word;
+      else if (/^\d/.test(src.slice(i - 1, i)) || /^[eE]$/.test(word)) out += word; // exponent in 1e-3
+      else return undefined;
+      i = j - 1;
+    } else if (c === ',') {
+      // Drop a trailing comma (JSON has none).
+      if (!/^(?:\s|\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)*[}\]]/.test(src.slice(i + 1))) out += c;
+    } else if (/[\s{}[\]:0-9.+-]/.test(c)) out += c;
+    else return undefined;
+  }
+  try { return JSON.parse(out); } catch { return undefined; }
+}
+
+/** The record behind an image-tool CALL in `code` — `api.imageTile(img, {…})`
+ *  & co., the voxel `api.voxelsFromImage(img, {…})`, or `api.layeredPrint` —
+ *  where `img` is `api.image('<id>')` inline or a variable assigned from one.
+ *  Params are read back when the options are a plain literal (else `{}`); a
+ *  layered print's code is its own record, so its params stay `{}`. */
+function imageToolOpFromCall(code: string): ImageToolOp | null {
+  const re = /\bapi\.(imageTile|silhouetteTile|steppedRelief|lithophane|voxelsFromImage|layeredPrint)\(\s*(?:api\.image\(\s*(['"`])([^'"`\n]{1,200})\2\s*\)|([A-Za-z_$][\w$]*))\s*(,?)/g;
+  for (let m = re.exec(code); m; m = re.exec(code)) {
+    const tool = OP_FUNCTION_TOOL[m[1]];
+    let image = m[3];
+    if (!image && m[4]) {
+      const name = m[4].replace(/\$/g, '\\$');
+      const v = new RegExp(`\\b(?:const|let|var)\\s+${name}\\s*=\\s*api\\.image\\(\\s*(['"\`])([^'"\`\\n]{1,200})\\1\\s*\\)`).exec(code);
+      if (v) image = v[2];
+    }
+    if (!image) continue;
+    let params: Record<string, unknown> = {};
+    if (tool !== 'layeredPrint' && m[5] === ',') {
+      const at = re.lastIndex + (/^\s*/.exec(code.slice(re.lastIndex))?.[0].length ?? 0);
+      if (code[at] === '{') {
+        const end = matchBrace(code, at);
+        const parsed = end > 0 ? parseObjectLiteral(code.slice(at, end)) : undefined;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) params = parsed as Record<string, unknown>;
+      }
+    }
+    return { tool, image, params };
+  }
+  return null;
+}
+
+/** The tool record behind `code`: its `@image-tool` header, or — for code that
+ *  runs a tool as a call (`api.imageTile(api.image(id), {…})` & co., the voxel
+ *  `api.voxelsFromImage`, `api.layeredPrint`) — that call. Null when the
+ *  object wasn't made by an image tool. */
 export function imageToolOpFromCode(code: string): ImageToolOp | null {
   const header = parseImageToolHeader(code);
   if (header) return header;
-  const m = /api\.layeredPrint\(\s*api\.image\(\s*(['"`])([^'"`\n]{1,200})\1\s*\)/.exec(code);
-  return m ? { tool: 'layeredPrint', image: m[2], params: {} } : null;
+  return imageToolOpFromCall(code);
 }

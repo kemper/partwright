@@ -1030,6 +1030,7 @@ api.sculpt.inflate(m, {at, radius, amount})            // bump out (negative = d
 api.sculpt.flatten(m, {at, radius, normal?, strength?})// press a region toward a plane
 api.material('brass')                                  // viewport shading preset (see /ai/deform.md)
 api.layeredPrint(api.image(id), {schedule?, colors?, widthMm?, maxHeightMm?}) // photo → layer-swap filament print (Manifold); see /ai/relief.md#layered-photo-prints
+api.imageTile(api.image(id), params)  // + silhouetteTile/steppedRelief/lithophane; voxel: api.voxelsFromImage. Colours → parts colour-1… /ai/relief.md#image-tools-as-code
 ```
 
 **Robust booleans + heal — catch silent failures.** `expectUnion` is the one to reach for when an agent has hit "I expected one piece, got three" — it tells you *immediately* instead of after the next render, and the error message includes a bbox/volume dump of each component so you can see which piece floated free.

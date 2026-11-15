@@ -26,7 +26,10 @@ import type { RegionDescriptor } from '../../color/regions';
 import { COLOR_PATTERN_KINDS, type ColorPatternKind, type PatternScope } from '../../color/colorPattern';
 import { SURFACE_OP_FIELDS, isSurfaceOpId, parseSurfaceOpts, type SurfaceOp, type SurfaceOpId } from '../../surface/surfaceOpSpec';
 import { isMaterialPresetName, MATERIAL_PRESET_NAMES, type MaterialSpec } from '../../renderer/materialSpec';
-import { modelImageHandle, runLayeredPrint } from '../../relief/layeredPrint/sandboxApi';
+import { runLayeredPrint } from '../../relief/layeredPrint/sandboxApi';
+import { modelImageHandle } from '../modelImages';
+import { runReliefImageOp } from '../../imageTools/sandboxOps';
+import type { ReliefToolId } from '../../imageTools/descriptor';
 import type { LayeredPrintPlanRecord } from '../../relief/types';
 import { getConfig } from '../../config/appConfig';
 import { wasmFaultHint } from '../workerFaults';
@@ -42,8 +45,10 @@ import { assertNumber, assertNumberTuple, ValidationError } from '../../validati
  *  or just rendered as-is with manifold-dependent features disabled. */
 const RENDER_ONLY_MARKER = '__partwrightRenderOnly';
 
+// `runs` is engine-internal (image-tool ops): triangle-run provenance so the
+// proxy's labelled parts resolve. `api.renderMesh` callers can't pass it.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function renderMesh(meshData: any) {
+function renderMesh(meshData: any, runs?: { runIndex: Uint32Array; runOriginalID: Uint32Array }) {
   if (!meshData || !meshData.vertProperties || !meshData.triVerts) {
     throw new Error('api.renderMesh: expected an object with vertProperties (Float32Array) and triVerts (Uint32Array).');
   }
@@ -57,6 +62,7 @@ function renderMesh(meshData: any) {
         numVert: meshData.numVert ?? meshData.vertProperties.length / numProp,
         numTri: meshData.numTri ?? meshData.triVerts.length / 3,
         numProp,
+        ...(runs ? { runIndex: runs.runIndex, runOriginalID: runs.runOriginalID } : {}),
       };
     },
     delete() { /* no native resource to release */ },
@@ -854,6 +860,44 @@ export const manifoldJsEngine: Engine = {
       return Manifold.ofMesh(run.mesh as Parameters<typeof Manifold.ofMesh>[0]);
     };
 
+    // Image tools as code (#1256 Stage B): `api.imageTile(img, params)` &
+    // co. run the relief generator on an `api.image` handle and return the
+    // tile/relief with each colour cluster registered as a labelled part
+    // (`colour-1` = largest) carrying its cluster colour — the same run +
+    // reserveIDs scheme as importWithParts. A watertight mesh becomes a real
+    // Manifold; one that isn't (or that ofMesh refuses) comes back render-only,
+    // like a non-manifold STL import, still with its parts.
+    const reliefImageOp = (tool: ReliefToolId) => (img: unknown, params?: unknown): unknown => {
+      const run = runReliefImageOp(tool, img, params);
+      const base = Manifold.reserveIDs(run.runs.length);
+      const runIndex = new Uint32Array(run.runs.length + 1);
+      const runOriginalID = new Uint32Array(run.runs.length);
+      run.runs.forEach((r, k) => {
+        runIndex[k] = r.startTri * 3;
+        runIndex[k + 1] = r.endTri * 3;
+        runOriginalID[k] = base + k;
+        if (!r.name) return;
+        labelRegistry.set(base + k, r.name);
+        if (r.color) labelColors.set(r.name, r.color);
+      });
+      if (run.watertight) {
+        try {
+          return Manifold.ofMesh({ numProp: run.numProp, vertProperties: run.vertProperties, triVerts: run.triVerts, runIndex, runOriginalID });
+        } catch { /* not manifold after all — fall through to render-only */ }
+      }
+      // Render-only: hand out copies (the run is cached, and the result mesh's
+      // buffers are transferred to the main thread).
+      return renderMesh({
+        numProp: run.numProp,
+        vertProperties: run.vertProperties.slice(),
+        triVerts: run.triVerts.slice(),
+      }, { runIndex, runOriginalID });
+    };
+    const imageTile = reliefImageOp('tile');
+    const silhouetteTile = reliefImageOp('silhouette');
+    const steppedRelief = reliefImageOp('steppedRelief');
+    const lithophane = reliefImageOp('lithophane');
+
     // Imported meshes (STL etc.) attached to the active version are exposed as
     // `api.imports[i]` — each entry is shaped to pass straight into
     // `Manifold.ofMesh()`. Metadata (filename/format) is kept off this object
@@ -1037,9 +1081,13 @@ export const manifoldJsEngine: Engine = {
       material,
       image,
       layeredPrint,
+      imageTile,
+      silhouetteTile,
+      steppedRelief,
+      lithophane,
       imports,
       importWithParts,
-      renderMesh,
+      renderMesh: (meshData: unknown) => renderMesh(meshData),
     };
 
     // Catch the common misconception that paint tools can be called

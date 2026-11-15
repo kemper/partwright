@@ -317,11 +317,11 @@ export function checkExpectComponents(stats, expected) {
 
 // Run a model file through the real engine via a throwaway in-process Vite SSR
 // server. Returns the PreviewResult from src/tools/previewModel.ts.
-export async function runPreview(file, { params = {}, lang = 'manifold-js', palette = undefined } = {}) {
+export async function runPreview(file, { params = {}, lang = 'manifold-js', palette = undefined, images = undefined } = {}) {
   const code = readFileSync(file, 'utf8');
   const session = await createPreviewSession();
   try {
-    return await session.preview(code, { params, lang, palette });
+    return await session.preview(code, { params, lang, palette, images });
   } finally {
     await session.close();
   }
@@ -360,8 +360,8 @@ export async function createPreviewSession() {
   installPublicFetchShim();
   const mod = await server.ssrLoadModule('/src/tools/previewModel.ts');
   return {
-    preview: (code, { params = {}, lang = 'manifold-js', palette = undefined } = {}) =>
-      mod.previewModel(code, { params, lang, palette }),
+    preview: (code, { params = {}, lang = 'manifold-js', palette = undefined, images = undefined } = {}) =>
+      mod.previewModel(code, { params, lang, palette, images }),
     /** Load another app TS module through the same SSR server (e.g. the pure
      *  photo-match scorer), so the CLI reuses app code instead of copying it. */
     load: (path) => server.ssrLoadModule(path),
