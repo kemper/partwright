@@ -175,11 +175,23 @@ partwright.getLayeredPrintPlan()        // last run's plan + `instructions` + `s
 partwright.listLayeredPrintFilaments()  // the built-in candidate list
 
 partwright.exportLayeredPrint3MF({ swapMode: 'ams', printer: 'p1s' })
-// Bambu Studio / Orca 3MF: layer height + first layer + 100% infill set to
-// match, and a filament change at each swap layer.
-//   'ams'   — automatic filament changes (one AMS slot per filament)
-//   'pause' — one filament; the printer pauses at each swap for a manual change
+// Layer-swap 3MF (the default, mode: 'layer-swap'): layer height + first layer
+// + 100% infill set to match, and a filament change at each swap layer.
+//   swapMode 'ams'   — automatic filament changes (one AMS slot per filament)
+//   swapMode 'pause' — prints with filament 1; the printer pauses at each swap
+//                      for a manual change (all filaments listed as documentation)
+
+partwright.exportLayeredPrint3MF({ mode: 'painted', slots: 8, paintFilaments: 'library' })
+// Painted 3MF: each region printed in its own filament, coloured like the
+// preview and reduced to `slots` AMS filaments — snapped to real filaments
+// ('library' = built-in list, 'palette' = your palette) or 'exact' preview
+// shades. Needs an AMS; colours are direct (no reliance on TD values), at the
+// cost of many more filament changes than layer swaps.
 ```
+
+The two are different print techniques. Layer swaps use the translucency
+(few swaps, works without an AMS); painted regions print each colour
+directly (often looks closer to the preview when the TDs are only estimates).
 
 - **TD (transmission distance)** follows the HueForge convention: the
   thickness (mm) at which a filament stops letting the colour below show

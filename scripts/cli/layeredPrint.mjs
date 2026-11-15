@@ -78,12 +78,16 @@ export async function runLayeredPrint(photo, opts) {
     const solveMs = Date.now() - t0;
     const out = opts.out ?? photo.replace(/\.[^.]+$/, '') + '-layered-print';
     const name = opts.name ?? 'layered-print';
-    const modes = opts.swap === 'both' ? ['ams', 'pause'] : [opts.swap ?? 'ams'];
+    // --swap ams | pause | painted | both (ams + pause) | all (ams + pause + painted)
+    const modes = opts.swap === 'both' ? ['ams', 'pause'] : opts.swap === 'all' ? ['ams', 'pause', 'painted'] : [opts.swap ?? 'ams'];
     const files = [];
     for (const mode of modes) {
-      const built = exp.buildLayeredPrint3MF(r, { swapMode: mode, printer: opts.printer, nozzle: opts.nozzle, name });
+      const exportOpts = mode === 'painted'
+        ? { mode: 'painted', slots: opts.slots ? Number(opts.slots) : undefined, paintFilaments: opts.paint === 'exact' ? 'exact' : undefined }
+        : { mode: 'layer-swap', swapMode: mode };
+      const res = exp.buildLayeredPrint3MF(r, { ...exportOpts, printer: opts.printer, nozzle: opts.nozzle, name });
       const path = modes.length > 1 ? `${out}.${mode}.3mf` : `${out}.3mf`;
-      writeFileSync(path, Buffer.from(await built.blob.arrayBuffer()));
+      writeFileSync(path, Buffer.from(await res.built.blob.arrayBuffer()));
       files.push(path);
     }
     await writePreview(`${out}.preview.png`, r);

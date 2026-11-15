@@ -215,7 +215,7 @@ import {
 import { meshBounds } from './color/slabPaint';
 import { openReliefImportModal, type ReliefStagedOptions } from './ui/reliefImportModal';
 import { solveLayeredPrintAsync } from './relief/layeredPrint/layeredPrintClient';
-import { layeredPrintMeshData, buildPlan3MF } from './relief/layeredPrint/export3mf';
+import { layeredPrintMeshData, buildPlan3MF, type LayeredExportMode } from './relief/layeredPrint/export3mf';
 import { layeredPrintRecord, layeredPrintZRegions, planSwaps, planSwapText } from './relief/layeredPrint/plan';
 import { layeredPrintCode, planToScheduleOption } from './relief/layeredPrint/sandboxApi';
 import { setModelImageProvider, hashImagePixels, type ModelImage } from './geometry/modelImages';
@@ -4769,6 +4769,23 @@ async function main() {
     return { sessionId: session.id };
   }
 
+  /** Options for a layered-print 3MF, from the API, the palette or the dialog. */
+  type LayeredExportArgs = { mode?: LayeredExportMode; swapMode?: 'ams' | 'pause'; slots?: number; paintFilaments?: 'library' | 'palette' | 'exact'; printer?: string; nozzle?: string; filename?: string };
+
+  /** The single layered-print export path: build the 3MF for `plan` on
+   *  `mesh` and download it. Painted mode snaps to the built-in filament list,
+   *  the user's palette, or keeps the exact predicted shades. */
+  function downloadLayeredPrint3MF(plan: LayeredPrintPlanRecord, mesh: MeshData, args: LayeredExportArgs) {
+    const source = args.paintFilaments ?? 'library';
+    const paintFilaments = source === 'exact' ? 'exact' as const
+      : source === 'palette' ? listFilaments().map((f) => ({ name: f.name, hex: f.hex, td: f.td }))
+        : undefined;
+    if (Array.isArray(paintFilaments) && paintFilaments.length === 0) throw new Error('your palette has no filaments — add some, or use paintFilaments: "library"');
+    const out = buildPlan3MF(plan, mesh, { mode: args.mode, swapMode: args.swapMode, slots: args.slots, paintFilaments, printer: args.printer, nozzle: args.nozzle, name: args.filename ?? 'layered-print' });
+    downloadBlob(out.built.blob, out.built.filename, '3MF');
+    return { filename: out.built.filename, bytes: out.built.blob.size, mode: out.mode, ...(out.mode === 'layer-swap' ? { swapMode: args.swapMode ?? 'ams' } : {}), filaments: out.filaments, swaps: out.swaps };
+  }
+
   function openLayeredPrintDialog(initialSrc?: string): void {
     openLayeredPrintModal({
       initialSrc,
@@ -4778,9 +4795,8 @@ async function main() {
         await createLayeredPrintSession(photoDataUrl, result, name);
         showToast(`Layered print created — ${result.blocks.length} filaments, ${result.swaps.length} swaps`, { variant: 'success', source: 'import' });
       },
-      onDownload: (result, swapMode, printer) => {
-        const built = buildPlan3MF(layeredPrintRecord(result), layeredPrintMeshData(result), { swapMode, printer, name: 'layered-print' });
-        downloadBlob(built.blob, built.filename, '3MF');
+      onDownload: (result, exportArgs) => {
+        downloadLayeredPrint3MF(layeredPrintRecord(result), layeredPrintMeshData(result), exportArgs);
       },
     });
   }
@@ -10571,6 +10587,7 @@ async function main() {
     { id: 'export-3mf', title: 'Export 3MF', hint: 'Export', keywords: 'download print color', run: actionExport3MF, enabled: () => currentMeshData !== null },
     { id: 'layered-print-create', title: 'Photo → layered filament print…', hint: 'Create', keywords: 'hueforge-style filament layering lithophane photo portrait swap color change translucent td', run: () => openLayeredPrintDialog() },
     { id: 'export-layered-print-3mf', title: 'Export layered print 3MF (filament swaps, AMS)', hint: 'Export', keywords: 'hueforge-style bambu orca layer swap color change ams filament', run: () => { const r = partwrightAPI.exportLayeredPrint3MF({ swapMode: 'ams' }) as { error?: string }; if (r?.error) showToast(r.error, { variant: 'warn', source: 'export' }); }, enabled: () => currentLayeredPrintPlan() !== null },
+    { id: 'export-layered-print-3mf-painted', title: 'Export layered print 3MF (painted regions, AMS)', hint: 'Export', keywords: 'hueforge-style bambu orca painted ams colour regions filament slots', run: () => { const r = partwrightAPI.exportLayeredPrint3MF({ mode: 'painted' }) as { error?: string }; if (r?.error) showToast(r.error, { variant: 'warn', source: 'export' }); }, enabled: () => currentLayeredPrintPlan() !== null },
     { id: 'export-layered-print-3mf-pause', title: 'Export layered print 3MF (manual swaps, pauses)', hint: 'Export', keywords: 'hueforge-style bambu orca layer swap pause manual filament', run: () => { const r = partwrightAPI.exportLayeredPrint3MF({ swapMode: 'pause' }) as { error?: string }; if (r?.error) showToast(r.error, { variant: 'warn', source: 'export' }); }, enabled: () => currentLayeredPrintPlan() !== null },
     { id: 'export-3mf-bambu', title: 'Export 3MF — Bambu/Orca (multi-plate)', hint: 'Export', keywords: 'download print color bambu orca plate objects parts multi-object multi-part filament ams', run: actionExport3MFBambu, enabled: () => currentMeshData !== null },
     // VOX exports the voxel grid (getCurrentVoxelGrid), not currentMeshData, so
@@ -17768,11 +17785,16 @@ async function main() {
     /** Download the current layered print as a Bambu Studio / Orca 3MF with
      *  filament changes at the swap layers. swapMode 'ams' = automatic tool
      *  changes; 'pause' = the printer pauses for a manual swap. */
-    exportLayeredPrint3MF(args: { swapMode?: 'ams' | 'pause'; printer?: string; nozzle?: string; filename?: string } = {}): unknown {
+    exportLayeredPrint3MF(args: { mode?: LayeredExportMode; swapMode?: 'ams' | 'pause'; slots?: number; paintFilaments?: 'library' | 'palette' | 'exact'; printer?: string; nozzle?: string; filename?: string } = {}): unknown {
       const checked = guard(() => {
         assertObject(args, 'exportLayeredPrint3MF(args)', { optional: true });
-        assertNoUnknownKeys((args ?? {}) as Record<string, unknown>, ['swapMode', 'printer', 'nozzle', 'filename'], 'exportLayeredPrint3MF(args)');
+        assertNoUnknownKeys((args ?? {}) as Record<string, unknown>, ['mode', 'swapMode', 'slots', 'paintFilaments', 'printer', 'nozzle', 'filename'], 'exportLayeredPrint3MF(args)');
+        if (args?.mode !== undefined) assertEnum(args.mode, ['layer-swap', 'painted'], 'exportLayeredPrint3MF(mode)');
         if (args?.swapMode !== undefined) assertEnum(args.swapMode, ['ams', 'pause'], 'exportLayeredPrint3MF(swapMode)');
+        assertNumber(args?.slots, 'exportLayeredPrint3MF(slots)', { optional: true, integer: true, min: 1, max: 16 });
+        if (args?.paintFilaments !== undefined) assertEnum(args.paintFilaments, ['library', 'palette', 'exact'], 'exportLayeredPrint3MF(paintFilaments)');
+        if (args?.mode !== 'painted' && (args?.slots !== undefined || args?.paintFilaments !== undefined)) throw new ValidationError("exportLayeredPrint3MF: slots / paintFilaments only apply to mode: 'painted'");
+        if (args?.mode === 'painted' && args?.swapMode !== undefined) throw new ValidationError("exportLayeredPrint3MF: swapMode only applies to mode: 'layer-swap'");
         if (args?.printer !== undefined && !isBambuPrinter(args.printer)) throw new ValidationError(`exportLayeredPrint3MF(printer) must be one of ${BAMBU_PRINTERS.map((p) => p.id).join(', ')}`);
         if (args?.nozzle !== undefined && !isBambuNozzle(args.nozzle)) throw new ValidationError(`exportLayeredPrint3MF(nozzle) must be one of ${BAMBU_NOZZLES.join(', ')}`);
         assertString(args?.filename, 'exportLayeredPrint3MF(filename)', { optional: true });
@@ -17782,9 +17804,10 @@ async function main() {
       const plan = currentLayeredPrintPlan();
       if (!plan || !currentMeshData) return { error: 'exportLayeredPrint3MF: the current model has no api.layeredPrint(...) — create one with createLayeredPrint({src}), or run the model if it does.' };
       try {
-        const built = buildPlan3MF(plan, currentMeshData, { swapMode: args?.swapMode ?? 'ams', printer: args?.printer, nozzle: args?.nozzle, name: args?.filename ?? 'layered-print' });
-        downloadBlob(built.blob, built.filename, '3MF');
-        return { filename: built.filename, bytes: built.blob.size, swapMode: args?.swapMode ?? 'ams', filaments: plan.blocks.length, swaps: plan.blocks.length - 1 };
+        // Painted mode uses what the viewport shows (height colours + any
+        // labels/paint); layer-swap mode drops the colours.
+        const mesh = args?.mode === 'painted' ? coloredMeshForExport(currentMeshData) : currentMeshData;
+        return downloadLayeredPrint3MF(plan, mesh, args ?? {});
       } catch (e) {
         return { error: `exportLayeredPrint3MF failed: ${e instanceof Error ? e.message : String(e)}` };
       }
@@ -24557,7 +24580,7 @@ async function main() {
         'createLayeredPrint': { signature: "await createLayeredPrint({src, colors?: 8, widthMm?: 120, maxHeightMm?: 2.4, baseHeightMm?, layerHeight?: 0.08, firstLayerHeight?: 0.16, pixelSizeMm?: 0.3, filaments?: [{name, hex, td}], baseFilament?, chromaWeight?, smoothing?, effort?, seed?, name?}) -- HueForge-style filament-layering print from a photo: picks filaments + swap layers + per-pixel heights, opens a new session -> {sessionId, blocks, swaps, meanDeltaE, ...} or {error}", docs: '/ai/relief.md#layered-photo-prints' },
         'getLayeredPrintPlan': { signature: 'getLayeredPrintPlan() -- The current layered print: filaments, swap layers/heights, instructions text -> plan or {error}', docs: '/ai/relief.md#layered-photo-prints' },
         'listLayeredPrintFilaments': { signature: 'listLayeredPrintFilaments() -- Built-in filament list (name, hex, TD mm) createLayeredPrint chooses from', docs: '/ai/relief.md#layered-photo-prints' },
-        'exportLayeredPrint3MF': { signature: "exportLayeredPrint3MF({swapMode?: 'ams'|'pause', printer?, nozzle?, filename?}) -- Download the layered print as a Bambu/Orca 3MF with filament changes at the swap layers -> {filename, bytes} or {error}", docs: '/ai/relief.md#layered-photo-prints' },
+        'exportLayeredPrint3MF': { signature: "exportLayeredPrint3MF({mode?: 'layer-swap'|'painted', swapMode?: 'ams'|'pause', slots?: 1..16, paintFilaments?: 'library'|'palette'|'exact', printer?, nozzle?, filename?}) -- Download the layered print as a Bambu/Orca 3MF: filament changes at the swap layers, or painted regions reduced to AMS slots -> {filename, bytes, mode, filaments, swaps} or {error}", docs: '/ai/relief.md#layered-photo-prints' },
         'openLayeredPrintDialog': { signature: 'openLayeredPrintDialog(src?) -- Open the layered-print dialog (photo → filament-layering print) for the user', docs: '/ai/relief.md#layered-photo-prints' },
         'getReliefSwapGuide': { signature: 'getReliefSwapGuide() -- Single-nozzle filament-swap guide (layer heights to pause and swap) for the current relief, or {error}', docs: '/ai/relief.md#read-the-swap-guide' },
         'setReliefPreviewMode': { signature: "setReliefPreviewMode('flat'|'ams'|'single-nozzle') -- Relief optical preview mode (relief sessions only) -> {ok: true} or {error}", docs: '/ai/relief.md#see-it-like-a-print' },

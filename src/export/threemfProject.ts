@@ -464,8 +464,9 @@ export interface LayerSwapPlan {
   layerHeight: number;
   firstLayerHeight: number;
   /** `'ams'` — automatic filament change (ToolChange) at each swap; needs one AMS
-   *  slot per filament. `'pause'` — single filament, the printer pauses at each
-   *  swap so you change filament by hand (Bambu Studio's "Add pause"). */
+   *  slot per filament. `'pause'` — the model prints with filament 1 and the
+   *  printer pauses at each swap so you change filament by hand (Bambu Studio's
+   *  "Add pause"); every filament is still listed, as documentation. */
   swapMode: 'ams' | 'pause';
   /** Sparse infill density, e.g. "100%" (HueForge prints want solid layers). */
   infillDensity?: string;
@@ -660,7 +661,9 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
     bambuFilamentColors = palette.map(toBambuHex);
   }
   if (plan) {
-    bambuFilamentColors = plan.swapMode === 'ams' ? plan.filamentColors.map(toBambuHex) : [toBambuHex(plan.filamentColors[0])];
+    // Pause mode lists every filament too: only filament 1 prints (the swaps
+    // are manual), but the project's filament list then documents the plan.
+    bambuFilamentColors = plan.filamentColors.map(toBambuHex);
   }
 
   // ── Per-part geometry + colour ──────────────────────────────────────────

@@ -109,6 +109,17 @@ test.describe('Layered print from photo', () => {
     const dl = await download;
     expect(dl.suggestedFilename()).toMatch(/\.3mf$/);
     expect(exp.swaps).toBe(res.framedPlan.blocks.length - 1);
+
+    // Painted (AMS) mode from the same export path: colours reduced to the slot cap.
+    const download2 = page.waitForEvent('download');
+    const painted = await page.evaluate(() => (window as any).partwright.exportLayeredPrint3MF({ mode: 'painted', slots: 4 }));
+    expect(painted.error).toBeUndefined();
+    await download2;
+    expect(painted.mode).toBe('painted');
+    expect(painted.filaments.length).toBeGreaterThan(0);
+    expect(painted.filaments.length).toBeLessThanOrEqual(4);
+    const bad = await page.evaluate(() => (window as any).partwright.exportLayeredPrint3MF({ mode: 'layer-swap', slots: 4 }));
+    expect(bad.error).toMatch(/painted/);
   });
 
   test('dialog previews the predicted print and opens it in the editor', async ({ page }) => {
@@ -122,6 +133,8 @@ test.describe('Layered print from photo', () => {
     await expect(dialog.getByTestId('layered-print-status')).toHaveText(/predicted print/, { timeout: 90_000 });
     await expect(dialog.getByTestId('layered-print-preview')).toBeVisible();
     await expect(dialog.getByTestId('layered-print-stack')).toContainText('Start:');
+    await dialog.getByLabel('Export as').selectOption('painted');
+    await expect(dialog.getByLabel('AMS slots')).toBeVisible();
     await page.screenshot({ path: 'test-results/layered-print-dialog.png' });
 
     await dialog.getByRole('button', { name: 'Open in editor' }).click();

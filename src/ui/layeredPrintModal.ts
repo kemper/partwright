@@ -9,7 +9,7 @@ import { createModalShell } from './modalShell';
 import { BUTTON_PRIMARY, BUTTON_SECONDARY, BUTTON_CANCEL } from './styleConstants';
 import { BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER } from '../export/threemfProject';
 import type { LayeredPrintOptions, LayeredPrintResult, RgbaImage } from '../relief/layeredPrint/solver';
-import type { LayeredPrintSwapMode } from '../relief/layeredPrint/export3mf';
+import type { LayeredExportMode } from '../relief/layeredPrint/export3mf';
 
 export interface LayeredPrintModalOptions {
   /** Image URL (data: / blob: / http) to preload. */
@@ -19,7 +19,8 @@ export interface LayeredPrintModalOptions {
   solve: (image: RgbaImage, options: Partial<LayeredPrintOptions>, signal: AbortSignal) => Promise<LayeredPrintResult>;
   /** Open the solved print as a new code session with the photo attached. */
   onCreate: (result: LayeredPrintResult, name: string, photoDataUrl: string) => Promise<void>;
-  onDownload: (result: LayeredPrintResult, swapMode: LayeredPrintSwapMode, printer: string) => void;
+  /** Download a 3MF for the solve (the same export path as the editor's). */
+  onDownload: (result: LayeredPrintResult, args: { mode: LayeredExportMode; swapMode?: 'ams' | 'pause'; slots?: number; paintFilaments?: 'library' | 'palette' | 'exact'; printer: string }) => void;
 }
 
 function numberField(label: string, value: number, min: number, max: number, step: number, hint: string): { row: HTMLElement; input: HTMLInputElement } {
@@ -91,10 +92,27 @@ export function openLayeredPrintModal(opts: LayeredPrintModalOptions): void {
   const colors = numberField('Colours (max)', 8, 1, 16, 1, 'Maximum number of filaments. Swaps that barely change the result are dropped.');
   const width = numberField('Width (mm)', 120, 20, 400, 5, 'Printed width; depth follows the photo.');
   const height = numberField('Max height (mm)', 2.4, 0.6, 6, 0.08, 'Tallest point. More height gives each filament more shades (and prints longer).');
-  const swap = selectField('Swaps', [['ams', 'AMS (automatic)'], ['pause', 'Manual (pauses)']], 'ams', 'AMS: the 3MF changes filament automatically (one AMS slot per filament). Manual: the printer pauses at each swap.');
+  const swap = selectField('Export as', [
+    ['ams', 'Layer swaps (AMS)'],
+    ['pause', 'Layer swaps (manual pauses)'],
+    ['painted', 'Painted regions (AMS)'],
+  ], 'ams', 'Layer swaps: the filament changes at chosen heights and thin translucent layers blend (AMS changes automatically; manual pauses for you to swap). Painted: each region prints in its own filament, coloured like the preview — needs an AMS, more filament changes, but colours don\'t depend on translucency.');
   const printer = selectField('Printer', BAMBU_PRINTERS.map((p) => [p.id, p.label]), DEFAULT_BAMBU_PRINTER, 'Bambu printer profile for the 3MF.');
   grid.append(colors.row, width.row, height.row, swap.row, printer.row);
   shell.body.appendChild(grid);
+
+  // Painted-mode options (shown only for "Painted regions").
+  const paintedRow = document.createElement('div');
+  paintedRow.className = 'grid grid-cols-2 sm:grid-cols-5 gap-2 hidden';
+  const slots = numberField('AMS slots', 8, 1, 16, 1, 'How many filaments the painted 3MF may use. The preview colours are reduced to this many.');
+  const paintSource = selectField('Painted colours', [
+    ['library', 'Nearest real filaments'],
+    ['palette', 'My palette'],
+    ['exact', 'Exact preview shades'],
+  ], 'library', 'Snap the colours to filaments that exist (the built-in list, or your palette), or keep the exact preview shades (you would need filaments in those colours).');
+  paintedRow.append(slots.row, paintSource.row);
+  shell.body.appendChild(paintedRow);
+  swap.select.addEventListener('change', () => paintedRow.classList.toggle('hidden', swap.select.value !== 'painted'));
 
   const status = document.createElement('p');
   status.className = 'text-[12px] text-zinc-400 min-h-[1.25rem]';
@@ -216,7 +234,13 @@ export function openLayeredPrintModal(opts: LayeredPrintModalOptions): void {
 
   fileInput.addEventListener('change', () => { const f = fileInput.files?.[0]; if (f) void load(f); });
   solveBtn.addEventListener('click', () => { void runSolve(); });
-  downloadBtn.addEventListener('click', () => { if (result) opts.onDownload(result, swap.select.value as LayeredPrintSwapMode, printer.select.value); });
+  downloadBtn.addEventListener('click', () => {
+    if (!result) return;
+    const v = swap.select.value;
+    opts.onDownload(result, v === 'painted'
+      ? { mode: 'painted', slots: Math.round(readNum(slots.input, 8)), paintFilaments: paintSource.select.value as 'library' | 'palette' | 'exact', printer: printer.select.value }
+      : { mode: 'layer-swap', swapMode: v as 'ams' | 'pause', printer: printer.select.value });
+  });
   createBtn.addEventListener('click', async () => {
     if (!result) return;
     syncButtons(true);

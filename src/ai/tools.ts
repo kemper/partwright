@@ -2556,11 +2556,14 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: 'exportLayeredPrint3MF',
-    description: "Download the current layered print as a Bambu Studio / Orca 3MF with the filament changes built in (layer height, first layer and 100% infill set to match). REQUIRES USER CONFIRMATION. swapMode 'ams' (default) = automatic filament changes, one AMS slot per filament; 'pause' = the printer pauses at each swap for a manual change.",
+    description: "Download the current layered print as a Bambu Studio / Orca 3MF. REQUIRES USER CONFIRMATION. mode 'layer-swap' (default) = the HueForge technique: filament changes at layer heights (layer height, first layer and 100% infill set to match); swapMode 'ams' (default) = automatic changes, one AMS slot per filament, 'pause' = the printer pauses for a manual swap. mode 'painted' = each region printed in its own filament, coloured like the preview and reduced to `slots` AMS filaments (default 8) — snapped to real filaments (paintFilaments 'library' default, or the user's 'palette') or kept as 'exact' preview shades; needs an AMS, colours don't depend on translucency.",
     input_schema: {
       type: 'object',
       properties: {
-        swapMode: { type: 'string', enum: ['ams', 'pause'] },
+        mode: { type: 'string', enum: ['layer-swap', 'painted'] },
+        swapMode: { type: 'string', enum: ['ams', 'pause'], description: "layer-swap only." },
+        slots: { type: 'integer', minimum: 1, maximum: 16, description: 'painted only: number of AMS filaments.' },
+        paintFilaments: { type: 'string', enum: ['library', 'palette', 'exact'], description: 'painted only: what the colours snap to.' },
         printer: { type: 'string', description: 'Bambu printer id (e.g. p1s, x1c, a1, h2d). Default h2c.' },
         nozzle: { type: 'string', enum: ['0.2', '0.4', '0.6', '0.8'] },
         filename: { type: 'string' },
@@ -3244,7 +3247,7 @@ export function describeToolConfirmation(name: string, input: Record<string, unk
   if (name === 'importImageAsRelief') return 'import an image as a 3D relief';
   if (name === 'importSvgAsRelief') return 'import an SVG as a 3D relief tile';
   if (name === 'createLayeredPrint') return `turn ${typeof input.imageRef === 'number' ? `reference image ${input.imageRef}` : 'an image'} into a HueForge-style filament-layering print (new session)`;
-  if (name === 'exportLayeredPrint3MF') return `download the layered print as a 3MF (${input.swapMode === 'pause' ? 'manual swaps' : 'AMS filament changes'})`;
+  if (name === 'exportLayeredPrint3MF') return `download the layered print as a 3MF (${input.mode === 'painted' ? `painted regions, ${typeof input.slots === 'number' ? input.slots : 8} AMS filaments` : input.swapMode === 'pause' ? 'layer swaps, manual pauses' : 'layer swaps, AMS filament changes'})`;
   if (name === 'setAppConfig') return `change the setting ${String(input.setting)} to ${String(input.value)} (saved for this browser)`;
   if (name === 'exportModel') return describeExport(input);
   if (name === 'importImageAsVoxels') {

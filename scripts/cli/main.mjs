@@ -305,7 +305,7 @@ async function cmdLayeredPrint(argv) {
     colors: a.colors, width: a.width, pixel: a.pixel, layer: a.layer, first: a.first,
     maxHeight: a['max-height'], base: a.base, filamentsFile: a.filaments, baseFilament: a['base-filament'],
     chroma: a.chroma, smoothing: a.smoothing, denoise: a.denoise, iterations: a.iterations, seed: a.seed,
-    swap: a.swap, printer: a.printer, nozzle: a.nozzle, out: a.out ? resolve(a.out) : undefined, name: a.name,
+    swap: a.swap, slots: a.slots, paint: a.paint, printer: a.printer, nozzle: a.nozzle, out: a.out ? resolve(a.out) : undefined, name: a.name,
   });
   console.log(json({ ok: true, ...out }));
 }
@@ -337,7 +337,8 @@ Phase 1 (stateless, no browser — fast inner loop):
                                [--smooth radius] [--png out] [--views …] [--size N] [--json]
                                detect named parts → colour-coded PNG + quality JSON
   partwright layered-print <photo>  [--colors 8] [--width 120] [--max-height 2.4] [--base 0.48]
-                               [--layer 0.08] [--first 0.16] [--pixel 0.3] [--swap ams|pause|both]
+                               [--layer 0.08] [--first 0.16] [--pixel 0.3] [--swap ams|pause|painted|both|all]
+                               [--slots 8] [--paint library|exact]  (painted: AMS filaments, colour source)
                                [--filaments my-spools.json] [--base-filament Black] [--chroma 1]
                                [--smoothing 1.2] [--printer p1s] [--out stem]
                                photo → HueForge-style filament-layering print: 3MF with

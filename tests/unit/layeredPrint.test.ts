@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { computeLadder, layerTop, layerBottom, layerCountFor, rgb01ToLab } from '../../src/relief/layeredPrint/optics';
 import { solveLayeredPrint, resolveLayeredPrintOptions, layeredPrintSummary } from '../../src/relief/layeredPrint/solver';
 import { buildHeightfieldMesh } from '../../src/relief/layeredPrint/mesh';
-import { layeredPrintLayerPlan, layeredPrintMeshData } from '../../src/relief/layeredPrint/export3mf';
+import { layeredPrintLayerPlan, layeredPrintMeshData, buildLayeredPrint3MF } from '../../src/relief/layeredPrint/export3mf';
+import { snapTriColorsToFilaments } from '../../src/relief/layeredPrint/paintedExport';
 import { layeredPrintRecord, layeredPrintZRegions, planSwapText } from '../../src/relief/layeredPrint/plan';
 import { parseLayeredPrintOptions, layeredPrintCode, planToScheduleOption } from '../../src/relief/layeredPrint/sandboxApi';
 import { sourceImageRefs, hashImagePixels } from '../../src/geometry/modelImages';
@@ -203,5 +204,46 @@ describe('code-native layered print', () => {
     // Lifting the mesh doesn't change the colouring (measured from its bottom).
     const lifted = { ...mesh, vertProperties: mesh.vertProperties.map((v, i) => (i % 3 === 2 ? v + 5 : v)) };
     expect(layeredPrintZRegions(lifted, layeredPrintRecord(r)).map((g) => g.name).sort()).toEqual(regions.map((g) => g.name).sort());
+  });
+});
+
+describe('painted (AMS) export', () => {
+  // Three shades: 50% dark grey, 30% orange-ish, 20% near white.
+  const numTri = 10;
+  const tri = new Uint8Array(numTri * 3);
+  const put = (t: number, rgb: [number, number, number]) => { tri[t * 3] = rgb[0]; tri[t * 3 + 1] = rgb[1]; tri[t * 3 + 2] = rgb[2]; };
+  for (let t = 0; t < 5; t++) put(t, [40, 40, 42]);
+  for (let t = 5; t < 8; t++) put(t, [240, 110, 30]);
+  for (let t = 8; t < 10; t++) put(t, [250, 250, 248]);
+
+  it('snaps shades to the nearest real filaments within the slot cap', () => {
+    const lib = [BLACK, WHITE, RED, { name: 'Orange', hex: '#f26a1b', td: 3 }];
+    const s = snapTriColorsToFilaments(tri, numTri, 3, lib);
+    expect(s.filaments.map((f) => f.name).sort()).toEqual(['Black', 'Orange', 'White']);
+    expect(s.filaments[0].share).toBeCloseTo(0.5);
+    // Every triangle is marked painted (a pure-black filament must not read as unpainted).
+    expect((s.triColors as Uint8Array & { _painted?: Uint8Array })._painted?.every((v) => v === 1)).toBe(true);
+    // Fewer slots than shades: the light shades merge, dark stays.
+    const two = snapTriColorsToFilaments(tri, numTri, 2, lib);
+    expect(two.filaments).toHaveLength(2);
+  });
+
+  it("'exact' keeps the preview shades (k-means when over the cap)", () => {
+    const s = snapTriColorsToFilaments(tri, numTri, 3, 'exact');
+    expect(s.filaments.map((f) => f.hex).sort()).toEqual(['#28282a', '#f06e1e', '#fafaf8']);
+    expect(snapTriColorsToFilaments(tri, numTri, 2, 'exact').filaments).toHaveLength(2);
+  });
+
+  it('a layered plan exports painted or layer-swap from one path', () => {
+    const img = rgba(40, 10, (x) => { const v = Math.round((x / 39) * 255); return [v, v, v]; });
+    const r = solveLayeredPrint(img, { numColors: 2, widthMm: 20, pixelSizeMm: 1, filaments: [BLACK, WHITE], iterations: 500 });
+    const painted = buildLayeredPrint3MF(r, { mode: 'painted', slots: 4 });
+    expect(painted.mode).toBe('painted');
+    expect(painted.swaps).toBe(0);
+    expect(painted.filaments.length).toBeGreaterThan(0);
+    expect(painted.filaments.length).toBeLessThanOrEqual(4);
+    const swap = buildLayeredPrint3MF(r, { mode: 'layer-swap', swapMode: 'pause' });
+    expect(swap.swaps).toBe(r.blocks.length - 1);
+    expect(swap.filaments.map((f) => f.name)).toEqual(r.blocks.map((b) => b.filament.name));
   });
 });
