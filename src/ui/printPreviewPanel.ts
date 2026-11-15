@@ -16,6 +16,7 @@ import { viewportInspectMount } from './popoverMenu';
 import { createSliderEntry, type SliderEntry } from './sliderEntry';
 import { BUTTON_SMALL_PRIMARY, BUTTON_SMALL_SECONDARY } from './styleConstants';
 import { showToast } from './toast';
+import { DEFAULT_LAYER_BASE_COLOR } from '../print/layerColors';
 
 export interface PrintPreviewChange { z: number; color: string }
 
@@ -48,6 +49,8 @@ export interface PrintPreviewHandlers {
   setView(opts: { enabled?: boolean; layer?: number | null; blend?: boolean }): PrintPreviewView | { error: string };
   /** Preview these changes without touching the code; null goes back to the code's own. */
   setDraft(changes: PrintPreviewChange[] | null): void;
+  /** False once the draft was dropped because another object or session came on screen. */
+  hasDraft(): boolean;
   apply(changes: PrintPreviewChange[]): Promise<{ ok: true } | { error: string }>;
   clear(): Promise<{ ok: true } | { error: string }>;
   /** Register a callback for "the model re-ran or the preview changed". */
@@ -77,6 +80,17 @@ function closePanel(): void {
   shell?.close();
 }
 
+/** Open the panel (a no-op when it is open, or before the UI exists). The
+ *  preview and the panel always go together: `setPrintPreview({ enabled })`
+ *  calls these, so a preview turned on by a script is visible and closable. */
+export function openPrintPreviewPanel(): void {
+  openPanel();
+}
+
+export function closePrintPreviewPanel(): void {
+  closePanel();
+}
+
 function openPanel(): void {
   if (!handlers || shell) return;
   const h: PrintPreviewHandlers = handlers;
@@ -94,11 +108,12 @@ function openPanel(): void {
     title: 'Print preview',
     width: 'w-[22rem]',
     onClose: () => {
+      // Cleared first: turning the preview off below asks for the panel to be closed.
+      shell = null;
       if (raf) cancelAnimationFrame(raf);
       h.onChange(null);
       h.setDraft(null);
       h.setView({ enabled: false, layer: null });
-      shell = null;
       syncToggle();
     },
   });
@@ -161,7 +176,7 @@ function openPanel(): void {
     const info = h.getLayerColors();
     const base = info.changes.find((c) => c.z <= info.firstLayerHeight / 2);
     const later = info.changes.filter((c) => c.z > info.firstLayerHeight / 2);
-    draft = [{ z: 0, color: base?.color ?? '#d9d9d9' }, ...later.map((c) => ({ z: c.z, color: c.color }))];
+    draft = [{ z: 0, color: base?.color ?? DEFAULT_LAYER_BASE_COLOR }, ...later.map((c) => ({ z: c.z, color: c.color }))];
     dirty = false;
   }
 
@@ -312,6 +327,8 @@ function openPanel(): void {
   // The model re-ran (or an agent changed the preview): pick up the code's colours unless the user is mid-edit.
   h.onChange(() => {
     if (shell !== panelShell || busy) return;
+    // Another object or session came on screen: the unsaved edits were for the one that left.
+    if (dirty && !h.hasDraft()) dirty = false;
     if (!dirty) loadDraftFromCode();
     render();
   });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildLayerPreviewMesh } from '../../src/print/layerPreviewMesh';
+import { buildLayerPreviewMesh, cutBandMesh, splitMeshByBands } from '../../src/print/layerPreviewMesh';
 import { resolveLayerBands } from '../../src/print/layerColors';
 import type { MeshData } from '../../src/geometry/types';
 
@@ -152,6 +152,61 @@ describe('buildLayerPreviewMesh', () => {
     expect(grey).toBeLessThan(120);
     // Side walls of the white layer are unaffected (true black is stored as 1,1,1 so it stays visible).
     expect(new Set(mixed.filter((t) => Math.abs(t.nz) < 0.5).map((t) => t.hex))).toEqual(new Set(['#ffffff', '#010101']));
+  });
+
+  it('caps the whole section when the cut lands exactly on a step', () => {
+    // A 20 x 20 x 5 slab with a 10 x 10 x 10 tower on it, cut at the top of the slab.
+    // The slab's top face and the foot of the tower both lie exactly in the cut.
+    const stepped = meshOf(box([0, 0, 0], [20, 20, 5]), box([5, 5, 5], [15, 15, 15]));
+    const r = buildLayerPreviewMesh(stepped, { bands: resolveLayerBands(WHITE, [{ z: 5, color: RED }], 15, P), profile: P, cutZ: 5 });
+    expect(r.cutZ).toBeCloseTo(5, 6);
+    expect(r.capped).toBe(true);
+    const ts = trisOf(r.mesh);
+    // Everything at the cut faces up and covers the full 20 x 20 section: no hole under the tower.
+    const top = ts.filter((t) => t.z.every((z) => Math.abs(z - 5) < 1e-5));
+    expect(top.every((t) => t.nz > 0.5)).toBe(true);
+    expect(areaWhere(top, () => true)).toBeCloseTo(400, 3);
+    // Nothing above the cut, and the slab's walls are whole.
+    expect(Math.max(...ts.flatMap((t) => t.z))).toBeCloseTo(5, 5);
+    expect(areaWhere(ts, (t) => Math.abs(t.nz) < 0.5)).toBeCloseTo(80 * 5, 3);
+    // The top of the print so far is the layer below the change: white.
+    expect(new Set(top.map((t) => t.hex))).toEqual(new Set([WHITE]));
+  });
+
+  it('caps the outlines that close even when another one is open', () => {
+    // Two separate cubes; one has lost a side triangle.
+    const good = box([0, 0, 0], [10, 10, 10]);
+    const broken = box([20, 0, 0], [30, 10, 10]);
+    broken.tris = broken.tris.slice(0, 33);
+    const r = buildLayerPreviewMesh(meshOf(good, broken), { bands: resolveLayerBands(WHITE, [], 10, P), profile: P, cutZ: 5 });
+    expect(r.capped).toBe(false);
+    const cap = trisOf(r.mesh).filter((t) => t.nz > 0.5 && t.z.every((z) => Math.abs(z - 5) < 1e-5));
+    expect(areaWhere(cap, (t) => t.cx < 10)).toBeCloseTo(100, 4);
+  });
+
+  it('the band split is reusable: cutting it at several heights matches a fresh build', () => {
+    const split = splitMeshByBands(cube, { bands, profile: P });
+    for (const cutZ of [0.1, 3.3, 4, 7.95, 9.7]) {
+      const fresh = buildLayerPreviewMesh(cube, { bands, profile: P, cutZ });
+      const reused = cutBandMesh(split, cutZ);
+      expect(reused.cutZ).toBe(fresh.cutZ);
+      expect(reused.shownLayers).toBe(fresh.shownLayers);
+      expect(Array.from(reused.mesh.vertProperties)).toEqual(Array.from(fresh.mesh.vertProperties));
+      expect(Array.from(reused.mesh.triColors!)).toEqual(Array.from(fresh.mesh.triColors!));
+    }
+    // The split itself is untouched by cutting.
+    expect(cutBandMesh(split).mesh.numTri).toBe(split.numTri);
+  });
+
+  it('with blending, the cap shows the estimated colour of the top layer so far', () => {
+    const thin = resolveLayerBands('#000000', [{ z: 5, color: '#ffffff' }], 10, P);
+    const blend = { transmissionOf: (c: string) => (c === '#ffffff' ? 2 : 0.1), maxLayers: 12, minUpNormal: 0.5 };
+    // One white layer printed on the black so far: a dark grey, not white.
+    const r = buildLayerPreviewMesh(cube, { bands: thin, profile: P, blend, cutZ: 5.1 });
+    const cap = trisOf(r.mesh).filter((t) => t.nz > 0.5);
+    const grey = parseInt(cap[0].hex.slice(1, 3), 16);
+    expect(grey).toBeGreaterThan(20);
+    expect(grey).toBeLessThan(120);
   });
 
   it('handles an empty mesh', () => {

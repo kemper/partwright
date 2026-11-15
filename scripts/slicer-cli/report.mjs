@@ -187,20 +187,26 @@ export function buildChecks(file, slicer, expect = {}, context = {}) {
     add('object-sizes', sizeProblems.length === 0, sizeProblems.length === 0 ? `all ${file.objects.length} object(s) agree within ${SIZE_TOLERANCE_MM} mm` : sizeProblems.join('; '));
     add('objects-on-bed', offBed.length === 0, offBed.length === 0 ? 'every object sits on z = 0' : offBed.join('; '));
 
-    // Filaments the file asks for: every painted slot, plus the slots its
-    // layer changes switch to.
+    // Layer changes only take effect on a plate that prints in one filament:
+    // the slicer ignores them where an object carries paint.
     const switches = (file.layerChanges ?? []).filter((c) => c.kind === 'filament');
-    const fSlots = [...new Set([...file.filaments.filter((f) => f.triangles > 0).map((f) => f.slot), ...switches.map((c) => c.slot)])].sort((a, b) => a - b);
-    add('filaments-used', sameSet(fSlots, sSlots), `file uses slots [${fSlots.join(', ')}]${switches.length > 0 ? ` (${switches.length} by layer change)` : ''}, slicer extruded slots [${sSlots.join(', ')}]`);
+    const paintedPlate = (id) => {
+      const objects = file.objects.filter((o) => (o.plate ?? 1) === id);
+      return objects.some((o) => o.filaments.length > 1) || new Set(objects.flatMap((o) => o.filaments)).size > 1;
+    };
+    const ignoredPlates = new Set([...new Set(switches.map((c) => c.plate))].filter(paintedPlate));
+    const effective = switches.filter((c) => !ignoredPlates.has(c.plate));
 
-    // Layer changes only take effect on a plate that prints in one filament.
-    // Where that holds, the slicer must make exactly that many filament changes.
+    // Filaments the file asks for: every painted slot, plus the slots its
+    // (effective) layer changes switch to.
+    const fSlots = [...new Set([...file.filaments.filter((f) => f.triangles > 0).map((f) => f.slot), ...effective.map((c) => c.slot)])].sort((a, b) => a - b);
+    add('filaments-used', sameSet(fSlots, sSlots), `file uses slots [${fSlots.join(', ')}]${effective.length > 0 ? ` (${effective.length} by layer change)` : ''}, slicer extruded slots [${sSlots.join(', ')}]`);
+
+    // On a single-filament plate the slicer must make exactly the declared number of filament changes.
     for (const plate of slicer.plates) {
       const wanted = switches.filter((c) => c.plate === plate.id);
       if (wanted.length === 0) continue;
-      const objects = file.objects.filter((o) => (o.plate ?? 1) === plate.id);
-      const painted = objects.some((o) => o.filaments.length > 1) || new Set(objects.flatMap((o) => o.filaments)).size > 1;
-      if (painted) {
+      if (ignoredPlates.has(plate.id)) {
         warnings.push(`plate ${plate.id}: the file has ${wanted.length} layer colour change(s), but its objects use more than one filament, so the slicer ignores them`);
         continue;
       }

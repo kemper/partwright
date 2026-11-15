@@ -61,6 +61,9 @@ return api.Manifold.cube([1, 1, 1]);`;
     expect(removeLayerColorsCall(withCall)).toEqual({ code: MODEL, call: '', replaced: true });
     // Inline with other code: only the statement goes.
     expect(removeLayerColorsCall("const a = 1; api.print.layerColors([]); return a;").code).toBe('const a = 1;  return a;');
+    // Code that leads into the call keeps an empty statement, so it does not capture the next one.
+    expect(removeLayerColorsCall("if (big) api.print.layerColors([]);\nreturn a;").code).toBe('if (big) ;\nreturn a;');
+    expect(removeLayerColorsCall("{ api.print.layerColors([]); }").code).toBe('{  }');
   });
 
   it('upsert then upsert again leaves exactly one call', () => {

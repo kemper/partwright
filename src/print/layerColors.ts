@@ -38,6 +38,12 @@ export const DEFAULT_LAYER_BASE_COLOR = '#d9d9d9';
 /** Most colour changes one model may declare. */
 export const MAX_LAYER_COLOR_CHANGES = 256;
 
+/** Layer heights the app accepts, in mm. The same range as the Advanced
+ *  Settings fields `renderer.printLayerHeightMm` / `printFirstLayerHeightMm`
+ *  (a unit test keeps the two in step). */
+export const LAYER_HEIGHT_MIN_MM = 0.04;
+export const LAYER_HEIGHT_MAX_MM = 2;
+
 /**
  * Validate the arguments of `api.print.layerColors` into a spec. The ONE
  * validator shared by the engine's recorder, the Worker-message check and the
@@ -62,7 +68,7 @@ export function parseLayerColorsSpec(changes: unknown, options?: unknown): Layer
     for (const k of ['layerHeight', 'firstLayerHeight'] as const) {
       const v = options[k];
       if (v === undefined) continue;
-      if (typeof v !== 'number' || !Number.isFinite(v) || v < 0.04 || v > 2) throw new Error(`layerColors: ${k} must be a number of mm between 0.04 and 2.`);
+      if (typeof v !== 'number' || !Number.isFinite(v) || v < LAYER_HEIGHT_MIN_MM || v > LAYER_HEIGHT_MAX_MM) throw new Error(`layerColors: ${k} must be a number of mm between ${LAYER_HEIGHT_MIN_MM} and ${LAYER_HEIGHT_MAX_MM}.`);
       spec[k] = v;
     }
   }
@@ -161,13 +167,6 @@ export function resolveLayerBands(baseColor: string, changes: readonly LayerColo
     bands.push({ color, firstLayer: start, lastLayer: count - 1, fromZ: layerBottomZ(start, profile), toZ: layerTopZ(count - 1, profile) });
   }
   return bands;
-}
-
-/** The band a height falls in (clamped to the first/last band), or null when there are none. */
-export function bandAtZ(bands: readonly LayerBand[], z: number, profile: LayerProfile): LayerBand | null {
-  if (bands.length === 0) return null;
-  const layer = layerIndexAt(z, profile);
-  return bands.find((b) => layer >= b.firstLayer && layer <= b.lastLayer) ?? (layer < bands[0].firstLayer ? bands[0] : bands[bands.length - 1]);
 }
 
 // ── Slicer project file ──────────────────────────────────────────────────

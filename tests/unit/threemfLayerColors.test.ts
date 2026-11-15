@@ -111,4 +111,14 @@ describe('3MF project export — colours by layer height', () => {
     expect(warnings).toEqual([]);
     expect(parsed.palette.map(p => p.hex)).toEqual(['#d9d9d9']);
   });
+
+  it('an empty declaration is no declaration: the paint is kept and nothing is written', async () => {
+    const painted = boxMesh(12, 0, [[255, 0, 0], [0, 255, 0]]);
+    const { xml, warnings, parsed } = await exportAndRead([{ name: 'block', mesh: painted, layerColors: { changes: [] } }]);
+    expect(xml).toBeNull();
+    expect(warnings).toEqual([]);
+    expect(parsed.palette.map(p => p.hex).sort()).toEqual(['#00ff00', '#ff0000']);
+    // Nor does it count as layer colours for the generic export's notice.
+    expect((await exportAndRead([{ name: 'block', mesh: painted, layerColors: { changes: [] } }], { bambu: false })).warnings).toEqual([]);
+  });
 });

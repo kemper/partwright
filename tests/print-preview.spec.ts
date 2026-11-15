@@ -106,4 +106,52 @@ test.describe('Print preview', () => {
     // With nothing declared the preview has nothing to draw, and says so.
     expect(await pw(page, 'getPrintPreview')).toMatchObject({ enabled: true, showing: false, notes: [expect.stringContaining('declares no layer colours')] });
   });
+  test('layer colours follow the open object, and the preview and its panel go together', async ({ page }) => {
+    const first = await pw<{ id: string }>(page, 'getCurrentObject');
+    // A second object with no layer colours of its own.
+    const second = await pw<{ id: string }>(page, 'createObject', 'plain');
+    expect(await pw(page, 'runAndSave', 'return api.Manifold.cube([10, 10, 10]);', 'plain cube')).toMatchObject({ geometry: { status: 'ok' } });
+    expect(await pw(page, 'getLayerColors')).toMatchObject({ declared: false });
+
+    // Back to the first (restored from the mesh cache, no re-run): its colours are its own again...
+    await pw(page, 'changeObject', first.id);
+    expect(await pw<Layers>(page, 'getLayerColors')).toMatchObject({ declared: true, totalLayers: 120 });
+    // ...and the second still has none, so its 3MF project carries no layer switches.
+    await pw(page, 'changeObject', second.id);
+    expect(await pw(page, 'getLayerColors')).toMatchObject({ declared: false });
+    const plain = await pw<{ base64: string }>(page, 'export3MFObjectsData', [second.id], 'plain', { bambu: true });
+    expect(Buffer.from(plain.base64, 'base64').includes(Buffer.from('Metadata/custom_gcode_per_layer.xml'))).toBe(false);
+    await pw(page, 'changeObject', first.id);
+
+    // Turning the preview on from the API opens the panel, so the user can see and leave it.
+    const panel = page.locator('#print-preview-panel');
+    expect(await pw(page, 'setPrintPreview', { enabled: true })).toMatchObject({ enabled: true, showing: true });
+    await expect(panel).toBeVisible();
+
+    // An unsaved edit in the panel belongs to this object: switching away drops it.
+    await panel.locator('[data-print-preview-add]').click();
+    await expect(panel.locator('[data-print-preview-row]')).toHaveCount(4);
+    await pw(page, 'changeObject', second.id);
+    await expect(panel.locator('[data-print-preview-row]')).toHaveCount(1);
+    await expect(panel.locator('[data-print-preview-apply]')).toBeDisabled();
+    expect(await pw(page, 'getPrintPreview')).toMatchObject({ enabled: true, showing: false });
+    await pw(page, 'changeObject', first.id);
+    await expect(panel.locator('[data-print-preview-row]')).toHaveCount(3);
+    await expect.poll(async () => (await pw<View>(page, 'getPrintPreview')).showing).toBe(true);
+
+    // Opening another tool closes the panel and with it the preview, so
+    // nothing ever picks triangles off the preview's re-split mesh.
+    await pw(page, 'openTool', 'tool-paint');
+    await expect(panel).toBeHidden();
+    expect(await pw(page, 'getPrintPreview')).toMatchObject({ enabled: false, showing: false });
+
+    // Off from the API closes the panel too; an empty list is the same as clearing.
+    await pw(page, 'setPrintPreview', { enabled: true });
+    await expect(panel).toBeVisible();
+    await pw(page, 'setPrintPreview', { enabled: false });
+    await expect(panel).toBeHidden();
+    expect(await pw(page, 'setLayerColors', [])).toMatchObject({ ok: true });
+    expect(await pw<string>(page, 'getCode')).not.toContain('layerColors');
+    expect(await pw(page, 'getLayerColors')).toMatchObject({ declared: false });
+  });
 });

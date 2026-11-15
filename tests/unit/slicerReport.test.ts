@@ -196,8 +196,11 @@ describe('slicer-cli report', () => {
     it('warns instead of failing when the plate is painted, since the slicer ignores layer changes there', () => {
       const p = layered();
       p.triColor = new Int32Array([0, 1, 0, 1]); // two painted filaments on the object
-      const { checks, warnings } = buildChecks(summarizeFile(p), sliced(40, [1, 2, 3]));
+      // The slicer extrudes only the painted slots: the ignored switches to slot 3 never happen.
+      const { checks, warnings } = buildChecks(summarizeFile(p), sliced(40, [1, 2]));
+      expect(failed(checks)).toEqual([]);
       expect(checks.map((c: Check) => c.name)).not.toContain('layer-changes');
+      expect(checks.find((c: Check) => c.name === 'filaments-used')!.detail).not.toContain('by layer change');
       expect(warnings.join(' ')).toContain('the slicer ignores them');
     });
 

@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
+import { APP_CONFIG_FIELD_BOUNDS } from '../../src/config/appConfigBounds';
 import {
-  bandAtZ, bandsToSlicerEntries, estimateTopColor, layerBottomZ, layerCount, layerIndexAt, layerOpacity, layerTopZ,
+  bandsToSlicerEntries, estimateTopColor, layerBottomZ, layerCount, layerIndexAt, layerOpacity, layerTopZ,
   parseLayerEntriesXml, resolveLayerBands, serializeLayerEntriesXml, slicerEntriesToChanges, startLayerFor,
-  MAX_LAYER_COLOR_CHANGES, parseLayerColorsSpec, splitBaseColor,
+  LAYER_HEIGHT_MAX_MM, LAYER_HEIGHT_MIN_MM, MAX_LAYER_COLOR_CHANGES, parseLayerColorsSpec, splitBaseColor,
   type SlicerLayerEntry,
 } from '../../src/print/layerColors';
 
@@ -77,18 +78,17 @@ describe('resolveLayerBands', () => {
     expect(() => resolveLayerBands(WHITE, [{ z: 1, color: 'red' }], 24, P)).toThrow(/#rrggbb/);
     expect(() => resolveLayerBands(WHITE, [], 24, { layerHeight: 0, firstLayerHeight: 0.2 })).toThrow(/positive/);
   });
-
-  it('looks up the band at a height', () => {
-    const bands = resolveLayerBands(WHITE, [{ z: 8, color: RED }], 24, P);
-    expect(bandAtZ(bands, 7.9, P)!.color).toBe(WHITE);
-    expect(bandAtZ(bands, 8, P)!.color).toBe(WHITE);    // the boundary belongs to the layer below
-    expect(bandAtZ(bands, 8.1, P)!.color).toBe(RED);
-    expect(bandAtZ(bands, 99, P)!.color).toBe(RED);     // clamped
-    expect(bandAtZ([], 1, P)).toBeNull();
-  });
 });
 
 describe('parseLayerColorsSpec', () => {
+  it('accepts the same layer heights as the Advanced Settings fields', () => {
+    const b = APP_CONFIG_FIELD_BOUNDS.renderer;
+    expect(b.printLayerHeightMm).toMatchObject({ min: LAYER_HEIGHT_MIN_MM, max: LAYER_HEIGHT_MAX_MM });
+    expect(b.printFirstLayerHeightMm).toMatchObject({ min: LAYER_HEIGHT_MIN_MM, max: LAYER_HEIGHT_MAX_MM });
+    expect(() => parseLayerColorsSpec([], { layerHeight: LAYER_HEIGHT_MIN_MM / 2 })).toThrow(/between/);
+    expect(() => parseLayerColorsSpec([], { firstLayerHeight: LAYER_HEIGHT_MAX_MM * 2 })).toThrow(/between/);
+  });
+
   it('normalises and sorts valid input', () => {
     expect(parseLayerColorsSpec([{ z: 8, color: 'DC1E1E' }, { z: 0, color: '#F0F0F0' }], { layerHeight: 0.16 })).toEqual({
       changes: [{ z: 0, color: WHITE }, { z: 8, color: RED }],

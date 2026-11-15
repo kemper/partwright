@@ -86,6 +86,12 @@ export function removeLayerColorsCall(code: string): LayerColorsEdit {
   if (/^[ \t]*$/.test(code.slice(lineStart, start)) && /^[ \t]*$/.test(code.slice(end, lineEnd === -1 ? code.length : lineEnd))) {
     start = lineStart;
     end = lineEnd === -1 ? code.length : lineEnd + 1;
+    return { code: code.slice(0, start) + code.slice(end), call: '', replaced: true };
   }
-  return { code: code.slice(0, start) + code.slice(end), call: '', replaced: true };
+  // Sharing its line with other code. When that code leads INTO the call
+  // (`if (x) api.print.layerColors(...);`), leave an empty statement behind so
+  // it does not swallow the next one.
+  const before = code.slice(lineStart, start).trimEnd();
+  const leadsIn = before.length > 0 && !/[;{}]$/.test(before);
+  return { code: code.slice(0, start) + (leadsIn ? ';' : '') + code.slice(end), call: '', replaced: true };
 }

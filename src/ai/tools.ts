@@ -2706,7 +2706,7 @@ Returns { ok, stats, metrics, version } or { error }.`,
       properties: {
         changes: {
           type: 'array',
-          description: 'Colour changes, in any order. An empty array declares none.',
+          description: 'Colour changes, in any order. An empty array removes the layer colours (same as clearLayerColors).',
           items: {
             type: 'object',
             properties: {
@@ -2729,7 +2729,7 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: 'setPrintPreview',
-    description: 'Print preview: show the open object as the layer-colour bands that will print, instead of its own colours. While it is on, the viewport AND renderView/renderViews show the preview, so turn it on and then render to check a layer-colour design. layer (how many layers are printed, 1-based) or z (mm above the bed) cuts the model there like a slicer\'s layer slider; layer 0 shows it whole. blend adds a rough estimate of how thin translucent top layers mix with the colour underneath. Returns {enabled, showing, layer, totalLayers, z, blend, notes?}; showing is false when the object declares no layer colours. Turn it off again when you are done.',
+    description: 'Print preview: show the open object as the layer-colour bands that will print, instead of its own colours. While it is on, the viewport AND renderView/renderViews show the preview, so turn it on and then render to check a layer-colour design. layer (how many layers are printed, 1-based) or z (mm above the bed) cuts the model there like a slicer\'s layer slider; layer 0 shows it whole. blend adds a rough estimate of how thin translucent top layers mix with the colour underneath. Turning it on also opens the user\'s Print preview panel, and turning it off closes it. Returns {enabled, showing, layer, totalLayers, z, blend, notes?}; showing is false when the object declares no layer colours. Turn it off again when you are done.',
     input_schema: {
       type: 'object',
       properties: {

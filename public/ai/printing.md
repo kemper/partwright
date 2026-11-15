@@ -128,7 +128,8 @@ From the console or an agent, the same thing without editing code by hand:
 - `await setLayerColors([{z, color}], {layerHeight?, firstLayerHeight?}?)`
   writes (or rewrites) the call in the open object's code, runs it and saves a
   version. Returns `{ok, call, replaced, version?, layerColors}` or `{error}`.
-- `await clearLayerColors()` removes the call.
+- `await clearLayerColors()` removes the call. `setLayerColors([])` does the
+  same: an empty list declares nothing, in the console and in code.
 - `getLayerColors()` returns `{declared, changes, layerHeight,
   firstLayerHeight, modelHeight, totalLayers, bands, warnings?}`. `bands` is
   what actually prints after snapping: `[{color, fromZ, toZ, firstLayer,
@@ -149,7 +150,10 @@ to be left out:
 - a plate shared by objects with different layer colours. The slicer applies
   layer changes to a whole plate, so they are left out for that plate. Keep a
   layer-coloured object on its own plate (the default `plateLayout: 'separate'`);
-- a generic export (`bambu: false`), which can't carry them.
+- an object exported as separate pieces or parts (`split`). Layer heights are
+  measured from the bed of the whole object, so its layer colours are left out;
+- a generic export (`bambu: false`), which can't carry them. The plain
+  single-mesh `export3MFData` can't either; it says so in `layerColorsNote`.
 
 SCAD, BREP and voxel sessions can't declare layer colours yet.
 
@@ -161,8 +165,10 @@ showing, layer, totalLayers, z, blend, notes?}`.
 
 - `layer` (how many layers are printed, 1-based) or `z` (mm above the bed)
   cuts the model there, like scrubbing a slicer's layer slider; the opening is
-  capped in that layer's colour. `null` shows the whole model. Pass one, not
-  both.
+  capped in that layer's colour (with `blend`, in the estimated colour of the
+  top layer so far). `null` shows the whole model. Pass one, not both. `notes`
+  says so when the model is not a closed solid there and part of the opening
+  could not be capped.
 - `blend: true` adds a rough estimate of how thin translucent top layers mix
   with the colour underneath. It is a guide, not a colour-accurate simulation:
   real results depend on the filament.
@@ -171,6 +177,11 @@ showing, layer, totalLayers, z, blend, notes?}`.
   true})`, render, then `setPrintPreview({enabled: false})`.
 - `showing` is false when the object declares no layer colours; `notes` says
   why. The preview is per tab and is not saved.
+- The preview and the user's Print preview panel go together: turning it on
+  opens the panel and turning it off closes it. Opening another tool (Paint,
+  Parts, Simplify…) closes the panel and so turns the preview off, so check
+  `getPrintPreview().enabled` rather than assuming it is still on. It needs a
+  model: `{enabled: true}` returns `{error}` before the first run.
 - It does not show toolpaths, infill, seams, supports or the purge tower, and
   it won't show thin features a slicer drops.
 

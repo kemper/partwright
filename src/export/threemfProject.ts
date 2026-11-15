@@ -582,7 +582,8 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
   if (bambu) {
     const fallback = opts.layerProfile ?? templateLayerProfile(resolvePrinter(opts.printer));
     parts.forEach((p, i) => {
-      if (!p.layerColors) return;
+      // `layerColors([])` declares nothing: the object exports as usual, paint included.
+      if (!p.layerColors || p.layerColors.changes.length === 0) return;
       const pos = cleaned[i].uniquePositions;
       let lo = Infinity, hi = -Infinity;
       for (let v = 2; v < pos.length; v += 3) { if (pos[v] < lo) lo = pos[v]; if (pos[v] > hi) hi = pos[v]; }
@@ -593,7 +594,7 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
       layerPlans.set(i, { bands, profile });
       if (isPainted(i)) warn(`"${p.name}" has both paint and layer colours. A slicer ignores layer colour changes on a painted object, so its paint was left out of this export.`);
     });
-  } else if (parts.some(p => p.layerColors)) {
+  } else if (parts.some(p => p.layerColors && p.layerColors.changes.length > 0)) {
     warn('Layer colours are only written to the Bambu/Orca project export. This generic 3MF does not carry them.');
   }
 
