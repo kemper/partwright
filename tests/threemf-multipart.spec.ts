@@ -1,5 +1,6 @@
 import { test, expect } from 'playwright/test';
 import { waitForEditorReady } from './helpers/aiPanel';
+import { zipText } from './helpers/zipText';
 
 // Multi-part 3MF export: validates the generic + Bambu "project" 3MF builder
 // (multiple objects, one plate per part, m:colorgroup + paint_color colour) and
@@ -218,14 +219,12 @@ test.describe('multi-part 3MF export', () => {
 
       const r = await pw.export3MFPartsData(undefined, 'probe', { bambu: true });
       if (r.error) return { error: r.error };
-      const bin = atob(r.base64);
-      const bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      return { parts: r.parts, text: new TextDecoder('latin1').decode(bytes) };
+      return { parts: r.parts, base64: r.base64 as string };
     });
 
     expect((out as { error?: string }).error).toBeUndefined();
-    const o = out as { parts: number; text: string };
+    const r = out as { parts: number; base64: string };
+    const o = { parts: r.parts, text: await zipText(r.base64) };
     expect(o.parts).toBe(3);
     // Real bake → 3 production-extension parts, 3 plates, project_settings.config
     // (builds the plate list), empty plater_name (load-critical).

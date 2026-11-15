@@ -11,7 +11,7 @@ const glb = await partwright.exportGLBData()
 // -> { filename: "model_2026-04-28.glb", mimeType: "model/gltf-binary", base64: "...", sizeBytes: 12345 }
 
 const stl = await partwright.exportSTLData()
-const tmf = await partwright.export3MFData()
+const tmf = await partwright.export3MFData()   // a DEFLATE-compressed ZIP (3MF package); unzip before reading the XML
 
 // OBJ is text-typed when the mesh has no painted color regions, otherwise a ZIP.
 // Inspect mimeType to tell which: "text/plain" -> use `text`, "application/zip" -> use `base64`.

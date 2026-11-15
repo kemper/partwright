@@ -4,6 +4,7 @@
 
 import { test, expect, type Page } from 'playwright/test';
 import { openSharedEditor } from './helpers/sharedPage';
+import { zipText } from './helpers/zipText';
 
 let page: Page;
 test.beforeAll(async ({ browser }, testInfo) => {
@@ -152,15 +153,12 @@ test.describe('smooth bucket fills', () => {
       await pw.runAndSave('return api.Manifold.cube([10, 10, 10], true).translate([100, 0, 0]);', 'box');
       const r = await pw.export3MFPartsData(undefined, 'probe', {});
       if (r.error) return { error: r.error as string };
-      const bin = atob(r.base64);
-      const bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      return { parts: r.parts as number, hasRed: /#FF0000/i.test(new TextDecoder('latin1').decode(bytes)) };
+      return { parts: r.parts as number, base64: r.base64 as string };
     });
     expect(out.error).toBeUndefined();
     expect(out.parts).toBe(2);
     // Before the fix the fill re-flooded on the ACTIVE object's mesh and the
     // ball exported unpainted.
-    expect(out.hasRed).toBe(true);
+    expect(/#FF0000/i.test(await zipText(out.base64!))).toBe(true);
   });
 });

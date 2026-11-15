@@ -6,6 +6,7 @@
 
 import { test, expect, type Page } from 'playwright/test';
 import { openSharedEditor } from './helpers/sharedPage';
+import { zipText } from './helpers/zipText';
 
 // Two near-identical blacks (ΔE ≈ 6) + a red: 3 colours → 2 filaments at the
 // default merge tolerance (10).
@@ -31,15 +32,16 @@ test.afterAll(async () => {
   await page?.context().close();
 });
 
-/** Count the m:color entries in a generic 3MF (the zip is stored, so the XML is plain text). */
+/** Count the m:color entries in a generic 3MF (unzipped — exports are DEFLATE-compressed). */
 async function exportedColors(page: Page, opts?: Record<string, unknown>): Promise<string[]> {
-  return page.evaluate(async (o) => {
+  const base64 = await page.evaluate(async (o) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const r = await (window as any).partwright.export3MFData(undefined, o);
     if (r.error) throw new Error(r.error);
-    const text = new TextDecoder('latin1').decode(Uint8Array.from(atob(r.base64), ch => ch.charCodeAt(0)));
-    return [...text.matchAll(/<m:color color="#([0-9A-F]{6})FF"/g)].map(m => m[1]);
+    return r.base64 as string;
   }, opts);
+  const text = await zipText(base64);
+  return [...text.matchAll(/<m:color color="#([0-9A-F]{6})FF"/g)].map(m => m[1]);
 }
 
 test.describe('3MF filament colors', () => {
@@ -93,13 +95,13 @@ test.describe('3MF filament colors', () => {
     expect((await exportedColors(page, { colorMap: { '#FF0000': '#00ff00' } })).sort()).toEqual(['00FF00', '0D0D0D', '1B1B1B']);
 
     // Bambu/Orca project: one AMS filament per remaining colour.
-    const bambuFilaments = await page.evaluate(async () => {
+    const bambuText = await zipText(await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const r = await (window as any).partwright.export3MFObjectsData(undefined, undefined, { bambu: true, mergeColors: 10 });
       if (r.error) throw new Error(r.error);
-      const text = new TextDecoder('latin1').decode(Uint8Array.from(atob(r.base64), ch => ch.charCodeAt(0)));
-      return /"filament_colour":\s*\[([^\]]*)\]/.exec(text)?.[1].split(',').length ?? -1;
-    });
+      return r.base64 as string;
+    }));
+    const bambuFilaments = /"filament_colour":\s*\[([^\]]*)\]/.exec(bambuText)?.[1].split(',').length ?? -1;
     expect(bambuFilaments).toBe(2);
 
     const bad = await page.evaluate(() => {

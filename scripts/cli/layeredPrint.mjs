@@ -85,7 +85,7 @@ export async function runLayeredPrint(photo, opts) {
       const exportOpts = mode === 'painted'
         ? { mode: 'painted', slots: opts.slots ? Number(opts.slots) : undefined, paintFilaments: opts.paint === 'exact' ? 'exact' : undefined }
         : { mode: 'layer-swap', swapMode: mode };
-      const res = exp.buildLayeredPrint3MF(r, { ...exportOpts, printer: opts.printer, nozzle: opts.nozzle, name });
+      const res = await exp.buildLayeredPrint3MFAsync(r, { ...exportOpts, printer: opts.printer, nozzle: opts.nozzle, name });
       const path = modes.length > 1 ? `${out}.${mode}.3mf` : `${out}.3mf`;
       writeFileSync(path, Buffer.from(await res.built.blob.arrayBuffer()));
       files.push(path);
