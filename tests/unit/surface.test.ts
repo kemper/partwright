@@ -496,6 +496,24 @@ describe('modifiers (codegen)', () => {
       const map = nearestTriangleMap(c, moved);
       for (let t = 0; t < c.numTri; t++) expect(map[t]).toBe(t);
     });
+
+    it('maxDistance keeps coinciding triangles and drops the rest', () => {
+      const c = cube(10);
+      // The cube again, plus a copy of it 100 units away, as one query mesh.
+      const far = Float32Array.from(c.vertProperties, (v, i) => (i % 3 === 0 ? v + 100 : v));
+      const both: MeshData = {
+        vertProperties: Float32Array.from([...c.vertProperties, ...far]),
+        triVerts: Uint32Array.from([...c.triVerts, ...Array.from(c.triVerts, v => v + 8)]),
+        numVert: 16, numTri: 24, numProp: 3,
+      };
+      const map = nearestTriangleMap(c, both, { maxDistance: 1e-3 });
+      for (let t = 0; t < 12; t++) expect(map[t]).toBe(t);
+      for (let t = 12; t < 24; t++) expect(map[t]).toBe(-1);
+      // A copy nudged by less than the cap still matches; by more, it doesn't.
+      const nudged: MeshData = { ...c, vertProperties: Float32Array.from(c.vertProperties, v => v + 0.01) };
+      expect([...nearestTriangleMap(c, nudged, { maxDistance: 0.05 })]).toEqual([...Array(12).keys()]);
+      expect([...nearestTriangleMap(c, nudged, { maxDistance: 0.005 })].every(v => v === -1)).toBe(true);
+    });
   });
 
   describe('remapTriangleSets (carry labels through texturing)', () => {

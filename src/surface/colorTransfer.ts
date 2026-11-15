@@ -13,7 +13,7 @@
 
 import type { MeshData } from '../geometry/types';
 
-function centroids(mesh: MeshData): Float32Array {
+function centroids(mesh: CentroidMesh): Float32Array {
   const { vertProperties: vp, triVerts: tv, numProp, numTri } = mesh;
   const out = new Float32Array(numTri * 3);
   for (let t = 0; t < numTri; t++) {
@@ -27,8 +27,10 @@ function centroids(mesh: MeshData): Float32Array {
 
 interface NearestTriHash {
   /** Nearest ref triangle to a point, *by centroid* (`-1` if the ref is empty).
-   *  Cheap; used for the color transfer, where centroid proximity is enough. */
-  nearestIndex(px: number, py: number, pz: number): number;
+   *  Cheap; used for the color transfer, where centroid proximity is enough.
+   *  With `maxDist`, only centroids within that distance count (`-1` when
+   *  there is none) and the search stops at the cells that can hold one. */
+  nearestIndex(px: number, py: number, pz: number, maxDist?: number): number;
   /** Minimum *squared point-to-triangle* distance from a point to the ref
    *  surface (`Infinity` if the ref is empty). Searches over all nearby
    *  candidate triangles (not just the nearest centroid) and takes the closest
@@ -41,7 +43,7 @@ interface NearestTriHash {
 /** Build a spatial hash over `refMesh`'s triangle centroids. Uniform grid with
  *  ring-expanding search, so each query is near-O(1) for spatially-coincident
  *  meshes. Shared by every consumer below so there's one hashing implementation. */
-function buildNearestTriHash(refMesh: MeshData): NearestTriHash {
+function buildNearestTriHash(refMesh: CentroidMesh): NearestTriHash {
   if (refMesh.numTri === 0) return { nearestIndex: () => -1, surfaceDist2: () => Infinity };
   const oc = centroids(refMesh);
   let minX = Infinity, minY = Infinity, minZ = Infinity;
@@ -78,10 +80,14 @@ function buildNearestTriHash(refMesh: MeshData): NearestTriHash {
     return pointTriDist2(px, py, pz, rvp[a], rvp[a + 1], rvp[a + 2], rvp[b], rvp[b + 1], rvp[b + 2], rvp[c], rvp[c + 1], rvp[c + 2]);
   };
   return {
-    nearestIndex(px, py, pz) {
+    nearestIndex(px, py, pz, maxDist = Infinity) {
       const bx = cx(px), by = cy(py), bz = cz(pz);
       let best = -1, bestD = Infinity;
-      for (let r = 0; r <= maxR; r++) {
+      // A centroid within maxDist sits at most ceil(maxDist / cell) cells away.
+      // Without the cap a point far from the ref walks every ring out to it —
+      // (2r+1)³ cells per ring, seconds per query on a big ref.
+      const lastRing = maxDist === Infinity ? maxR : Math.min(maxR, Math.ceil(maxDist / cell));
+      for (let r = 0; r <= lastRing; r++) {
         // Stop once no candidate in this ring or beyond can beat the best found:
         // the closest a point in Chebyshev ring r can be is (r-1)·cell.
         if (best >= 0 && Math.sqrt(bestD) <= (r - 1) * cell) break;
@@ -100,7 +106,7 @@ function buildNearestTriHash(refMesh: MeshData): NearestTriHash {
           }
         }
       }
-      return best;
+      return bestD <= maxDist * maxDist ? best : -1;
     },
     surfaceDist2(px, py, pz) {
       const bx = cx(px), by = cy(py), bz = cz(pz);
@@ -130,16 +136,25 @@ function buildNearestTriHash(refMesh: MeshData): NearestTriHash {
   };
 }
 
+/** The mesh fields the centroid matching reads. */
+export type CentroidMesh = Pick<MeshData, 'vertProperties' | 'triVerts' | 'numProp' | 'numTri'>;
+
 /** For each triangle of `newMesh`, the index of the nearest (by centroid)
  *  triangle of `oldMesh`. Returns an `Int32Array` of length `newMesh.numTri`
- *  (entries are `-1` only when `oldMesh` has no triangles). */
-export function nearestTriangleMap(oldMesh: MeshData, newMesh: MeshData): Int32Array {
+ *  (entries are `-1` only when `oldMesh` has no triangles).
+ *
+ *  `maxDistance` keeps only matches whose centroids are within that distance
+ *  (`-1` otherwise). Pass it whenever `newMesh` can hold triangles away from
+ *  `oldMesh` (an import composed with other geometry): an uncapped lookup for
+ *  a far triangle costs seconds on a big `oldMesh`. */
+export function nearestTriangleMap(oldMesh: CentroidMesh, newMesh: CentroidMesh, opts: { maxDistance?: number } = {}): Int32Array {
   const result = new Int32Array(newMesh.numTri).fill(-1);
   if (oldMesh.numTri === 0 || newMesh.numTri === 0) return result;
   const hash = buildNearestTriHash(oldMesh);
   const nc = centroids(newMesh);
+  const maxDist = opts.maxDistance ?? Infinity;
   for (let t = 0; t < newMesh.numTri; t++) {
-    result[t] = hash.nearestIndex(nc[t * 3], nc[t * 3 + 1], nc[t * 3 + 2]);
+    result[t] = hash.nearestIndex(nc[t * 3], nc[t * 3 + 1], nc[t * 3 + 2], maxDist);
   }
   return result;
 }
