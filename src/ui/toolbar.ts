@@ -54,6 +54,8 @@ export interface ToolbarCallbacks {
   /** Open the image → voxel import modal (modal-first; the user picks the image
    *  inside). */
   onCreateVoxel: () => void;
+  /** Open the HueForge (photo → filament-layering print) dialog. */
+  onCreateHueforge: () => void;
   onLanguageSwitch: (lang: 'manifold-js' | 'scad' | 'replicad' | 'voxel') => void;
   /** "?" link next to the language toggle — opens a modal explaining
    *  what each engine is best for. */
@@ -397,6 +399,16 @@ export function createToolbar(
     callbacks.onCreateRelief();
   });
   importDropdown.appendChild(reliefOpt);
+
+  const hueforgeOpt = createDescribedItem(
+    'Photo → HueForge print…',
+    'Turn a photo into a filament-layering print: thin translucent layers with filament swaps at chosen heights. Exports a 3MF with the swaps built in.',
+  );
+  hueforgeOpt.addEventListener('click', () => {
+    importDropdown.classList.add('hidden');
+    callbacks.onCreateHueforge();
+  });
+  importDropdown.appendChild(hueforgeOpt);
 
   const imageVoxelOpt = createDescribedItem(
     'Image → voxel…',

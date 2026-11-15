@@ -2521,6 +2521,53 @@ Returns { ok, stats, metrics, version } or { error }.`,
     },
   },
   {
+    name: 'createHueforge',
+    description: "Turn a photo into a HueForge-style FILAMENT-LAYERING print (thin translucent layers, filament swapped at chosen heights, so a few filaments blend into many shades) in a NEW session. REQUIRES USER CONFIRMATION — only call when the user asked for a HueForge / filament-swap / layered colour print from an image. The solver picks the filaments (from the built-in list, or `filaments` = the user's own spools with TD values), their order, the swap layers, and every pixel's height; `colors` is the MAXIMUM filament count (swaps that barely help are dropped). Image: `imageRef` (1-based, from getReferenceImages) OR `src`. Returns { sessionId, blocks, totalLayers, totalHeightMm, meanDeltaE, swaps } — meanDeltaE under ~10 is a good match. The new session is painted with the predicted look, so renderView shows the expected print. Then exportHueforge3MF to give the user a 3MF with the swaps built in. Raise maxHeightMm (e.g. 3.2) for more shades; colourful photos need 8–10 colours.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        imageRef: { type: 'integer', minimum: 1, description: '1-based index of a session reference image (getReferenceImages order).' },
+        src: { type: 'string', description: 'Alternative to imageRef: an http(s) URL or a data:image/... URL.' },
+        colors: { type: 'integer', minimum: 1, maximum: 16, description: 'Maximum number of filaments (default 8).' },
+        widthMm: { type: 'number', description: 'Print width in mm (default 120); depth follows the photo.' },
+        maxHeightMm: { type: 'number', description: 'Tallest point, mm (default 2.4). Taller = more shades per filament.' },
+        baseHeightMm: { type: 'number', description: 'Minimum thickness everywhere, mm (default 0.48).' },
+        layerHeight: { type: 'number', description: 'Layer height, mm (default 0.08).' },
+        firstLayerHeight: { type: 'number', description: 'First layer height, mm (default 0.16).' },
+        pixelSizeMm: { type: 'number', description: 'Heightmap pixel size, mm (default 0.3).' },
+        filaments: { type: 'array', description: "The user's own filaments to choose from (default: built-in list, see listHueforgeFilaments). td = transmission distance in mm (HueForge convention).", items: { type: 'object', properties: { name: { type: 'string' }, hex: { type: 'string', description: '#rrggbb' }, td: { type: 'number' } }, required: ['name', 'hex', 'td'] } },
+        baseFilament: { type: 'string', description: 'Force the bottom filament by name (default: chosen by the solver).' },
+        chromaWeight: { type: 'number', description: 'Hue vs lightness in the match: 1 = full colour (default), 0 = lightness only (classic monochrome HueForge).' },
+        smoothing: { type: 'number', description: 'Height-field smoothness (default 1.2; 0 = none).' },
+        effort: { type: 'number', description: 'Search effort multiplier (default 1).' },
+        name: { type: 'string', description: 'Session name.' },
+      },
+    },
+  },
+  {
+    name: 'getHueforgePlan',
+    description: 'The current HueForge print: filaments bottom→top with TD, swap layers + heights, size, predicted ΔE, and a printable instructions text. Errors when the session is not a HueForge print.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'listHueforgeFilaments',
+    description: 'The built-in filament list createHueforge chooses from: name, hex, TD (mm).',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'exportHueforge3MF',
+    description: "Download the current HueForge print as a Bambu Studio / Orca 3MF with the filament changes built in (layer height, first layer and 100% infill set to match). REQUIRES USER CONFIRMATION. swapMode 'ams' (default) = automatic filament changes, one AMS slot per filament; 'pause' = the printer pauses at each swap for a manual change.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        swapMode: { type: 'string', enum: ['ams', 'pause'] },
+        printer: { type: 'string', description: 'Bambu printer id (e.g. p1s, x1c, a1, h2d). Default h2c.' },
+        nozzle: { type: 'string', enum: ['0.2', '0.4', '0.6', '0.8'] },
+        filename: { type: 'string' },
+      },
+    },
+  },
+  {
     name: 'listCatalog',
     description: "List the built-in example catalog (the /catalog page): premade models with id, name, description, tags and language. Use it to suggest a starting point (\"is there a gear example?\"). Read-only — you cannot open an entry from chat; tell the user its name so they can open it from the Catalog page. Optional `query` (matched against name, description and tags) and `tag` filters. Returns { total, matched, count, entries } — total = whole catalog, matched = entries passing the filters, count = entries returned (capped by limit).",
     input_schema: {
@@ -2983,12 +3030,18 @@ const ALWAYS_AVAILABLE = new Set([
   'importImageAsVoxels',
   // Pure read of the built-in example catalog (names only — never opens one).
   'listCatalog',
+  // Creates a NEW session from an image (confirmed), like importImageAsVoxels.
+  'createHueforge',
+  'getHueforgePlan',
+  'listHueforgeFilaments',
 ]);
 
 /** Tools that require explicit user confirmation before executing.
  *  The UI shows a blocking prompt and the model receives an error if declined. */
 export const CONFIRM_REQUIRED_TOOLS = new Set([
   'importImageAsRelief',
+  'createHueforge',
+  'exportHueforge3MF',
   'importSvgAsRelief',
   // Irreversible: a deleted version has no recycle bin (unlike deleteObject).
   'deleteVersion',
@@ -3039,6 +3092,8 @@ export function declinedToolMessage(name: string): string {
   if (name === 'deleteVersion') return '[Declined by user — the version was NOT deleted. Only delete versions the user explicitly asked to remove]';
   if (name === 'exportModel') return '[Declined by user — nothing was downloaded. Only export when the user asks for a file; otherwise tell them they can use the Export menu]';
   if (name === 'importImageAsVoxels') return '[Declined by user — no voxel session was created. Only convert an image when the user asks for voxel art]';
+  if (name === 'createHueforge') return '[Declined by user — no HueForge session was created. Only convert an image when the user asks for a HueForge / filament-layering print]';
+  if (name === 'exportHueforge3MF') return '[Declined by user — nothing was downloaded. Only export when the user asks for the 3MF]';
   return '[Declined by user — only call this tool when the user has explicitly asked for it (an import, or a settings change)]';
 }
 
@@ -3188,6 +3243,8 @@ export function aiDefaultImportTarget(api: PartwrightAPI): 'new-object' | 'new-s
 export function describeToolConfirmation(name: string, input: Record<string, unknown>): string {
   if (name === 'importImageAsRelief') return 'import an image as a 3D relief';
   if (name === 'importSvgAsRelief') return 'import an SVG as a 3D relief tile';
+  if (name === 'createHueforge') return `turn ${typeof input.imageRef === 'number' ? `reference image ${input.imageRef}` : 'an image'} into a HueForge filament-layering print (new session)`;
+  if (name === 'exportHueforge3MF') return `download the HueForge print as a 3MF (${input.swapMode === 'pause' ? 'manual swaps' : 'AMS filament changes'})`;
   if (name === 'setAppConfig') return `change the setting ${String(input.setting)} to ${String(input.value)} (saved for this browser)`;
   if (name === 'exportModel') return describeExport(input);
   if (name === 'importImageAsVoxels') {
@@ -3237,7 +3294,7 @@ const UI_GATED = new Set(['setCamera', 'frameObjectPart', 'openTool', 'closeTool
  *  turn (no ChatToggles scope yet — the per-call confirmation in
  *  CONFIRM_REQUIRED_TOOLS is the guard), kept as their own set so a future
  *  "Export" scope toggle has one place to hook in. */
-const EXPORT_GATED = new Set(['exportModel']);
+const EXPORT_GATED = new Set(['exportModel', 'exportHueforge3MF']);
 
 /** One registered UI tool as the model sees it: id, title and a one-line list
  *  of its prefill keys. Plain data, so it can cross the agent-Worker boundary. */
@@ -4663,6 +4720,19 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     }
     case 'listCatalog':
       return api.listCatalog(Object.keys(input).length > 0 ? input : undefined);
+    case 'createHueforge': {
+      const src = resolveVoxelImageSource(api, input, 'createHueforge');
+      if (typeof src !== 'string') return src;
+      const { imageRef: _ref, src: _src, ...rest } = input;
+      const opts = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== null));
+      return api.createHueforge({ src, ...opts });
+    }
+    case 'getHueforgePlan':
+      return api.getHueforgePlan();
+    case 'listHueforgeFilaments':
+      return api.listHueforgeFilaments();
+    case 'exportHueforge3MF':
+      return api.exportHueforge3MF(Object.fromEntries(Object.entries(input).filter(([, v]) => v !== null)));
     // --- UI control (hand-off) ---
     case 'openTool': {
       // Providers whose schema subset can't populate a property-less object
@@ -4958,15 +5028,15 @@ function executeEditPalette(api: PartwrightAPI, input: Record<string, unknown>):
 
 /** Shape errors in an importImageAsVoxels call's image source (checked before
  *  the confirm prompt). Model-supplied URLs must be http(s) or data:image. */
-function voxelImageInputError(input: Record<string, unknown>): string | null {
+function voxelImageInputError(input: Record<string, unknown>, tool = 'importImageAsVoxels'): string | null {
   const hasRef = input.imageRef != null;
   const hasSrc = input.src != null;
-  if (hasRef === hasSrc) return 'importImageAsVoxels: pass exactly one of imageRef (1-based index from getReferenceImages) or src (an http(s) or data:image URL).';
+  if (hasRef === hasSrc) return `${tool}: pass exactly one of imageRef (1-based index from getReferenceImages) or src (an http(s) or data:image URL).`;
   if (hasRef && (typeof input.imageRef !== 'number' || !Number.isInteger(input.imageRef) || input.imageRef < 1)) {
-    return 'importImageAsVoxels: imageRef must be a 1-based integer index from getReferenceImages.';
+    return `${tool}: imageRef must be a 1-based integer index from getReferenceImages.`;
   }
   if (hasSrc && (typeof input.src !== 'string' || !/^(https?:\/\/|data:image\/)/i.test(input.src))) {
-    return 'importImageAsVoxels: src must be an http(s) URL or a data:image/... URL.';
+    return `${tool}: src must be an http(s) URL or a data:image/... URL.`;
   }
   return null;
 }
@@ -4974,14 +5044,14 @@ function voxelImageInputError(input: Record<string, unknown>): string | null {
 /** The image URL an importImageAsVoxels call names: `src`, or the session
  *  reference image `imageRef` indexes (the same filtered list getReferenceImages
  *  numbers). Returns the URL, or an `{ error }`. */
-function resolveVoxelImageSource(api: PartwrightAPI, input: Record<string, unknown>): string | { error: string } {
-  const err = voxelImageInputError(input);
+function resolveVoxelImageSource(api: PartwrightAPI, input: Record<string, unknown>, tool = 'importImageAsVoxels'): string | { error: string } {
+  const err = voxelImageInputError(input, tool);
   if (err) return { error: err };
   if (typeof input.src === 'string') return input.src;
   const imgs = typeof api.getImages === 'function' ? api.getImages() : [];
   const list = ((Array.isArray(imgs) ? imgs : []) as Array<{ src?: string }>)
     .filter(im => typeof im.src === 'string' && im.src.length > 0);
   const entry = list[(input.imageRef as number) - 1];
-  if (!entry?.src) return { error: `importImageAsVoxels: no reference image at index ${input.imageRef}. Call getReferenceImages to list attached images and their indices.` };
+  if (!entry?.src) return { error: `${tool}: no reference image at index ${input.imageRef}. Call getReferenceImages to list attached images and their indices.` };
   return entry.src;
 }

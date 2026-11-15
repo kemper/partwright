@@ -7,6 +7,7 @@ import { runPreview, composePng, composeContactSheet, explainComponents, checkEx
 import { runPhoto, meshToPng, loadPalette } from './photo.mjs';
 import { runDaemon } from './daemon.mjs';
 import { runSegment } from './segment.mjs';
+import { runHueforge } from './hueforge.mjs';
 import { startDaemon, stopDaemon, statusDaemon, rpc, evalInPage, resetPage } from './client.mjs';
 
 const coerce = (s) => { if (s === 'true') return true; if (s === 'false') return false; const n = Number(s); return Number.isNaN(n) ? s : n; };
@@ -295,6 +296,20 @@ async function cmdSegment(argv) {
   console.log(json(result));
 }
 
+// HueForge-style filament-layering print from a photo → 3MF with layer swaps.
+async function cmdHueforge(argv) {
+  const a = parse(argv);
+  const photo = a._[0];
+  if (!photo) { console.error('usage: partwright hueforge <photo> [--colors 8] [--width 120] [--max-height 2.4] [--swap ams|pause|both] [--out stem] [--filaments f.json] …'); process.exit(1); }
+  const out = await runHueforge(resolve(photo), {
+    colors: a.colors, width: a.width, pixel: a.pixel, layer: a.layer, first: a.first,
+    maxHeight: a['max-height'], base: a.base, filamentsFile: a.filaments, baseFilament: a['base-filament'],
+    chroma: a.chroma, smoothing: a.smoothing, denoise: a.denoise, iterations: a.iterations, seed: a.seed,
+    swap: a.swap, printer: a.printer, nozzle: a.nozzle, out: a.out ? resolve(a.out) : undefined, name: a.name,
+  });
+  console.log(json({ ok: true, ...out }));
+}
+
 // Discovery — list the window.partwright methods reachable via `call`.
 async function cmdMethods(argv) {
   const a = parse(argv);
@@ -321,6 +336,12 @@ Phase 1 (stateless, no browser — fast inner loop):
   partwright segment <mesh.stl> [--algo crease-watershed|pieces] [--seeds seeds.json] [-p k=v]
                                [--smooth radius] [--png out] [--views …] [--size N] [--json]
                                detect named parts → colour-coded PNG + quality JSON
+  partwright hueforge <photo>  [--colors 8] [--width 120] [--max-height 2.4] [--base 0.48]
+                               [--layer 0.08] [--first 0.16] [--pixel 0.3] [--swap ams|pause|both]
+                               [--filaments my-spools.json] [--base-filament Black] [--chroma 1]
+                               [--smoothing 1.2] [--printer p1s] [--out stem]
+                               photo → HueForge-style filament-layering print: 3MF with
+                               filament changes at layer heights + preview PNG + swap list
 
 Phase 2 (headless-browser daemon — full fidelity + state):
   partwright iterate <file.js> [--out png] [--views all] [-p k=v]
@@ -342,6 +363,7 @@ export async function main(argv) {
     case 'photo': return cmdPhoto(rest);
     case 'fetch': return cmdFetch(rest);
     case 'segment': return cmdSegment(rest);
+    case 'hueforge': return cmdHueforge(rest);
     case 'iterate': return cmdIterate(rest);
     case 'daemon': return cmdDaemon(rest);
     case 'call': return cmdCall(rest);

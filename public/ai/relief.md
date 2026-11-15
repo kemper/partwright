@@ -115,3 +115,57 @@ clip-paths are ignored. Resolution caps at 256 columns.
 Import the `.stl` normally, then in the Relief Studio panel use **Detect levels**
 to seed a color region per existing Z plateau (or, programmatically, paint Z
 slabs). Then preview + read the swap guide as above.
+
+## HueForge
+
+A HueForge-style print (filament layering) is a heightmap printed in thin
+layers, with the filament swapped at chosen layers. Thin plastic is
+translucent, so the colour at each point depends on how much of each filament
+lies under the surface there: a handful of filaments gives many shades.
+
+`createHueforge` solves the whole thing from a photo:
+
+1. picks the filaments (from the built-in list, or the user's own spools), their
+   order bottom→top, and the layer each one starts at;
+2. gives every pixel the height whose stacked colour best matches the photo,
+   smoothing the surface without blurring real edges;
+3. opens the result as a new session, painted with the **predicted** look, so
+   `renderView` / `renderViews` show what the print should look like.
+
+```js
+await partwright.createHueforge({
+  src: 'data:image/jpeg;base64,...',   // or an http(s) URL; AI tool: imageRef
+  colors: 8,          // MAXIMUM filaments; swaps that barely help are dropped
+  widthMm: 120,       // depth follows the photo
+  maxHeightMm: 2.4,   // taller = more shades per filament (3.2 for colourful photos)
+  // baseHeightMm: 0.48, layerHeight: 0.08, firstLayerHeight: 0.16, pixelSizeMm: 0.3,
+  // filaments: [{ name: 'Black', hex: '#161616', td: 0.6 }, ...],  // the user's spools
+  // baseFilament: 'Black',   // force the bottom filament
+  // chromaWeight: 0,         // lightness only: classic monochrome HueForge
+})
+// -> { sessionId, blocks: [{name, hex, td, startLayer}], swaps: [{layer, z, name, hex, td}],
+//      totalLayers, totalHeightMm, widthMm, depthMm, meanDeltaE }
+
+partwright.getHueforgePlan()        // same plan + `instructions` text for the user
+partwright.listHueforgeFilaments()  // the built-in candidate list
+
+partwright.exportHueforge3MF({ swapMode: 'ams', printer: 'p1s' })
+// Bambu Studio / Orca 3MF: one object, layer height + first layer + 100% infill
+// set to match, and a filament change at each swap layer.
+//   'ams'   — automatic filament changes (one AMS slot per filament)
+//   'pause' — one filament; the printer pauses at each swap for a manual change
+```
+
+- **TD (transmission distance)** follows the HueForge convention: the
+  thickness (mm) at which a filament stops letting the colour below show
+  through. A layer of thickness `t` covers what's beneath with opacity
+  `min(1, t / TD)`. The built-in TDs are typical values for common PLA colours;
+  if the user knows their spools' TDs, pass them as `filaments`.
+- **Judging the result:** `meanDeltaE` under ~10 is a good match; above ~15
+  means the photo needs more colours, more height, or filaments closer to its
+  palette. Render the session and compare it with the photo.
+- **Colourful photos** are the hard case: every pixel shares one stack of
+  filaments, so two saturated hues that each need to sit directly on a light
+  base compete. More `maxHeightMm` and 8–10 `colors` help most.
+- Headless (CLI agents in the repo): `npm run hueforge -- photo.jpg --colors 8
+  --swap both` writes the 3MF(s), a photo-vs-prediction PNG, and the swap list.

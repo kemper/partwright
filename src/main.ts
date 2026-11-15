@@ -214,6 +214,12 @@ import {
 } from './color/palette';
 import { meshBounds } from './color/slabPaint';
 import { openReliefImportModal, type ReliefStagedOptions } from './ui/reliefImportModal';
+import { solveHueforgeAsync } from './relief/hueforge/hueforgeClient';
+import { hueforgeMeshData, buildPlan3MF } from './relief/hueforge/export3mf';
+import { hueforgeRecord, hueforgeSeedRegions, planSwaps, planSwapText } from './relief/hueforge/plan';
+import { HUEFORGE_FILAMENT_LIBRARY, type HueforgeFilament } from './relief/hueforge/filamentLibrary';
+import type { HueforgeOptions, HueforgeResult } from './relief/hueforge/solver';
+import { openHueforgeModal } from './ui/hueforgeModal';
 import { mountReliefStudio, type ReliefStudioHandle } from './ui/reliefStudio';
 import type { BuiltExport } from './export/gltf';
 
@@ -4627,6 +4633,58 @@ async function main() {
     return commitGeneratedRelief(result, opts, sourceName, sourceFile, true, interactive);
   }
 
+  // === HueForge-style filament layering (photo → swap schedule + heightmap) ===
+  /** Turn a finished solve into a new relief session: the heightmap mesh (a
+   *  real Manifold — it's watertight), painted with the predicted print
+   *  colours, plus the plan record the layer-swap 3MF export needs. */
+  async function commitHueforgeResult(result: HueforgeResult, sourceName: string): Promise<{ sessionId: string }> {
+    const md = hueforgeMeshData(result);
+    const record = hueforgeRecord(result);
+    const mesh: ImportedMesh = {
+      id: generateId(),
+      filename: `${sourceName}.hueforge`,
+      format: 'relief',
+      vertProperties: md.vertProperties,
+      triVerts: md.triVerts,
+      numVert: md.numVert,
+      numTri: md.numTri,
+      numProp: md.numProp,
+    };
+    // Function seeder: resolved against the mesh after Manifold.ofMesh, which
+    // may reorder triangles.
+    const { sessionId } = await importMeshPayload(mesh, sourceName, { manifold: true, seedRegions: (m) => hueforgeSeedRegions(m, record) });
+    setReliefSettings(sessionId, {
+      isRelief: true,
+      layerHeight: record.layerHeight,
+      baseThickness: record.firstLayerHeight,
+      previewMode: 'flat',
+      hueforge: record,
+    });
+    showReliefStudio();
+    return { sessionId };
+  }
+
+  /** The current session's HueForge plan, or null. */
+  function currentHueforgePlan() {
+    const sid = getState().session?.id ?? null;
+    return sid ? getReliefSettings(sid)?.hueforge ?? null : null;
+  }
+
+  function openHueforgeDialog(initialSrc?: string): void {
+    openHueforgeModal({
+      initialSrc,
+      solve: (image, options, signal) => solveHueforgeAsync(image, options, signal),
+      onCreate: async (result, name) => {
+        await commitHueforgeResult(result, name);
+        showToast(`HueForge print created — ${result.blocks.length} filaments, ${result.swaps.length} swaps`, { variant: 'success', source: 'import' });
+      },
+      onDownload: (result, swapMode, printer) => {
+        const built = buildPlan3MF(hueforgeRecord(result), hueforgeMeshData(result), { swapMode, printer, name: 'hueforge' });
+        downloadBlob(built.blob, built.filename, '3MF');
+      },
+    });
+  }
+
   // Seed color regions from an imported stepped-relief STL's existing Z plateaus so the
   // user can recolor each printed layer band. Reuses the slab selector.
   async function detectReliefLevels(): Promise<void> {
@@ -8732,6 +8790,7 @@ async function main() {
       else openReliefImportFlow();
     },
     onCreateVoxel: () => { void openVoxelImportFlow(); },
+    onCreateHueforge: () => { openHueforgeDialog(); },
     onLanguageHelp: async () => { await showLanguageHelpModal(); },
     onToggleAi: () => { void toggleAiPanelFromToolbar(); },
     onLanguageSwitch: async (lang: 'manifold-js' | 'scad' | 'replicad' | 'voxel') => {
@@ -10405,6 +10464,9 @@ async function main() {
     { id: 'export-stl', title: 'Export STL', hint: 'Export', keywords: 'download print', run: actionExportSTL, enabled: () => currentMeshData !== null },
     { id: 'export-obj', title: 'Export OBJ', hint: 'Export', keywords: 'download wavefront', run: actionExportOBJ, enabled: () => currentMeshData !== null },
     { id: 'export-3mf', title: 'Export 3MF', hint: 'Export', keywords: 'download print color', run: actionExport3MF, enabled: () => currentMeshData !== null },
+    { id: 'hueforge-create', title: 'Photo → HueForge print…', hint: 'Create', keywords: 'hueforge filament layering lithophane photo portrait swap color change translucent td', run: () => openHueforgeDialog() },
+    { id: 'export-hueforge-3mf', title: 'Export HueForge 3MF (filament swaps, AMS)', hint: 'Export', keywords: 'hueforge bambu orca layer swap color change ams filament', run: () => { const r = partwrightAPI.exportHueforge3MF({ swapMode: 'ams' }) as { error?: string }; if (r?.error) showToast(r.error, { variant: 'warn', source: 'export' }); }, enabled: () => currentHueforgePlan() !== null },
+    { id: 'export-hueforge-3mf-pause', title: 'Export HueForge 3MF (manual swaps, pauses)', hint: 'Export', keywords: 'hueforge bambu orca layer swap pause manual filament', run: () => { const r = partwrightAPI.exportHueforge3MF({ swapMode: 'pause' }) as { error?: string }; if (r?.error) showToast(r.error, { variant: 'warn', source: 'export' }); }, enabled: () => currentHueforgePlan() !== null },
     { id: 'export-3mf-bambu', title: 'Export 3MF — Bambu/Orca (multi-plate)', hint: 'Export', keywords: 'download print color bambu orca plate objects parts multi-object multi-part filament ams', run: actionExport3MFBambu, enabled: () => currentMeshData !== null },
     // VOX exports the voxel grid (getCurrentVoxelGrid), not currentMeshData, so
     // gate on the active language — the grid is re-derived on demand inside the
@@ -17511,6 +17573,105 @@ async function main() {
         return { error: `importSvgAsRelief failed: ${e instanceof Error ? e.message : String(e)}` };
       }
     },
+    /** HueForge-style filament-layering print from a photo: solves which
+     *  filaments to stack, where to swap, and each pixel's height, then opens
+     *  it as a new session. See /ai/relief.md#hueforge. */
+    async createHueforge(args: {
+      src: string; colors?: number; widthMm?: number; maxHeightMm?: number; baseHeightMm?: number;
+      layerHeight?: number; firstLayerHeight?: number; pixelSizeMm?: number;
+      filaments?: HueforgeFilament[]; baseFilament?: string; chromaWeight?: number; smoothing?: number;
+      effort?: number; seed?: number; name?: string;
+    }): Promise<unknown> {
+      const KEYS = ['src', 'colors', 'widthMm', 'maxHeightMm', 'baseHeightMm', 'layerHeight', 'firstLayerHeight', 'pixelSizeMm', 'filaments', 'baseFilament', 'chromaWeight', 'smoothing', 'effort', 'seed', 'name'];
+      const checked = guard(() => {
+        assertObject(args, 'createHueforge(args)');
+        assertNoUnknownKeys(args as unknown as Record<string, unknown>, KEYS, 'createHueforge(args)');
+        assertString(args.src, 'createHueforge(src)', { allowEmpty: false });
+        assertNumber(args.colors, 'createHueforge(colors)', { optional: true, integer: true, min: 1, max: 16 });
+        assertNumber(args.widthMm, 'createHueforge(widthMm)', { optional: true, min: 10, max: 400 });
+        assertNumber(args.maxHeightMm, 'createHueforge(maxHeightMm)', { optional: true, min: 0.3, max: 20 });
+        assertNumber(args.baseHeightMm, 'createHueforge(baseHeightMm)', { optional: true, min: 0.04, max: 10 });
+        assertNumber(args.layerHeight, 'createHueforge(layerHeight)', { optional: true, min: 0.04, max: 0.4 });
+        assertNumber(args.firstLayerHeight, 'createHueforge(firstLayerHeight)', { optional: true, min: 0.04, max: 0.6 });
+        assertNumber(args.pixelSizeMm, 'createHueforge(pixelSizeMm)', { optional: true, min: 0.1, max: 2 });
+        assertNumber(args.chromaWeight, 'createHueforge(chromaWeight)', { optional: true, min: 0, max: 4 });
+        assertNumber(args.smoothing, 'createHueforge(smoothing)', { optional: true, min: 0, max: 20 });
+        assertNumber(args.effort, 'createHueforge(effort)', { optional: true, min: 0.1, max: 10 });
+        assertNumber(args.seed, 'createHueforge(seed)', { optional: true, integer: true, min: 0 });
+        assertString(args.baseFilament, 'createHueforge(baseFilament)', { optional: true });
+        assertString(args.name, 'createHueforge(name)', { optional: true });
+        if (args.filaments !== undefined) {
+          const list = assertArray(args.filaments, 'createHueforge(filaments)');
+          list.forEach((f, i) => {
+            const o = assertObject(f, `createHueforge(filaments[${i}])`) as Record<string, unknown>;
+            assertNoUnknownKeys(o, ['name', 'hex', 'td'], `createHueforge(filaments[${i}])`);
+            assertString(o.name, `createHueforge(filaments[${i}].name)`, { allowEmpty: false });
+            assertString(o.hex, `createHueforge(filaments[${i}].hex)`, { allowEmpty: false });
+            if (!/^#?[0-9a-fA-F]{6}$/.test(o.hex as string)) throw new ValidationError(`createHueforge(filaments[${i}].hex) must be "#rrggbb", got ${JSON.stringify(o.hex)}`);
+            assertNumber(o.td, `createHueforge(filaments[${i}].td)`, { min: 0.05, max: 50 });
+          });
+        }
+        return true;
+      });
+      if (typeof checked === 'object' && checked !== null && 'error' in checked) return checked;
+      try {
+        const image = await dataUrlToImageData(args.src);
+        const options: Partial<HueforgeOptions> = {
+          numColors: args.colors, widthMm: args.widthMm, maxHeightMm: args.maxHeightMm, baseHeightMm: args.baseHeightMm,
+          layerHeight: args.layerHeight, firstLayerHeight: args.firstLayerHeight, pixelSizeMm: args.pixelSizeMm,
+          filaments: args.filaments?.map((f) => ({ name: f.name, hex: f.hex.startsWith('#') ? f.hex : `#${f.hex}`, td: f.td })),
+          baseFilament: args.baseFilament, chromaWeight: args.chromaWeight, smoothing: args.smoothing, seed: args.seed,
+          iterations: args.effort !== undefined ? Math.round(60000 * args.effort) : undefined,
+        };
+        const result = await solveHueforgeAsync(image, options);
+        const { sessionId } = await commitHueforgeResult(result, args.name ?? 'hueforge');
+        const plan = hueforgeRecord(result);
+        return { sessionId, ...plan, swaps: planSwaps(plan) };
+      } catch (e) {
+        return { error: `createHueforge failed: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    },
+    /** The current session's HueForge plan: filaments, swap layers, and a
+     *  printable instruction text. */
+    getHueforgePlan(): unknown {
+      const plan = currentHueforgePlan();
+      if (!plan) return { error: 'getHueforgePlan: the current session is not a HueForge print — create one with createHueforge({src}).' };
+      return { ...plan, swaps: planSwaps(plan), instructions: planSwapText(plan) };
+    },
+    /** The built-in filament list createHueforge picks from (name, hex, TD mm). */
+    listHueforgeFilaments(): HueforgeFilament[] {
+      return HUEFORGE_FILAMENT_LIBRARY.map((f) => ({ ...f }));
+    },
+    /** Download the current HueForge print as a Bambu Studio / Orca 3MF with
+     *  filament changes at the swap layers. swapMode 'ams' = automatic tool
+     *  changes; 'pause' = the printer pauses for a manual swap. */
+    exportHueforge3MF(args: { swapMode?: 'ams' | 'pause'; printer?: string; nozzle?: string; filename?: string } = {}): unknown {
+      const checked = guard(() => {
+        assertObject(args, 'exportHueforge3MF(args)', { optional: true });
+        assertNoUnknownKeys((args ?? {}) as Record<string, unknown>, ['swapMode', 'printer', 'nozzle', 'filename'], 'exportHueforge3MF(args)');
+        if (args?.swapMode !== undefined) assertEnum(args.swapMode, ['ams', 'pause'], 'exportHueforge3MF(swapMode)');
+        if (args?.printer !== undefined && !isBambuPrinter(args.printer)) throw new ValidationError(`exportHueforge3MF(printer) must be one of ${BAMBU_PRINTERS.map((p) => p.id).join(', ')}`);
+        if (args?.nozzle !== undefined && !isBambuNozzle(args.nozzle)) throw new ValidationError(`exportHueforge3MF(nozzle) must be one of ${BAMBU_NOZZLES.join(', ')}`);
+        assertString(args?.filename, 'exportHueforge3MF(filename)', { optional: true });
+        return true;
+      });
+      if (typeof checked === 'object' && checked !== null && 'error' in checked) return checked;
+      const plan = currentHueforgePlan();
+      if (!plan || !currentMeshData) return { error: 'exportHueforge3MF: the current session is not a HueForge print — create one with createHueforge({src}).' };
+      try {
+        const built = buildPlan3MF(plan, currentMeshData, { swapMode: args?.swapMode ?? 'ams', printer: args?.printer, nozzle: args?.nozzle, name: args?.filename ?? 'hueforge' });
+        downloadBlob(built.blob, built.filename, '3MF');
+        return { filename: built.filename, bytes: built.blob.size, swapMode: args?.swapMode ?? 'ams', filaments: plan.blocks.length, swaps: plan.blocks.length - 1 };
+      } catch (e) {
+        return { error: `exportHueforge3MF failed: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    },
+    /** Open the HueForge dialog (photo → filament-layering print) for the user. */
+    openHueforgeDialog(src?: string): { ok: true } | { error: string } {
+      if (src !== undefined && typeof src !== 'string') return { error: 'openHueforgeDialog(src) must be an image URL string' };
+      openHueforgeDialog(src);
+      return { ok: true };
+    },
     /** The advisory single-nozzle filament-swap guide for the current relief. */
     getReliefSwapGuide(): unknown {
       if (!currentMeshData) return { error: 'getReliefSwapGuide: no geometry loaded — create or load a relief first.' };
@@ -24270,6 +24431,11 @@ async function main() {
         'splitImportIntoObjects': { signature: 'await splitImportIntoObjects() -- Split the open object (a single unedited mesh import, e.g. a multi-body STL) into one object per piece -> {objects:[{id,name}]} or {error}', docs: '/ai/file-io.md' },
         'importImageAsRelief': { signature: "await importImageAsRelief({src, mode?: 'luminance'|'quantized'|'ai', options?, quantized?, preprocess?, crop?}) -- Colour tile / stepped-relief object from an image (data: or http(s) URL) -> {sessionId} or {error}", docs: '/ai/relief.md' },
         'importSvgAsRelief': { signature: 'await importSvgAsRelief({svgText, options?, quantized?, preprocess?}) -- Multi-colour tile from raw SVG; each <path fill> becomes one crisp region -> {sessionId} or {error}', docs: '/ai/relief.md#make-a-part-from-an-svg' },
+        'createHueforge': { signature: "await createHueforge({src, colors?: 8, widthMm?: 120, maxHeightMm?: 2.4, baseHeightMm?, layerHeight?: 0.08, firstLayerHeight?: 0.16, pixelSizeMm?: 0.3, filaments?: [{name, hex, td}], baseFilament?, chromaWeight?, smoothing?, effort?, seed?, name?}) -- HueForge-style filament-layering print from a photo: picks filaments + swap layers + per-pixel heights, opens a new session -> {sessionId, blocks, swaps, meanDeltaE, ...} or {error}", docs: '/ai/relief.md#hueforge' },
+        'getHueforgePlan': { signature: 'getHueforgePlan() -- The current HueForge print: filaments, swap layers/heights, instructions text -> plan or {error}', docs: '/ai/relief.md#hueforge' },
+        'listHueforgeFilaments': { signature: 'listHueforgeFilaments() -- Built-in filament list (name, hex, TD mm) createHueforge chooses from', docs: '/ai/relief.md#hueforge' },
+        'exportHueforge3MF': { signature: "exportHueforge3MF({swapMode?: 'ams'|'pause', printer?, nozzle?, filename?}) -- Download the HueForge print as a Bambu/Orca 3MF with filament changes at the swap layers -> {filename, bytes} or {error}", docs: '/ai/relief.md#hueforge' },
+        'openHueforgeDialog': { signature: 'openHueforgeDialog(src?) -- Open the HueForge dialog (photo → filament-layering print) for the user', docs: '/ai/relief.md#hueforge' },
         'getReliefSwapGuide': { signature: 'getReliefSwapGuide() -- Single-nozzle filament-swap guide (layer heights to pause and swap) for the current relief, or {error}', docs: '/ai/relief.md#read-the-swap-guide' },
         'setReliefPreviewMode': { signature: "setReliefPreviewMode('flat'|'ams'|'single-nozzle') -- Relief optical preview mode (relief sessions only) -> {ok: true} or {error}", docs: '/ai/relief.md#see-it-like-a-print' },
         'importImageAsVoxels': { signature: "await importImageAsVoxels(imageUrl, {mode?: 'billboard'|'heightmap', maxSize?, depth?, colorMode?, palette?, codeStyle?, ...}) -- Image (data: or same-origin URL) -> colored voxel model in a new voxel session -> {sessionId, voxelCount} or {error}", docs: '/ai/voxel.md#image-import' },
