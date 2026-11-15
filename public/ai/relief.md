@@ -116,6 +116,44 @@ Import the `.stl` normally, then in the Relief Studio panel use **Detect levels*
 to seed a color region per existing Z plateau (or, programmatically, paint Z
 slabs). Then preview + read the swap guide as above.
 
+## Image tools
+
+Attach an image to the session once, then turn it into objects with **image
+tools** — and re-open a tool's settings later. Each tool stores its settings in
+the object's code as a header comment, so they persist, version and export
+with the session:
+
+```js
+// @image-tool {"tool":"tile","image":"<attachment id>","params":{...}}
+```
+
+| tool | makes |
+|---|---|
+| `tile` | flat tile with the image's colour regions (keychain, badge) |
+| `silhouette` | flat tile cut to the subject's outline |
+| `steppedRelief` | each colour cluster at its own height |
+| `lithophane` | smooth brightness → height relief |
+| `layeredPrint` | HueForge-style filament layering (its code, `api.layeredPrint`, is the record) |
+| `voxel` | pixel-art cubes |
+
+```js
+partwright.listImageTools()
+await partwright.applyImageTool({ tool: 'tile', image: '<attachment id>', params: { quantized: { clusters: 5, shape: 'rounded' } } })
+// or src: 'data:image/…' to attach a new image first
+partwright.getImageToolOp()   // -> { tool, image, params } of the open object
+// Re-apply to the open object (a NEW VERSION — undo is version history).
+// Same tool: params MERGE over the stored ones, so tweak one setting at a time:
+await partwright.applyImageTool({ tool: 'tile', replace: true, params: { quantized: { clusters: 7 } } })
+partwright.openImageTools()   // the Image tools panel (Import → Image tools…)
+```
+
+- Relief tools (`tile`, `silhouette`, `steppedRelief`, `lithophane`) take
+  `ReliefOptions` sections: `common`, `quantized`, `luminance`, `preprocess`
+  (see `importImageAsRelief` above). `voxel` takes the `importImageAsVoxels`
+  options; `layeredPrint` the `api.layeredPrint` options.
+- Results land in the current session (where the image is attached) as a new
+  object; `replace: true` re-applies to the open object.
+
 ## Layered photo prints
 
 A layered (HueForge-style) print is a heightmap printed in thin layers, with
