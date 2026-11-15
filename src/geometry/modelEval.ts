@@ -65,10 +65,12 @@ export function hardenModelShared<T>(x: T): T {
  *  `hardenModelShared` must never reach a big typed array: hardening one lists
  *  every element as an own key, so a 1.8M-triangle import (8M elements) cost
  *  about 10 s on EVERY run, before the model code started. And it buys
- *  nothing there — elements can't be frozen, and these arrays are the run's
- *  own copies. So this does by hand what harden would have done to them: the
- *  list and each record are frozen, each typed array is made non-extensible,
- *  and any other object value is hardened as usual.
+ *  nothing there — elements can't be frozen, and these arrays are copied for
+ *  each execute request, so nothing written to them reaches a later request.
+ *  So this does by hand what harden would have done to them: the list and
+ *  each record are frozen, each typed array is made non-extensible, and
+ *  anything else a record holds (any own key, accessors included) is hardened
+ *  as usual.
  *
  *  The caller must expose the list on `api` through an ACCESSOR
  *  (`get imports() { return list; }`). harden freezes an accessor's functions
@@ -76,10 +78,15 @@ export function hardenModelShared<T>(x: T): T {
  *  would be walked. No-op without SES, like hardenModelShared. */
 export function sealBulkRecords<T extends object>(list: T[]): T[] {
   if (hardener === null) return list;
+  const lock = (value: unknown): void => {
+    if (ArrayBuffer.isView(value)) Object.preventExtensions(value);
+    else if (value !== null && (typeof value === 'object' || typeof value === 'function')) hardener!(value);
+  };
   for (const record of list) {
-    for (const value of Object.values(record)) {
-      if (ArrayBuffer.isView(value)) Object.preventExtensions(value);
-      else if (value !== null && (typeof value === 'object' || typeof value === 'function')) hardener(value);
+    for (const key of Reflect.ownKeys(record)) {
+      const d = Object.getOwnPropertyDescriptor(record, key)!;
+      if ('value' in d) lock(d.value);
+      else { lock(d.get); lock(d.set); }
     }
     Object.freeze(record);
   }

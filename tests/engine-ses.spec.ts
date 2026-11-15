@@ -101,7 +101,8 @@ const ISOLATION_PROBE = String.raw`
 `;
 
 // Reachability walk over everything model code can reach from `api` and from
-// what api calls return (data properties + [[Prototype]], no getters).
+// what api calls return (data properties + [[Prototype]]; accessor functions
+// are visited, and the accessors on `api` itself — `api.imports` — are read).
 const WALK_PROBE = (seeds: string) => String.raw`
   const tag = (o) => { try { return Object.prototype.toString.call(o); } catch (e) { return ''; } }; // guard proxies throw on get
   const seen = new Set(); const q = []; let head = 0; const hits = []; let n = 0;
@@ -120,11 +121,35 @@ const WALK_PROBE = (seeds: string) => String.raw`
     }
     let keys = [];
     try { keys = ArrayBuffer.isView(o) ? [] : Reflect.ownKeys(o); } catch (e) { continue; }
-    for (const k of keys) { let d; try { d = Object.getOwnPropertyDescriptor(o, k); } catch (e) { continue; } if (d && 'value' in d) q.push([d.value, path + '.' + String(k)]); }
+    for (const k of keys) {
+      let d; try { d = Object.getOwnPropertyDescriptor(o, k); } catch (e) { continue; }
+      if (!d) continue;
+      if ('value' in d) { q.push([d.value, path + '.' + String(k)]); continue; }
+      q.push([d.get, path + '.get ' + String(k)]); q.push([d.set, path + '.set ' + String(k)]);
+      if (path === 'api' && d.get) { try { q.push([d.get.call(o), path + '.' + String(k)]); } catch (e) {} }
+    }
     let p; try { p = Object.getPrototypeOf(o); } catch (e) { p = null; } if (p) q.push([p, path + '.__proto__']);
   }
   throw new Error('WALK:' + JSON.stringify({ visited: n, hits: hits.slice(0, 20) }));
 `;
+
+/** Attach an import to the editor (it reaches model code as `api.imports` /
+ *  `api.meshImports`). `tris` > 12 makes zero-filled arrays of that size (only
+ *  their size matters); otherwise a real 10 mm cube. */
+async function attachImport(page: Page, tris = 12): Promise<void> {
+  await page.evaluate(async (tris) => {
+    const m = await import('/src/import/importedMesh.ts');
+    let vertProperties: Float32Array, triVerts: Uint32Array;
+    if (tris > 12) {
+      vertProperties = new Float32Array(Math.ceil(tris / 2) * 3);
+      triVerts = new Uint32Array(tris * 3);
+    } else {
+      vertProperties = new Float32Array([0, 0, 0, 10, 0, 0, 10, 10, 0, 0, 10, 0, 0, 0, 10, 10, 0, 10, 10, 10, 10, 0, 10, 10]);
+      triVerts = new Uint32Array([0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 2, 3, 7, 2, 7, 6, 0, 4, 7, 0, 7, 3, 1, 2, 6, 1, 6, 5]);
+    }
+    m.setActiveImports([{ id: 'probe', filename: 'probe.stl', format: 'stl', numProp: 3, numVert: vertProperties.length / 3, numTri: triVerts.length / 3, vertProperties, triVerts }]);
+  }, tris);
+}
 
 function expectAllBlocked(report: Record<string, unknown>, hasValidationError = true): void {
   const holes = Object.entries(report).filter(([k, v]) => !k.startsWith('__') && v !== 'blocked');
@@ -179,6 +204,8 @@ test.describe('SES model-code sandbox', () => {
   test('a reachability walk from api and its return values finds no way back to the Worker', async ({ page }) => {
     test.setTimeout(180_000);
     await boot(page);
+    // With an import attached, so the walk covers api.imports / api.meshImports.
+    await attachImport(page);
     for (const [lang, seeds] of [['manifold-js', MANIFOLD_SEEDS], ['voxel', VOXEL_SEEDS], ['replicad', REPLICAD_SEEDS]] as const) {
       const out = payload((await run(page, WALK_PROBE(seeds), lang)).error, 'WALK') as { visited: number; hits: string[] };
       expect(out.hits, `${lang}: ${JSON.stringify(out.hits)}`).toEqual([]);
@@ -190,6 +217,8 @@ test.describe('SES model-code sandbox', () => {
   test('no shared mutable state: nothing a run writes is visible to the next run', async ({ page }) => {
     test.setTimeout(180_000);
     await boot(page);
+    // With an import attached, so the walk covers api.imports / api.meshImports.
+    await attachImport(page);
     // Run 1 stamps every object it can reach and extend; run 2 (same Worker)
     // looks for the stamp. Anything found outlived run 1 AND was writable.
     for (const [lang, seeds, ret] of [
@@ -444,23 +473,6 @@ test.describe('SES model-code sandbox — other Workers', () => {
 // hardening a typed array lists every element, which cost ~10 s per run on a
 // 1.8M-triangle import (#1259) — and they must still be locked for model code.
 test.describe('SES model-code sandbox — imported meshes', () => {
-  /** Attach an import to the editor. `tris` > 12 makes zero-filled arrays of
-   *  that size (only their size matters); otherwise a real 10 mm cube. */
-  async function attachImport(page: Page, tris = 12): Promise<void> {
-    await page.evaluate(async (tris) => {
-      const m = await import('/src/import/importedMesh.ts');
-      let vertProperties: Float32Array, triVerts: Uint32Array;
-      if (tris > 12) {
-        vertProperties = new Float32Array(Math.ceil(tris / 2) * 3);
-        triVerts = new Uint32Array(tris * 3);
-      } else {
-        vertProperties = new Float32Array([0, 0, 0, 10, 0, 0, 10, 10, 0, 0, 10, 0, 0, 0, 10, 10, 0, 10, 10, 10, 10, 0, 10, 10]);
-        triVerts = new Uint32Array([0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 2, 3, 7, 2, 7, 6, 0, 4, 7, 0, 7, 3, 1, 2, 6, 1, 6, 5]);
-      }
-      m.setActiveImports([{ id: 'probe', filename: 'probe.stl', format: 'stl', numProp: 3, numVert: vertProperties.length / 3, numTri: triVerts.length / 3, vertProperties, triVerts }]);
-    }, tris);
-  }
-
   test('a big import adds nothing to a run: the harden pass does not walk its arrays', async ({ page }) => {
     test.setTimeout(120_000);
     await boot(page);
@@ -468,8 +480,8 @@ test.describe('SES model-code sandbox — imported meshes', () => {
     await attachImport(page, 2_000_000);
     const out = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: { run: (c: string) => Promise<{ error?: string | null; triangleCount?: number }>; getWorkerHealth: () => { runs: { timestamp: number; workerMs?: number }[] } } }).partwright;
-      // The model ignores the import: any time the Worker spends is overhead.
-      const r = await pw.run('const { Manifold } = api;\nreturn Manifold.cube([1, 1, 1]);');
+      // The model only checks the import arrived: any time the Worker spends is overhead.
+      const r = await pw.run('const { Manifold } = api;\nif (api.imports[0].triVerts.length !== 6000000) throw new Error("the import did not reach the run");\nreturn Manifold.cube([1, 1, 1]);');
       const runs = pw.getWorkerHealth().runs;
       const newest = runs.reduce((a, b) => (b.timestamp >= a.timestamp ? b : a));
       return { error: r.error ?? null, tris: r.triangleCount, workerMs: newest.workerMs };

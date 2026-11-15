@@ -1,7 +1,9 @@
 // Model-code probes for the SES shared-state check (#1127): run MARK in one
 // run and CHECK in a later run in the same engine Worker. MARK walks every
 // object reachable from `api` and from instances the common API calls hand
-// back (data properties + [[Prototype]], no getters), and stamps each one it
+// back (data properties + [[Prototype]]; accessor FUNCTIONS are visited, and
+// the accessors on `api` itself are read — bulk data such as `api.imports`
+// sits behind one so the harden pass doesn't walk it), and stamps each one it
 // can still extend with a registry-symbol property. CHECK walks the same way
 // and reports every object that carries the stamp — i.e. an object that
 // outlived the run AND that model code could write to. With SES on, the list
@@ -25,7 +27,12 @@ const WALK = String.raw`
       try { keys = ArrayBuffer.isView(o) ? [] : Reflect.ownKeys(o); } catch (e) { continue; }
       for (const k of keys) {
         let d; try { d = Object.getOwnPropertyDescriptor(o, k); } catch (e) { continue; }
-        if (d && 'value' in d) q.push([d.value, path + '.' + String(k)]);
+        if (!d) continue;
+        if ('value' in d) { q.push([d.value, path + '.' + String(k)]); continue; }
+        q.push([d.get, path + '.get ' + String(k)]); q.push([d.set, path + '.set ' + String(k)]);
+        // Only api's own accessors are read: calling arbitrary getters deep in
+        // the graph (embind, typed arrays) would have side effects.
+        if (path === 'api' && d.get) { try { q.push([d.get.call(o), path + '.' + String(k)]); } catch (e) { /* guard */ } }
       }
       let p; try { p = Object.getPrototypeOf(o); } catch (e) { p = null; }
       if (p) q.push([p, path + '.__proto__']);

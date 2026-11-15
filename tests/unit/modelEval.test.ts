@@ -68,6 +68,16 @@ describe('sealBulkRecords', () => {
     // Other object values are hardened as usual.
     expect(Object.isFrozen(extra)).toBe(true);
     expect(Object.isFrozen(extra.nested)).toBe(true);
+
+    // Symbol and non-enumerable keys are covered too.
+    const hidden = { deep: {} };
+    const viaSymbol = { deep: {} };
+    const odd = record(4) as ReturnType<typeof record> & Record<symbol, unknown>;
+    Object.defineProperty(odd, 'hidden', { value: hidden, enumerable: false });
+    odd[Symbol.for('probe')] = viaSymbol;
+    sealBulkRecords([odd]);
+    expect(Object.isFrozen(hidden.deep)).toBe(true);
+    expect(Object.isFrozen(viaSymbol.deep)).toBe(true);
     // The typed arrays were never handed to the hardener.
     expect(stats.typedArraysVisited).toBe(0);
     expect(stats.keysListed).toBeLessThan(20);

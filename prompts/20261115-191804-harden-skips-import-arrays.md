@@ -49,3 +49,30 @@ import attached) and passes here.
 
 **Data:** the same benchmark spec was run on main and on the branch; the
 numbers and chart are on the PR. Screenshots use a generated model only.
+
+## Assistant
+
+## Review follow-ups (same session)
+
+The reviewer checked `sealBulkRecords` against the installed SES source
+(`make-hardener.js`): for a typed array, harden calls `preventExtensions`,
+freezes own non-index properties (there are none on a structured clone), and
+queues the already-hardened prototype. It never touches `.buffer`. So the
+hand-rolled lock is equivalent. No blocking findings.
+
+**The timing test now proves the import arrived.** The model throws unless
+`api.imports[0].triVerts.length` is the attached size, so the test can't pass
+because imports stopped reaching the Worker.
+
+**The sandbox walkers follow `api`'s accessors.** The reachability walk and
+the shared-state stamp test followed data properties only, so `api.imports`
+behind a getter was invisible to them, and so would be any bulk data added
+this way later. Both now visit accessor functions and read `api`'s own
+getters (only `api`'s: calling arbitrary getters deep in the graph has side
+effects), and both run with an import attached.
+
+**`sealBulkRecords` covers every own key** (symbol and non-enumerable
+included, accessors hardened), not just enumerable string keys.
+
+**Docs wording:** the arrays are copied per execute request, not per run; an
+SDF model's preview pass and full pass share them, as before.
