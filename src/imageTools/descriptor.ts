@@ -262,11 +262,25 @@ export function parseObjectLiteral(src: string): unknown {
       i = j - 1;
     } else if (c === ',') {
       // Drop a trailing comma (JSON has none).
-      if (!/^(?:\s|\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)*[}\]]/.test(src.slice(i + 1))) out += c;
+      const next = src[nextSignificantIndex(src, i + 1)];
+      if (next !== '}' && next !== ']') out += c;
     } else if (/[\s{}[\]:0-9.+-]/.test(c)) out += c;
     else return undefined;
   }
   try { return JSON.parse(out); } catch { return undefined; }
+}
+
+/** Index of the first character at or after `i` that isn't whitespace or a
+ *  comment (a linear scan — no regex backtracking on comment-heavy input). */
+function nextSignificantIndex(src: string, i: number): number {
+  while (i < src.length) {
+    const c = src[i];
+    if (c === ' ' || c === '\t' || c === '\n' || c === '\r') { i++; continue; }
+    if (c === '/' && src[i + 1] === '/') { const nl = src.indexOf('\n', i + 2); i = nl < 0 ? src.length : nl + 1; continue; }
+    if (c === '/' && src[i + 1] === '*') { const end = src.indexOf('*/', i + 2); i = end < 0 ? src.length : end + 2; continue; }
+    break;
+  }
+  return i;
 }
 
 /** The record behind an image-tool CALL in `code` — `api.imageTile(img, {…})`
@@ -280,7 +294,7 @@ function imageToolOpFromCall(code: string): ImageToolOp | null {
     const tool = OP_FUNCTION_TOOL[m[1]];
     let image = m[3];
     if (!image && m[4]) {
-      const name = m[4].replace(/\$/g, '\\$');
+      const name = m[4].replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
       const v = new RegExp(`\\b(?:const|let|var)\\s+${name}\\s*=\\s*api\\.image\\(\\s*(['"\`])([^'"\`\\n]{1,200})\\1\\s*\\)`).exec(code);
       if (v) image = v[2];
     }

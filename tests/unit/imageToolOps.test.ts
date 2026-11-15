@@ -197,3 +197,15 @@ describe('image op runners', () => {
     expect(b.size).toBe(a.size - 1);
   });
 });
+
+describe('image tool call parsing (literal edge cases)', () => {
+  it('drops a trailing comma followed by comments, and stays fast on comment-heavy input', async () => {
+    const { imageToolOpFromCode } = await import('../../src/imageTools/descriptor');
+    const code = "return api.imageTile(api.image('a1'), { quantized: { clusters: 5, /* c */ }, // tail\n });";
+    expect(imageToolOpFromCode(code)?.params).toEqual({ quantized: { clusters: 5 } });
+    const heavy = "return api.imageTile(api.image('a1'), { x: 1, " + '/**/'.repeat(5000) + ' });';
+    const t0 = Date.now();
+    imageToolOpFromCode(heavy);
+    expect(Date.now() - t0).toBeLessThan(500);
+  });
+});
