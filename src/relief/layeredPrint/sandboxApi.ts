@@ -144,7 +144,7 @@ export function runLayeredPrint(image: unknown, rawOptions: unknown, limits: { m
     cache.delete(key); cache.set(key, hit);
   }
   const m = buildHeightfieldMesh(hit.heights, hit.W, hit.H, hit.widthMm, hit.depthMm);
-  return { mesh: { numProp: 3, vertProperties: m.vertProperties, triVerts: m.triVerts }, plan: hit.plan };
+  return { mesh: { numProp: 3, vertProperties: m.vertProperties, triVerts: m.triVerts }, plan: { ...hit.plan, imageId: im.id } };
 }
 
 /** The `schedule` option that pins a plan (for code generation / plan readback). */

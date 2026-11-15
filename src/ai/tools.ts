@@ -2556,7 +2556,7 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: 'exportLayeredPrint3MF',
-    description: "Download the current layered print as a Bambu Studio / Orca 3MF. REQUIRES USER CONFIRMATION. mode 'layer-swap' (default) = the HueForge technique: filament changes at layer heights (layer height, first layer and 100% infill set to match); swapMode 'ams' (default) = automatic changes, one AMS slot per filament, 'pause' = the printer pauses for a manual swap. mode 'painted' = each region printed in its own filament, coloured like the preview and reduced to `slots` AMS filaments (default 8) — snapped to real filaments (paintFilaments 'library' default, or the user's 'palette') or kept as 'exact' preview shades; needs an AMS, colours don't depend on translucency.",
+    description: "Download the current layered print as a Bambu Studio / Orca 3MF. REQUIRES USER CONFIRMATION. mode 'layer-swap' (default) = the HueForge technique: filament changes at layer heights (layer height, first layer and 100% infill set to match); swapMode 'ams' (default) = automatic changes, one AMS slot per filament, 'pause' = the printer pauses for a manual swap. mode 'painted' = each region printed in its own filament, coloured from the source photo (paintColors 'photo', default) or the predicted look ('preview'), reduced to `slots` AMS filaments (default 8) — snapped to real filaments (paintFilaments 'library' default, or the user's 'palette') or kept 'exact'; sides 'region' (default) or 'layers' = side walls striped at the swap heights. Needs an AMS; colours don't depend on translucency.",
     input_schema: {
       type: 'object',
       properties: {
@@ -2564,6 +2564,8 @@ Returns { ok, stats, metrics, version } or { error }.`,
         swapMode: { type: 'string', enum: ['ams', 'pause'], description: "layer-swap only." },
         slots: { type: 'integer', minimum: 1, maximum: 16, description: 'painted only: number of AMS filaments.' },
         paintFilaments: { type: 'string', enum: ['library', 'palette', 'exact'], description: 'painted only: what the colours snap to.' },
+        paintColors: { type: 'string', enum: ['photo', 'preview'], description: 'painted only: colour source.' },
+        sides: { type: 'string', enum: ['region', 'layers'], description: 'painted only: side walls.' },
         printer: { type: 'string', description: 'Bambu printer id (e.g. p1s, x1c, a1, h2d). Default h2c.' },
         nozzle: { type: 'string', enum: ['0.2', '0.4', '0.6', '0.8'] },
         filename: { type: 'string' },

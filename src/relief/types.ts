@@ -303,6 +303,9 @@ export interface LayeredPrintPlanRecord {
   widthMm: number;
   depthMm: number;
   meanDeltaE: number;
+  /** The attachment id of the source photo (`api.image('<id>')`), set by the
+   *  model run — the painted export samples its colours from it. */
+  imageId?: string;
 }
 
 /** Per-session relief settings, persisted in localStorage (keyed by session).

@@ -343,7 +343,8 @@ function checkMaterialSpec(m: unknown): void {
 /** `api.layeredPrint(...)` plan record: 1..16 filament blocks + finite sizes. */
 function checkLayeredPrint(p: unknown): void {
   if (!isPlainObject(p)) fail('layeredPrint must be a plain object');
-  onlyKeys(p, ['blocks', 'layerHeight', 'firstLayerHeight', 'totalLayers', 'totalHeightMm', 'widthMm', 'depthMm', 'meanDeltaE'], 'layeredPrint');
+  onlyKeys(p, ['blocks', 'layerHeight', 'firstLayerHeight', 'totalLayers', 'totalHeightMm', 'widthMm', 'depthMm', 'meanDeltaE', 'imageId'], 'layeredPrint');
+  if (p.imageId !== undefined && (typeof p.imageId !== 'string' || p.imageId.length < 1 || p.imageId.length > 200)) fail('layeredPrint.imageId must be a short attachment id string');
   if (!Array.isArray(p.blocks) || p.blocks.length < 1 || p.blocks.length > 16) fail('layeredPrint.blocks must hold 1..16 filaments');
   // Bounds mirror the solver's own option ranges, so a hostile record can't
   // drive the main-thread colouring into a divide-by-zero or a huge ladder.

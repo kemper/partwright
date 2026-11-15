@@ -1,6 +1,6 @@
 // "Painted (AMS)" export for a layered print: instead of swapping filament at
-// layer heights, every region is printed in its own filament, coloured with
-// the print's predicted look. The predicted shades are reduced to a fixed
+// layer heights, every region is printed in its own filament, coloured from
+// the source photo or the predicted look. The shades are reduced to a fixed
 // number of AMS slots — snapped to real filaments (the built-in list or the
 // user's palette), or kept as exact shades — so the 3MF asks for filaments the
 // user can actually load. Pure; unit-tested.

@@ -174,20 +174,34 @@ await partwright.createLayeredPrint({
 partwright.getLayeredPrintPlan()        // last run's plan + `instructions` + `schedule` (paste-ready)
 partwright.listLayeredPrintFilaments()  // the built-in candidate list
 
-partwright.exportLayeredPrint3MF({ swapMode: 'ams', printer: 'p1s' })
+await partwright.exportLayeredPrint3MF({ swapMode: 'ams', printer: 'p1s' })
 // Layer-swap 3MF (the default, mode: 'layer-swap'): layer height + first layer
 // + 100% infill set to match, and a filament change at each swap layer.
 //   swapMode 'ams'   — automatic filament changes (one AMS slot per filament)
 //   swapMode 'pause' — prints with filament 1; the printer pauses at each swap
 //                      for a manual change (all filaments listed as documentation)
 
-partwright.exportLayeredPrint3MF({ mode: 'painted', slots: 8, paintFilaments: 'library' })
-// Painted 3MF: each region printed in its own filament, coloured like the
-// preview and reduced to `slots` AMS filaments — snapped to real filaments
-// ('library' = built-in list, 'palette' = your palette) or 'exact' preview
-// shades. Needs an AMS; colours are direct (no reliance on TD values), at the
-// cost of many more filament changes than layer swaps.
+await partwright.exportLayeredPrint3MF({ mode: 'painted', slots: 8, paintFilaments: 'library', paintColors: 'photo', sides: 'region' })
+// Painted 3MF: each region printed in its own filament, reduced to `slots`
+// AMS filaments — snapped to real filaments ('library' = built-in list,
+// 'palette' = your palette) or kept 'exact'. Needs an AMS; colours are direct
+// (no reliance on TD values), at the cost of many more filament changes.
+//   paintColors 'photo'   (default) — each region takes the SOURCE PHOTO's
+//                         colour there, so hues that only exist through
+//                         translucency (a dusty blue) don't snap to grey
+//   paintColors 'preview' — the predicted layer-swap look (viewport colours)
+//   sides 'region'  (default) — a side wall takes its region's colour
+//   sides 'layers'  — side walls are cut at the swap heights and each band
+//                     shows the filament printed there (layer stripes)
+// -> { filename, bytes, mode, filaments, swaps: 0, paintColors, sides, note? }
 ```
+
+Photo colours map the print's footprint (`widthMm` × `depthMm`, centred on the
+origin, image top = +Y) onto the photo. Anything outside it — a frame, text
+standing above the surface, or the whole print if the code moved it — keeps
+its preview colour, as does the underside (the base filament). If the photo
+can't be read, or nothing sits on the footprint, the export falls back to the
+preview colours and says so in `note`.
 
 The two are different print techniques. Layer swaps use the translucency
 (few swaps, works without an AMS); painted regions print each colour
