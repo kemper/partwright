@@ -15,6 +15,8 @@ import {
   type ImportInboxEntry,
 } from '../import/importInbox';
 import { createMenuSectionHeader, createMenuDivider } from './popoverMenu';
+import { openCommandPalette } from './commandPalette';
+import { MOD_LABEL, combo } from './shortcutDefs';
 import { showFeedbackModal, registerFeedbackCommands } from './feedbackModal';
 
 export interface ToolbarCallbacks {
@@ -310,6 +312,24 @@ export function createToolbar(
   hintsHost.id = 'editor-hints-host';
   hintsHost.className = 'flex-1 min-w-0 flex items-center justify-center mx-2';
   toolbar.appendChild(hintsHost);
+
+  // Search tools — the visible door to the command palette (⌘K). Without it
+  // the palette was reachable only by a shortcut nobody knew and one rotating
+  // hint, and not at all on touch devices. Icon-only below md so the wrapped
+  // mobile toolbar doesn't gain a row, and a short "Search" below 2xl so the
+  // "Did you know?" strip keeps its ≥200px slot at common laptop widths.
+  const searchBtn = document.createElement('button');
+  searchBtn.id = 'btn-command-palette';
+  searchBtn.type = 'button';
+  searchBtn.className = 'flex items-center gap-2 px-3 py-2 md:px-2 md:py-1 2xl:min-w-[11rem] rounded border border-zinc-600 bg-zinc-800/80 text-zinc-400 text-xs transition-colors [@media(hover:hover)]:hover:border-zinc-500 [@media(hover:hover)]:hover:text-zinc-200 ml-2';
+  searchBtn.title = `Search every tool and action (${combo(MOD_LABEL, 'K')})`;
+  searchBtn.setAttribute('aria-label', 'Search tools and actions');
+  searchBtn.innerHTML =
+    '<svg aria-hidden="true" viewBox="0 0 16 16" class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg>' +
+    '<span class="hidden md:inline flex-1 text-left">Search<span class="hidden 2xl:inline"> tools…</span></span>' +
+    `<kbd class="hidden 2xl:inline font-sans text-[10px] text-zinc-500 border border-zinc-600 rounded px-1 leading-4">${combo(MOD_LABEL, 'K')}</kbd>`;
+  searchBtn.addEventListener('click', () => openCommandPalette());
+  toolbar.appendChild(searchBtn);
 
   // Use AI — primary entry point to the chat drawer. The activity rail also
   // has a "✦ AI" item, but on mobile it lives in a horizontally-scrollable

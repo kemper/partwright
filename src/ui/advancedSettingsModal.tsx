@@ -2030,6 +2030,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={3_000} max={60_000} integer
           onChange={v => set('ui', 'hintRotationMs', v)}
         />
+        <Field cfgKey="ui.commandPaletteRecentMax"
+          label="Recent actions in search"
+          hint="How many recently used actions the tool search (⌘K) lists first."
+          tooltip="With nothing typed, the tool search shows your most recently used actions above the full categorised list. Set to 0 to hide the Recent section."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.commandPaletteRecentMax}
+          value={c.ui.commandPaletteRecentMax}
+          min={0} max={20} integer
+          onChange={v => set('ui', 'commandPaletteRecentMax', v)}
+        />
         <Field cfgKey="ui.toolDialogOpenWaitMs"
           label="AI-opened dialog wait"
           unit="ms"

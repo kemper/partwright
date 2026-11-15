@@ -5,6 +5,9 @@
 // `createPopoverGroup` flyout used to collapse the bar's many buttons into a few
 // labelled groups (Inspect / Tools). One source of truth for menu chrome.
 
+import { openCommandPalette } from './commandPalette';
+import { MOD_LABEL, combo } from './shortcutDefs';
+
 /** Small uppercase section label inside a menu (e.g. "From file", "3D model"). */
 export function createMenuSectionHeader(text: string): HTMLElement {
   const el = document.createElement('div');
@@ -49,6 +52,12 @@ export interface PopoverGroupOptions {
   label: string;
   /** Button tooltip / aria-label. */
   title: string;
+  /** Point people browsing this menu at the command palette: `'tooltip'`
+   *  mentions ⌘K in the group button's tooltip; `'button'` also pins an
+   *  icon-only search entry at the end of the menu. Use `'tooltip'` for a
+   *  menu whose row is near its max width (the Tools row is — an extra entry
+   *  wraps it and pushes docked tool panels down; see #1274). */
+  searchEntry?: 'tooltip' | 'button';
 }
 
 /**
@@ -64,7 +73,7 @@ export function createPopoverGroup(opts: PopoverGroupOptions): PopoverGroup {
   const button = document.createElement('button');
   button.id = `${opts.id}-group-btn`;
   button.className = GROUP_BTN_CLOSED;
-  button.title = opts.title;
+  button.title = opts.searchEntry ? `${opts.title} — or search everything with ${combo(MOD_LABEL, 'K')}` : opts.title;
   button.setAttribute('aria-haspopup', 'true');
   button.setAttribute('aria-expanded', 'false');
   // Label text + a caret. Label comes from a fixed in-source set, never user input.
@@ -125,6 +134,22 @@ export function createPopoverGroup(opts: PopoverGroupOptions): PopoverGroup {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && isOpen()) close();
   });
+
+  if (opts.searchEntry === 'button') {
+    // Tool modules append their buttons to this menu after it is built, so
+    // `order-last` (not append order) keeps the search entry at the end.
+    const search = document.createElement('button');
+    search.type = 'button';
+    search.id = `${opts.id}-search`;
+    // Icon-only so it costs little row width; the label lives in the
+    // tooltip / aria-label.
+    search.className = 'order-last flex items-center justify-center px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs border border-dashed border-zinc-600 text-zinc-400 [@media(hover:hover)]:hover:text-zinc-100 [@media(hover:hover)]:hover:border-zinc-400 transition-colors';
+    search.title = `Search all tools and actions (${combo(MOD_LABEL, 'K')})`;
+    search.setAttribute('aria-label', 'Search all tools and actions');
+    search.innerHTML = '<svg aria-hidden="true" viewBox="0 0 16 16" class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg>';
+    search.addEventListener('click', () => { close(); openCommandPalette(); });
+    menu.appendChild(search);
+  }
 
   const group: PopoverGroup = { wrapper, button, menu, open, close, isOpen };
   liveGroups.push(group);

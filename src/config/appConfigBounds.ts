@@ -220,6 +220,7 @@ export const APP_CONFIG_FIELD_BOUNDS: { [S in ConfigSection]: Partial<Record<key
   ui: {
     editorHintsEnabled: BOOL,
     hintRotationMs: { min: 3_000, max: 60_000, integer: true },
+    commandPaletteRecentMax: { min: 0, max: 20, integer: true },
     toolDialogOpenWaitMs: { min: 500, max: 60_000, integer: true },
     paintAdjacencyWorkerMinTriangles: { min: 0, max: 50_000_000, integer: true },
     paintAdjacencyWorkerTimeoutMs: { min: 5_000, max: 600_000, integer: true },
