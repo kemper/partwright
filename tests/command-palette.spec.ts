@@ -78,10 +78,10 @@ test.describe('command palette', () => {
     await expect(page.locator('#ai-panel textarea')).toHaveValue('make it twice as tall');
   });
 
-  test('the Tools menu ends with a Search all entry that opens the palette', async ({ page }) => {
+  test('the Inspect menu ends with a search entry that opens the palette', async ({ page }) => {
     await openEditor(page);
-    await page.locator('#viewport-tools-group-btn').dispatchEvent('click');
-    await page.locator('#viewport-tools-search').click();
+    await page.locator('#viewport-inspect-group-btn').dispatchEvent('click');
+    await page.locator('#viewport-inspect-search').click();
     await expect(page.locator('input[aria-label="Search commands"]')).toBeVisible();
   });
 

@@ -48,3 +48,9 @@ entry wrapped the Tools row (already at its 1152 px cap at 1280 px) onto a
 second row, pushing docked tool panels down so resize-model's Apply button
 landed off-screen. The menu entry is now an icon-only magnifier with the label
 in its tooltip and aria-label; the row is one line again.
+
+**CI follow-up 2 — no search entry in the Tools menu**: even the 32 px icon
+still wrapped the Tools row on CI (its fonts render the row wider than the
+sandbox's, where only ~9 px was left). `searchEntry` is now `'tooltip' |
+'button'`: Tools only mentions ⌘K in its tooltip; the short Inspect menu keeps
+the icon entry. The full-row fragility is filed as #1274.

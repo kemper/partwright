@@ -52,9 +52,12 @@ export interface PopoverGroupOptions {
   label: string;
   /** Button tooltip / aria-label. */
   title: string;
-  /** Pin an icon-only search entry at the end of the menu that opens the
-   *  command palette, so people browsing the menu learn search exists. */
-  searchEntry?: boolean;
+  /** Point people browsing this menu at the command palette: `'tooltip'`
+   *  mentions ⌘K in the group button's tooltip; `'button'` also pins an
+   *  icon-only search entry at the end of the menu. Use `'tooltip'` for a
+   *  menu whose row is near its max width (the Tools row is — an extra entry
+   *  wraps it and pushes docked tool panels down; see #1274). */
+  searchEntry?: 'tooltip' | 'button';
 }
 
 /**
@@ -132,15 +135,14 @@ export function createPopoverGroup(opts: PopoverGroupOptions): PopoverGroup {
     if (e.key === 'Escape' && isOpen()) close();
   });
 
-  if (opts.searchEntry) {
+  if (opts.searchEntry === 'button') {
     // Tool modules append their buttons to this menu after it is built, so
     // `order-last` (not append order) keeps the search entry at the end.
     const search = document.createElement('button');
     search.type = 'button';
     search.id = `${opts.id}-search`;
-    // Icon-only: the Tools row already runs near its max width at common
-    // laptop sizes, and a labelled entry wrapped it onto a second row (pushing
-    // docked tool panels down). The label lives in the tooltip / aria-label.
+    // Icon-only so it costs little row width; the label lives in the
+    // tooltip / aria-label.
     search.className = 'order-last flex items-center justify-center px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs border border-dashed border-zinc-600 text-zinc-400 [@media(hover:hover)]:hover:text-zinc-100 [@media(hover:hover)]:hover:border-zinc-400 transition-colors';
     search.title = `Search all tools and actions (${combo(MOD_LABEL, 'K')})`;
     search.setAttribute('aria-label', 'Search all tools and actions');

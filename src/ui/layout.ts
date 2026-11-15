@@ -1044,7 +1044,7 @@ function createClipControls(): HTMLElement {
   // menu is sticky: clicking an item activates the tool but leaves the list open
   // so you can flip between Measure and Cross Section without re-opening it. It
   // closes on the group button, a sibling popover, click-outside, or Escape.
-  const inspectGroup = createPopoverGroup({ id: 'viewport-inspect', label: 'Inspect', title: 'Measure distances and cross-section the model', searchEntry: true });
+  const inspectGroup = createPopoverGroup({ id: 'viewport-inspect', label: 'Inspect', title: 'Measure distances and cross-section the model', searchEntry: 'button' });
   inspectGroup.menu.appendChild(makeViewportPill('measure-toggle', '\uD83D\uDCCF Measure', 'Measure distance between two points on your model'));
   inspectGroup.menu.appendChild(makeViewportPill('clip-toggle', '✂ Cross Section', 'Toggle cross-section clipping plane'));
   container.appendChild(inspectGroup.wrapper);
@@ -1055,7 +1055,7 @@ function createClipControls(): HTMLElement {
   // floating panel but keeps the list open, so switching between tools is one
   // click each instead of re-opening Tools every time. Stable id
   // `viewport-tools-menu` is the injection contract.
-  const toolsGroup = createPopoverGroup({ id: 'viewport-tools', label: 'Tools', title: 'Editing tools: paint, annotate, surface modifiers, resize, quality', searchEntry: true });
+  const toolsGroup = createPopoverGroup({ id: 'viewport-tools', label: 'Tools', title: 'Editing tools: paint, annotate, surface modifiers, resize, quality', searchEntry: 'tooltip' });
   container.appendChild(toolsGroup.wrapper);
 
   return container;
