@@ -57,6 +57,61 @@ Both layers can produce a PNG; pick by how exact the pixels need to be:
 > **repeated** renders/iterations (warm-up amortized), not making a single heavy
 > figure cheap. The meshing dominates; the render itself is fast in both layers.
 
+### Checking an exported 3MF with the real slicer — `slicer-cli`
+
+`model:preview` and the daemon show the **model**. To see what the **print job**
+looks like to its consumer, `scripts/slicer-cli.mjs` runs Bambu Studio's own
+command line on an exported `.3mf`, as an external process:
+
+```bash
+node scripts/slicer-cli.mjs install --apt      # once per container: download (256 MB), unpack, system packages
+node scripts/slicer-cli.mjs check model.js --expect-filaments 3    # the agent command: one JSON report
+node scripts/slicer-cli.mjs run -- --export-png 0 --camera-view 0 --outputdir out model.3mf   # raw slicer CLI
+node scripts/slicer-cli.mjs run -- --slice 0 --export-3mf sliced.gcode.3mf --outputdir out model.3mf
+```
+
+**`check` is the command agents should use.** It takes a `.3mf`, a model file
+(`.js` / `.scad`, run and exported through the real app in the Phase 2 daemon),
+or `--current` (the daemon's open session). It reads the file with our own
+parser, asks the slicer for plate renders and a slice in one session, compares
+the two, and prints one JSON document (`ok`, `checks[]`, `warnings[]`, `file`,
+`slicer`, `renders`), exiting non-zero when a check fails. The pure comparison
+logic is `scripts/slicer-cli/report.mjs` (unit-tested in
+`tests/unit/slicerReport.test.ts`); the orchestration is
+`scripts/slicer-cli/check.mjs`. When to run it, how to read the report and
+what it can't tell you are in the `/slicer-check` skill
+(`.claude/skills/slicer-check/SKILL.md`).
+
+The raw `run` recipes:
+
+- **Plate render** (`--export-png 0`, ~1 s): writes `out/plate_<n>_<view>.png`,
+  512×512, drawn by the slicer's own renderer with painted filament colours.
+  `--camera-view`: 0 iso, 1 top-front, 2 left, 3 right, 10/11/12 other isos.
+  There is no free camera and no underside view.
+- **Real slice** (`--slice 0`, ~2 s for a small part): `out/result.json` holds
+  per-filament grams, filament-change count, predicted print time and each
+  object's bounding box; the G-code and slicer thumbnails land next to it.
+- **Always pass `--outputdir`**, or the slicer drops `result.json` in the
+  current directory.
+
+What it is and isn't:
+
+- It only runs one release, pinned by SHA-256 in the script: the download is
+  hash-checked before unpacking, and the launcher script and main binary are
+  re-hashed before every run (the rest of the unpacked tree is trusted like the
+  working tree). The `.claude/settings.json` allow rule names the script, not
+  the binary.
+- Nothing from the slicer is committed or distributed. It is AGPL-3.0,
+  downloaded into the gitignored `.partwright/slicer/` and run unmodified.
+- `install --apt` needs Ubuntu/Debian and root. `--outputdir` and
+  `--export-3mf` write wherever you point them.
+- This build's windowing layer is Wayland-only, so `xvfb` does not help. `run`
+  starts a throwaway headless `weston` and preloads a small shim
+  (`scripts/slicer-cli/glx-osmesa-shim.c`, compiled fresh for each run) so the slicer's GL start-up works on
+  software rendering.
+- **The CLI is not the desktop app.** It loads projects through a different
+  path than the GUI, so a clean run here does not prove the GUI opens the file.
+
 ## CLI surface
 
 ```

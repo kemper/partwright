@@ -116,8 +116,8 @@ export const TOOL_GROUPS: readonly ToolGroup[] = [
   },
   {
     id: 'printing',
-    summary: 'printer settings and model units',
-    tools: ['getPrinterSettings', 'setPrinterSettings', 'getUnits', 'setUnits'],
+    summary: 'printer settings, model units, print colours by layer height and the print preview',
+    tools: ['getPrinterSettings', 'setPrinterSettings', 'getUnits', 'setUnits', 'getLayerColors', 'setLayerColors', 'clearLayerColors', 'setPrintPreview'],
   },
   {
     id: 'versions',

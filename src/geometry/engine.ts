@@ -531,6 +531,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       paintOps: (msg.paintOps as MeshResult['paintOps']) ?? undefined,
       surfaceOps: (msg.surfaceOps as MeshResult['surfaceOps']) ?? undefined,
       materialSpec: msg.materialSpec ?? undefined,
+      layerColors: (msg.layerColors as MeshResult['layerColors']) ?? undefined,
       layeredPrint: msg.layeredPrint ?? undefined,
       renderOnly: !!msg.renderOnly,
       lostLabels: lostLabels && lostLabels.length > 0 ? lostLabels : undefined,

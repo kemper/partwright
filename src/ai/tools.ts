@@ -2546,12 +2546,12 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: 'applyImageTool',
-    description: "Turn an image attached to the session into an object with an IMAGE TOOL, or re-apply a tool to the open object with new settings. REQUIRES USER CONFIRMATION. tool: 'tile' (flat colour keychain/tile), 'silhouette' (tile cut to the subject), 'steppedRelief' (each colour cluster at its own height), 'lithophane' (brightness → height), 'layeredPrint' (HueForge-style filament layering), 'voxel' (pixel-art cubes). Image: `image` = attachment id (from getImages), `imageRef` (1-based getReferenceImages index), or `src` (attaches a new image). replace: true re-applies to the open object (a new version; undo = version history), and params for the same tool MERGE over its stored ones — so tweak one setting at a time (e.g. {quantized: {clusters: 6}}). params: relief tools take ReliefOptions sections {common: {widthMm, maxHeight, baseThickness, resolution, smoothing, removeBackground}, quantized: {clusters, output, shape, cornerRadiusMm, holes, …}, luminance: {invert, gamma, levels}, preprocess: {brightness, contrast, saturation, levelsLow, levelsHigh}}; voxel takes importImageAsVoxels options; layeredPrint takes api.layeredPrint options. The tool's settings are stored in the object's code (`// @image-tool {...}` header) — read them with getImageToolOp.",
+    description: "Turn an image attached to the session into an object with an IMAGE TOOL, or re-apply a tool to the open object with new settings. REQUIRES USER CONFIRMATION. tool: 'tile' (flat colour keychain/tile), 'silhouette' (tile cut to the subject), 'steppedRelief' (each colour cluster at its own height), 'lithophane' (brightness → height), 'layeredPrint' (HueForge-style filament layering), 'voxel' (pixel-art cubes). Image: `image` = attachment id (from getAttachments), `imageRef` (1-based getReferenceImages index), or `src` (attaches a new image). replace: true re-applies to the open object (a new version; undo = version history), and params for the same tool MERGE over its stored ones — so tweak one setting at a time (e.g. {quantized: {clusters: 6}}). params: relief tools take ReliefOptions sections {common: {widthMm, maxHeight, baseThickness, resolution, smoothing, removeBackground}, quantized: {clusters, output, shape, cornerRadiusMm, holes, …}, luminance: {invert, gamma, levels}, preprocess: {brightness, contrast, saturation, levelsLow, levelsHigh}}; voxel takes importImageAsVoxels options; layeredPrint takes api.layeredPrint options. The tool's settings are stored in the object's code (`// @image-tool {...}` header) — read them with getImageToolOp.",
     input_schema: {
       type: 'object',
       properties: {
         tool: { type: 'string', enum: ['tile', 'silhouette', 'steppedRelief', 'lithophane', 'layeredPrint', 'voxel'] },
-        image: { type: 'string', description: 'Attachment id of the image (getImages).' },
+        image: { type: 'string', description: 'Attachment id of the image (getAttachments).' },
         imageRef: { type: 'integer', minimum: 1, description: '1-based index into getReferenceImages, instead of image.' },
         src: { type: 'string', description: 'Attach this image (data: or http(s) URL) and use it.' },
         params: {
@@ -2783,6 +2783,53 @@ Returns { ok, stats, metrics, version } or { error }.`,
     name: 'getPalette',
     description: 'Read the filament palette — the color slots a multi-color model maps onto the printer\'s AMS/MMU. Returns { active: {id, name, capacity, constrained, slots: [{id, name, hex, td}]}, palettes: [{id, name, active}] }. When constrained is true (or the user mentions their filaments), paint with these slot hex colors so the model prints with spools the user actually has; capacity is the max color count. Pure read.',
     input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'getLayerColors',
+    description: 'Read the print colours by layer height the open object declares (api.print.layerColors in its code) and the bands they print as: {declared, source, changes:[{z,color,name?}], layerHeight, firstLayerHeight, modelHeight, totalLayers, bands:[{color,fromZ,toZ,firstLayer,lastLayer}], warnings?}. Layer numbers are 1-based. A layered photo print (api.layeredPrint) reports its swap plan the same way, with source "layeredPrint".',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'setLayerColors',
+    description: 'Make the open object print in different colours at different heights (a filament change at a layer, as set on a slicer\'s layer slider). Writes or rewrites the api.print.layerColors([...]) call in its code, runs it and saves a version. Each change means "from height z mm above the bed up, print in this colour"; z 0 sets the colour of the first layers. Heights snap to layer boundaries. JavaScript (manifold-js) sessions only. An object cannot combine these with painted regions: the slicer ignores layer changes on a painted object, so the 3MF export leaves the paint out. Use setPrintPreview to look at the result.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        changes: {
+          type: 'array',
+          description: 'Colour changes, in any order. An empty array removes the layer colours (same as clearLayerColors).',
+          items: {
+            type: 'object',
+            properties: {
+              z: { type: 'number', description: 'Height in mm above the bed where this colour starts. 0 = the first layers.' },
+              color: { type: 'string', description: 'Filament colour as "#rrggbb".' },
+            },
+            required: ['z', 'color'],
+          },
+        },
+        layerHeight: { type: 'number', description: 'Layer height in mm to slice this model at (default: the app setting, 0.2). Set it when the design depends on thin layers.' },
+        firstLayerHeight: { type: 'number', description: 'First-layer height in mm (default: the app setting, 0.2).' },
+      },
+      required: ['changes'],
+    },
+  },
+  {
+    name: 'clearLayerColors',
+    description: 'Remove the open object\'s print colours by layer height: deletes the api.print.layerColors call from its code, runs it and saves a version.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'setPrintPreview',
+    description: 'Print preview: show the open object as the layer-colour bands that will print, instead of its own colours. Works for api.print.layerColors and for a layered photo print (api.layeredPrint), whose blend view uses its own predicted colours. While it is on, the viewport AND renderView/renderViews show the preview, so turn it on and then render to check a layer-colour design. layer (how many layers are printed, 1-based) or z (mm above the bed) cuts the model there like a slicer\'s layer slider; layer 0 shows it whole. blend adds a rough estimate of how thin translucent top layers mix with the colour underneath. Turning it on also opens the user\'s Print preview panel, and turning it off closes it. Returns {enabled, showing, layer, totalLayers, z, blend, notes?}; showing is false when the object declares no layer colours. Turn it off again when you are done.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        enabled: { type: 'boolean', description: 'Turn the preview on or off.' },
+        layer: { type: 'integer', description: 'Show only the first N layers. 0 = the whole model. Not together with z.' },
+        z: { type: 'number', description: 'Show the print up to this height in mm above the bed. Not together with layer.' },
+        blend: { type: 'boolean', description: 'Estimated blending of thin top layers.' },
+      },
+    },
   },
   {
     name: 'getUnits',
@@ -3056,6 +3103,8 @@ const ALWAYS_AVAILABLE = new Set([
   'getPalette',
   'getUnits',
   'setUnits',
+  'getLayerColors',
+  'setPrintPreview',
   'listSessions',
   // Object-list organization, like its siblings createObject/renameObject.
   'setObjectGroup',
@@ -3076,8 +3125,6 @@ const ALWAYS_AVAILABLE = new Set([
   'listCatalog',
   // Creates a NEW session from an image (confirmed), like importImageAsVoxels.
   'createLayeredPrint',
-  // Makes / re-applies an object from an attached image (confirmed).
-  'applyImageTool',
   'getImageToolOp',
   'listImageTools',
   'getLayeredPrintPlan',
@@ -3240,6 +3287,8 @@ export const RETRY_SAFE_TOOLS = new Set([
   // Camera moves are idempotent view changes.
   'setCamera', 'frameObjectPart',
   'setUnits',
+  'getLayerColors',
+  'setPrintPreview',
   // Idempotent renders (produce a snapshot; no persistent mutation)
   'renderView', 'renderViews', 'runIsolated', 'renderParts', 'renderSection',
   // Run-without-commit (re-running the same code reproduces the same state)
@@ -3247,7 +3296,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams', 'setCurvatureQuality']);
-const SAVE_GATED = new Set(['runAndSave', 'fitHumanToPhoto', 'forkVersion', 'loadVersion', 'saveVersion', 'resolveModelDrift', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts', 'partAction', 'undoPartEdit', 'splitIntoPieces']);
+const SAVE_GATED = new Set(['applyImageTool', 'setLayerColors', 'clearLayerColors', 'runAndSave', 'fitHumanToPhoto', 'forkVersion', 'loadVersion', 'saveVersion', 'resolveModelDrift', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts', 'partAction', 'undoPartEdit', 'splitIntoPieces']);
 /** SAVE_GATED tools that touch version history WITHOUT executing new code, so
  *  they only need the saveVersions scope (not runCode). */
 const SAVE_NON_RUNNING = new Set(['loadVersion', 'saveVersion', 'renameVersion', 'deleteVersion', 'saveAllObjects']);
@@ -4694,6 +4743,19 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.getViewState();
     case 'getPalette':
       return { active: api.getPalette(), palettes: api.listPalettes() };
+    case 'getLayerColors':
+      return api.getLayerColors();
+    case 'setLayerColors': {
+      const heights: Record<string, unknown> = {};
+      if (input.layerHeight !== undefined) heights.layerHeight = input.layerHeight;
+      if (input.firstLayerHeight !== undefined) heights.firstLayerHeight = input.firstLayerHeight;
+      return api.setLayerColors(input.changes, Object.keys(heights).length > 0 ? heights : undefined);
+    }
+    case 'clearLayerColors':
+      return api.clearLayerColors();
+    case 'setPrintPreview':
+      // The tool uses layer 0 for "the whole model"; the API takes null.
+      return api.setPrintPreview(input.layer === 0 ? { ...input, layer: null } : input);
     case 'getUnits':
       return { unit: api.getUnits() };
     case 'setUnits':
@@ -4781,8 +4843,10 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       const { imageRef, ...rest } = input;
       const args = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== null)) as Record<string, unknown>;
       if (typeof imageRef === 'number') {
-        const imgs = typeof api.getImages === 'function' ? (api.getImages() as Array<{ id?: string }>) : [];
-        const entry = Array.isArray(imgs) ? imgs[imageRef - 1] : undefined;
+        // Same indexing as getReferenceImages: only images that carry pixels.
+        const raw = typeof api.getImages === 'function' ? (api.getImages() as Array<{ id?: string; src?: string }>) : [];
+        const imgs = Array.isArray(raw) ? raw.filter((im) => typeof im.src === 'string' && im.src.length > 0) : [];
+        const entry = imgs[imageRef - 1];
         if (!entry?.id) return { error: `applyImageTool: no reference image at index ${imageRef}. Call getReferenceImages to list them.` };
         args.image = entry.id;
       }

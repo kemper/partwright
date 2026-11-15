@@ -80,7 +80,7 @@ export function openImageToolsModal(opts: ImageToolsModalOptions): void {
     for (const im of images) {
       const b = document.createElement('button');
       const on = im.id === selected;
-      b.className = `w-20 h-20 rounded-lg overflow-hidden border-2 ${on ? 'border-blue-500' : 'border-zinc-700 hover:border-zinc-500'}`;
+      b.className = `w-20 h-20 rounded-lg overflow-hidden border-2 ${on ? 'border-blue-500' : 'border-zinc-700 [@media(hover:hover)]:hover:border-zinc-500'}`;
       b.title = im.label ?? 'Attached image';
       b.setAttribute('aria-pressed', String(on));
       b.setAttribute('aria-label', `Use image ${im.label ?? im.id}`);
@@ -125,7 +125,7 @@ export function openImageToolsModal(opts: ImageToolsModalOptions): void {
   const toolButtons: HTMLButtonElement[] = [];
   for (const t of IMAGE_TOOLS) {
     const b = document.createElement('button');
-    b.className = 'text-left rounded-lg border border-zinc-700 bg-zinc-900/60 hover:border-blue-500 hover:bg-zinc-900 px-3 py-2 min-h-[44px] transition-colors disabled:opacity-40 disabled:hover:border-zinc-700';
+    b.className = 'text-left rounded-lg border border-zinc-700 bg-zinc-900/60 [@media(hover:hover)]:hover:border-blue-500 [@media(hover:hover)]:hover:bg-zinc-900 px-3 py-2 min-h-[44px] transition-colors disabled:opacity-40';
     const name = document.createElement('div');
     name.className = 'text-sm text-zinc-100 font-medium';
     name.textContent = t.label;

@@ -30,6 +30,7 @@ import { runLayeredPrint } from '../../relief/layeredPrint/sandboxApi';
 import { modelImageHandle } from '../modelImages';
 import { runReliefImageOp } from '../../imageTools/sandboxOps';
 import type { ReliefToolId } from '../../imageTools/descriptor';
+import { parseLayerColorsSpec, type LayerColorsSpec } from '../../print/layerColors';
 import type { LayeredPrintPlanRecord } from '../../relief/types';
 import { getConfig } from '../../config/appConfig';
 import { wasmFaultHint } from '../workerFaults';
@@ -396,6 +397,13 @@ export const manifoldJsEngine: Engine = {
     // it lives in the code it re-applies on every run/load with no schema
     // change. Last call wins. Cleared on every run.
     let materialSpec: MaterialSpec | null = null;
+
+    // Print colours by layer height, declared in code via
+    // `api.print.layerColors([{ z, color }, …], { layerHeight })`: "from this
+    // height above the bed up, print in this colour". Recorded, not baked:
+    // the main thread uses it for the print preview and the 3MF project
+    // export. Last call wins. Cleared on every run.
+    let layerColors: LayerColorsSpec | null = null;
 
     // Surface textures declared in code via `api.surface.*` (fuzzy / knit / cable
     // / waffle / fur / woven / voronoi / smooth). Like `api.paint.*`, these do
@@ -843,6 +851,16 @@ export const manifoldJsEngine: Engine = {
       materialSpec = spec;
     };
 
+    const print = {
+      layerColors(changes: unknown, options?: unknown): void {
+        try {
+          layerColors = parseLayerColorsSpec(changes, options);
+        } catch (e) {
+          throw new Error(`api.print.${e instanceof Error ? e.message : String(e)} Example: api.print.layerColors([{ z: 0, color: '#ffffff' }, { z: 8, color: '#d01e1e' }]).`);
+        }
+      },
+    };
+
     // Layered (HueForge-style) filament print from an attached photo:
     // `api.layeredPrint(api.image('<attachment id>'), opts)` returns the
     // heightmap as a Manifold and records its swap plan, which the main thread
@@ -1079,6 +1097,7 @@ export const manifoldJsEngine: Engine = {
       paint,
       surface,
       material,
+      print,
       image,
       layeredPrint,
       imageTile,
@@ -1292,6 +1311,7 @@ export const manifoldJsEngine: Engine = {
         paintOps: paintOps.length > 0 ? paintOps : undefined,
         surfaceOps: surfaceOps.length > 0 ? surfaceOps : undefined,
         materialSpec: materialSpec ?? undefined,
+        layerColors: layerColors ?? undefined,
         layeredPrint: layeredPlan ?? undefined,
         paramsSchema: paramCapture.collectSchema(),
         renderOnly,

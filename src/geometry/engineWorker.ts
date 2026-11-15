@@ -23,7 +23,7 @@
 //
 // Protocol — Worker → Main:
 //   { type: 'ready', initMs, compiler, sesMs }
-//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, labelColorEntries, paintOps, surfaceOps, lostLabels, paramsSchema, logs, workerMs }
+//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, labelColorEntries, paintOps, surfaceOps, materialSpec, layerColors, lostLabels, paramsSchema, logs, workerMs }
 //   { type: 'validate_result',         callId, result }
 //   { type: 'detect_includes_result',  callId, result }
 //   { type: 'voxel_grid_result',       callId, grid, error }
@@ -509,6 +509,8 @@ self.onmessage = async (event: MessageEvent) => {
       const surfaceOps = result.surfaceOps ?? null;
       // api.material(...) — plain serialisable MaterialSpec, crosses as-is.
       const materialSpec = result.materialSpec ?? null;
+      // api.print.layerColors(...) — plain serialisable LayerColorsSpec, crosses as-is.
+      const layerColors = result.layerColors ?? null;
       // api.layeredPrint(...) — plain serialisable plan record.
       const layeredPrint = result.layeredPrint ?? null;
       const paramsSchema = result.paramsSchema ?? null;
@@ -549,7 +551,7 @@ self.onmessage = async (event: MessageEvent) => {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage(
-          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, paintOps, surfaceOps, materialSpec, layeredPrint, lostLabels, paramsSchema, logs, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, ...(manifoldFacts ? { manifoldFacts } : {}), voxelCount: result.voxelCount, voxelPieceCount: result.voxelPieceCount, voxelRes: result.voxelRes, voxelResMixed: result.voxelResMixed, sdfLabelCounts: result.sdfLabelCounts, voxelGrid: result.voxelGrid },
+          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, paintOps, surfaceOps, materialSpec, layerColors, layeredPrint, lostLabels, paramsSchema, logs, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, ...(manifoldFacts ? { manifoldFacts } : {}), voxelCount: result.voxelCount, voxelPieceCount: result.voxelPieceCount, voxelRes: result.voxelRes, voxelResMixed: result.voxelResMixed, sdfLabelCounts: result.sdfLabelCounts, voxelGrid: result.voxelGrid },
           transfer,
         );
       } else {

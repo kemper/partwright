@@ -17,6 +17,7 @@ import { COLOR_PATTERN_KINDS } from '../color/colorPattern';
 import { isSurfaceOpId, parseSurfaceOpts } from '../surface/surfaceOpSpec';
 import { normalizeParamSchema, type ParamSpec } from './params';
 import { isMaterialPresetName } from '../renderer/materialSpec';
+import { parseLayerColorsSpec } from '../print/layerColors';
 
 /** Every message type the engine Worker legitimately sends. */
 export const ENGINE_WORKER_MESSAGE_TYPES: ReadonlySet<string> = new Set([
@@ -315,6 +316,20 @@ function checkParamsSchema(schema: unknown[]): ParamSpec[] {
 
 const MATERIAL_UNIT_FIELDS = ['metalness', 'roughness', 'clearcoat', 'transmission', 'opacity'] as const;
 
+/** `api.print.layerColors(...)` spec: re-run the shared validator on what crossed. */
+function checkLayerColors(l: unknown): void {
+  if (!isPlainObject(l)) fail('layerColors must be a plain object');
+  onlyKeys(l, ['changes', 'layerHeight', 'firstLayerHeight'], 'layerColors');
+  const options: Record<string, unknown> = {};
+  if (l.layerHeight !== undefined) options.layerHeight = l.layerHeight;
+  if (l.firstLayerHeight !== undefined) options.firstLayerHeight = l.firstLayerHeight;
+  try {
+    parseLayerColorsSpec(l.changes, options);
+  } catch (e) {
+    fail(e instanceof Error ? e.message : String(e));
+  }
+}
+
 /** `api.material(...)` spec: known preset, 0..1 colour and PBR numbers. */
 function checkMaterialSpec(m: unknown): void {
   if (!isPlainObject(m)) fail('materialSpec must be a plain object');
@@ -450,6 +465,10 @@ function checkModelPayload(msg: Record<string, unknown>, numTri: number | null):
   if (msg.materialSpec !== undefined && msg.materialSpec !== null) {
     if (!isPlainData(msg.materialSpec)) fail('materialSpec must be plain data');
     checkMaterialSpec(msg.materialSpec);
+  }
+  if (msg.layerColors !== undefined && msg.layerColors !== null) {
+    if (!isPlainData(msg.layerColors)) fail('layerColors must be plain data');
+    checkLayerColors(msg.layerColors);
   }
   if (msg.layeredPrint !== undefined && msg.layeredPrint !== null) {
     if (!isPlainData(msg.layeredPrint)) fail('layeredPrint must be plain data');

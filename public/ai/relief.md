@@ -282,6 +282,12 @@ directly (often looks closer to the preview when the TDs are only estimates).
 - **Colourful photos** are the hard case: every pixel shares one stack of
   filaments, so two saturated hues that each need to sit directly on a light
   base compete. More `maxHeightMm` and 8–10 `colors` help most.
+- **Layer by layer:** `partwright.setPrintPreview({enabled: true, layer: N})`
+  shows the print as the raw filament of every layer up to layer N (what a
+  slicer's layer view shows); add `blend: true` for the predicted colours at
+  that layer. Renders follow it while it is on. `getLayerColors()` returns the
+  plan as bands (`source: 'layeredPrint'`). See
+  [/ai/printing.md#print-preview](/ai/printing.md#print-preview).
 - Size guards (App Config → Import): `layeredPrintMaxCells` heightmap cells,
   `layeredPrintMaxLayers` layers, `layeredPrintMaxImagePx` photo size.
 - Headless (CLI agents in the repo): `npm run layered-print -- photo.jpg --colors 8
