@@ -140,6 +140,10 @@ Nothing is painted until the user clicks the model.
 
 `bed` (`[x,y,z]` mm, 10–2000 each), `nozzleWidth` (0.05–2), `overhangAngleDeg` (1–89). Staged in the form with a "Suggested settings — not saved yet · **Use these** / Discard" row; the saved printer settings (`getPrinterSettings()`) change only when the user confirms (clicking Use these, or editing a field — which saves the whole form). Check printability checks what the form shows, staged values included, without saving them. The printability check never runs on open.
 
+### `tool-print-preview` — Print preview
+
+No prefill. Opens the panel that shows the model as the layer-colour bands that will print, with a layer slider, an **Estimated blending** checkbox and an editable list of colour changes (written to the code on **Apply to code**). Opening it turns the preview on; closing it turns it off. To set what it shows from code, call `setPrintPreview({layer?, z?, blend?})`; to change the colours, `setLayerColors`. `toolState = {enabled, showing, layer, totalLayers, z, blend}`. See `/ai/printing.md#print-preview`.
+
 ### `tool-cross-section` — Cross section
 
 `z` — clip-plane height in world units, within the model's Z range (only a horizontal plane is supported). The note shows as a toast. `toolState = {z}`.

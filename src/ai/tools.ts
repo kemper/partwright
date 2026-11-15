@@ -2694,6 +2694,53 @@ Returns { ok, stats, metrics, version } or { error }.`,
     input_schema: { type: 'object', properties: {} },
   },
   {
+    name: 'getLayerColors',
+    description: 'Read the print colours by layer height the open object declares (api.print.layerColors in its code) and the bands they print as: {declared, changes:[{z,color}], layerHeight, firstLayerHeight, modelHeight, totalLayers, bands:[{color,fromZ,toZ,firstLayer,lastLayer}], warnings?}. Layer numbers are 1-based.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'setLayerColors',
+    description: 'Make the open object print in different colours at different heights (a filament change at a layer, as set on a slicer\'s layer slider). Writes or rewrites the api.print.layerColors([...]) call in its code, runs it and saves a version. Each change means "from height z mm above the bed up, print in this colour"; z 0 sets the colour of the first layers. Heights snap to layer boundaries. JavaScript (manifold-js) sessions only. An object cannot combine these with painted regions: the slicer ignores layer changes on a painted object, so the 3MF export leaves the paint out. Use setPrintPreview to look at the result.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        changes: {
+          type: 'array',
+          description: 'Colour changes, in any order. An empty array declares none.',
+          items: {
+            type: 'object',
+            properties: {
+              z: { type: 'number', description: 'Height in mm above the bed where this colour starts. 0 = the first layers.' },
+              color: { type: 'string', description: 'Filament colour as "#rrggbb".' },
+            },
+            required: ['z', 'color'],
+          },
+        },
+        layerHeight: { type: 'number', description: 'Layer height in mm to slice this model at (default: the app setting, 0.2). Set it when the design depends on thin layers.' },
+        firstLayerHeight: { type: 'number', description: 'First-layer height in mm (default: the app setting, 0.2).' },
+      },
+      required: ['changes'],
+    },
+  },
+  {
+    name: 'clearLayerColors',
+    description: 'Remove the open object\'s print colours by layer height: deletes the api.print.layerColors call from its code, runs it and saves a version.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'setPrintPreview',
+    description: 'Print preview: show the open object as the layer-colour bands that will print, instead of its own colours. While it is on, the viewport AND renderView/renderViews show the preview, so turn it on and then render to check a layer-colour design. layer (how many layers are printed, 1-based) or z (mm above the bed) cuts the model there like a slicer\'s layer slider; layer 0 shows it whole. blend adds a rough estimate of how thin translucent top layers mix with the colour underneath. Returns {enabled, showing, layer, totalLayers, z, blend, notes?}; showing is false when the object declares no layer colours. Turn it off again when you are done.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        enabled: { type: 'boolean', description: 'Turn the preview on or off.' },
+        layer: { type: 'integer', description: 'Show only the first N layers. 0 = the whole model. Not together with z.' },
+        z: { type: 'number', description: 'Show the print up to this height in mm above the bed. Not together with layer.' },
+        blend: { type: 'boolean', description: 'Estimated blending of thin top layers.' },
+      },
+    },
+  },
+  {
     name: 'getUnits',
     description: 'Read the declared unit system: "mm", "cm", "in", or "unitless". It is a per-tab preference of this browser window (not saved in the session), and metadata only: exports record it; coordinates are never rescaled. Returns { unit }.',
     input_schema: { type: 'object', properties: {} },
@@ -2965,6 +3012,8 @@ const ALWAYS_AVAILABLE = new Set([
   'getPalette',
   'getUnits',
   'setUnits',
+  'getLayerColors',
+  'setPrintPreview',
   'listSessions',
   // Object-list organization, like its siblings createObject/renameObject.
   'setObjectGroup',
@@ -3136,6 +3185,8 @@ export const RETRY_SAFE_TOOLS = new Set([
   // Camera moves are idempotent view changes.
   'setCamera', 'frameObjectPart',
   'setUnits',
+  'getLayerColors',
+  'setPrintPreview',
   // Idempotent renders (produce a snapshot; no persistent mutation)
   'renderView', 'renderViews', 'runIsolated', 'renderParts', 'renderSection',
   // Run-without-commit (re-running the same code reproduces the same state)
@@ -3143,7 +3194,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams', 'setCurvatureQuality']);
-const SAVE_GATED = new Set(['runAndSave', 'fitHumanToPhoto', 'forkVersion', 'loadVersion', 'saveVersion', 'resolveModelDrift', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts', 'partAction', 'undoPartEdit', 'splitIntoPieces']);
+const SAVE_GATED = new Set(['setLayerColors', 'clearLayerColors', 'runAndSave', 'fitHumanToPhoto', 'forkVersion', 'loadVersion', 'saveVersion', 'resolveModelDrift', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts', 'partAction', 'undoPartEdit', 'splitIntoPieces']);
 /** SAVE_GATED tools that touch version history WITHOUT executing new code, so
  *  they only need the saveVersions scope (not runCode). */
 const SAVE_NON_RUNNING = new Set(['loadVersion', 'saveVersion', 'renameVersion', 'deleteVersion', 'saveAllObjects']);
@@ -4587,6 +4638,19 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.getViewState();
     case 'getPalette':
       return { active: api.getPalette(), palettes: api.listPalettes() };
+    case 'getLayerColors':
+      return api.getLayerColors();
+    case 'setLayerColors': {
+      const heights: Record<string, unknown> = {};
+      if (input.layerHeight !== undefined) heights.layerHeight = input.layerHeight;
+      if (input.firstLayerHeight !== undefined) heights.firstLayerHeight = input.firstLayerHeight;
+      return api.setLayerColors(input.changes, Object.keys(heights).length > 0 ? heights : undefined);
+    }
+    case 'clearLayerColors':
+      return api.clearLayerColors();
+    case 'setPrintPreview':
+      // The tool uses layer 0 for "the whole model"; the API takes null.
+      return api.setPrintPreview(input.layer === 0 ? { ...input, layer: null } : input);
     case 'getUnits':
       return { unit: api.getUnits() };
     case 'setUnits':

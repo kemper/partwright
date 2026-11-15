@@ -82,12 +82,17 @@ Read `ok` and `checks[]` first. Each check is `{ name, ok, detail }`:
 | `object-sizes` | An object's size differs by more than 0.05 mm: a transform or unit problem. |
 | `objects-on-bed` | An object in the file does not start at z = 0. |
 | `filaments-used` | The filament slots our reader says are painted are not the ones the slicer extruded: paint was lost or mis-encoded. |
+| `layer-changes` | The file declares colour changes by layer height (`api.print.layerColors`) but the slicer made a different number of filament changes. Present only for a plate that prints in one filament; on a painted plate the slicer ignores layer changes, and the report warns instead. |
 | `expect-*` | Your own `--expect-filaments/objects/plates` did not hold. |
 
 Then the numbers:
 
 - `file.filaments[]`: every declared slot with its colour and how many
-  triangles it paints. A slot at 0 triangles is declared but unused.
+  triangles it paints. A slot at 0 triangles is declared but unpainted; it may
+  still be used by a layer change.
+- `file.layerChanges[]`: colour changes by layer height in the project
+  (`plate`, `topZ`, `slot`, `color`). `topZ` is the top of the first layer in
+  the new filament.
 - `slicer.plates[].filaments[]`: grams per slot. `grams` is model material,
   `totalGrams` includes purge, `used` is true for any amount above zero. A colour that should be a thin accent but weighs
   as much as the body is painted over far more than intended.

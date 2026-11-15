@@ -137,6 +137,7 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Bump / dent / flatten one spot (sculpt nudge) | `api.sculpt.grab/inflate/flatten(m, {at, radius, …})` -> `/ai/deform.md` | (not available) | (mesh-only) |
 | Scale / move / rotate / twist ONE part ("bigger head", also on imports' detected parts) | `api.editPart(m, 'head', {scale: 1.3})` (rigid, cut at the seam; a function swaps/deletes the part); `api.sculpt.transform(m, {select: {label}, scale, blend})` (soft warp); `select:` on twist/taper/bend/scatter -> `/ai/deform.md#selecting-part-of-a-shape` | (not available) | (mesh-only) |
 | Brass / glass / chrome viewport look | `api.material('brass')` -> `/ai/deform.md` | (manifold-js only) | (manifold-js only) |
+| Print in different colours at different heights | `api.print.layerColors([{z, color}])` -> `/ai/printing.md` | (manifold-js only) | (manifold-js only) |
 
 **Rule of thumb:** if you find yourself writing a `for` loop to manually compute curve points, stop and check whether `Curves` (manifold-js) or BOSL2 (SCAD) already has the verb. AI-generated point-sampling math is brittle; the helpers are deterministic.
 
@@ -170,7 +171,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `voxel` | Before writing voxel-language code or importing an image as voxels. Covers the `api.voxels()` grid API, colors, coordinate system, and image import. |
 | `mechanisms` | Before modeling a print-in-place / multi-part assembly that **moves** — a screw, spinner, hinge, captive ball, or slider. Covers clearance gaps, `componentCount` verification, twist-extrude threads/spirals, matched-taper nesting, and cutaway checks. |
 | `print-safety` | Before exporting STL/3MF for FDM printing — minimum wall thickness, taper traps, sub-extrusion-width layer detection. |
-| `printing` | The print-readiness toolkit — `checkPrintability` (overhangs, walls, bed fit, tip-over), `thicknessMap` (exact wall thickness everywhere: the thin spots and a heatmap) and `get/setPrinterSettings`. Read before declaring a model print-ready; if it doesn't fit, point the user to Resize and Split. |
+| `printing` | The print-readiness toolkit — `checkPrintability` (overhangs, walls, bed fit, tip-over), `thicknessMap` (exact wall thickness everywhere: the thin spots and a heatmap) and `get/setPrinterSettings`; plus colours by layer height (`api.print.layerColors`, `setLayerColors`) and the print preview (`setPrintPreview`). Read before declaring a model print-ready; if it doesn't fit, point the user to Resize and Split. |
 | `fasteners` | Before building parts that mate with real hardware — `api.fasteners.*` screw holes, tap/pilot holes, heat-set insert bosses, captive-nut pockets, the M2–M8 metric table, clearance presets, and a calibration coupon. |
 | `joints` | Before connecting printed parts to each other — `api.joints.*` alignment pins, sliding dovetails, snap-fits, print-in-place barrel hinges, articulating ball joints (friction / clamp / snap retention), and annular snap rims for press-on lids. |
 | `gears` | Before modeling an involute spur gear, a meshing gear pair, or a rack — `api.gears.spur/pair/rack(...)`, module/teeth/pressure-angle, centre distance, ratio, bores and hubs. |
@@ -418,6 +419,8 @@ partwright.getPrinterSettings()          // -> {bed:[x,y,z], nozzleWidth, overha
 partwright.setPrinterSettings({bed?, nozzleWidth?, overhangAngleDeg?, clearance?}) // update any subset -> merged settings or {error}
 partwright.checkPrintability({bed?, nozzleWidth?, overhangAngleDeg?}?) // bed fit / overhang / thin wall / small feature / tip-over / watertight report, or {error}
 await partwright.thicknessMap({threshold?, limit?, render?, views?, size?}?) // EXACT wall thickness per triangle -> {minThickness, medianThickness, thinFraction, spots[] (thin areas, thinnest first), image? (heatmap)} — find WHERE walls are thin; see /ai/printing.md#thicknessmapopts
+partwright.getLayerColors() / await partwright.setLayerColors([{z, color}], {layerHeight?, firstLayerHeight?}?) / await partwright.clearLayerColors() // print colours by layer height (writes api.print.layerColors into the code)
+partwright.setPrintPreview({enabled?, layer?, z?, blend?}) / partwright.getPrintPreview() // show the model as the bands that print; renders follow it while on
 partwright.isRunning()                   // -> boolean (is code executing?)
 
 // Spending mode (AI budget) -- respect what the user set; see #spending-mode
@@ -1022,6 +1025,7 @@ api.sculpt.grab(m, {at, radius, offset})               // drag the surface near 
 api.sculpt.inflate(m, {at, radius, amount})            // bump out (negative = dent)
 api.sculpt.flatten(m, {at, radius, normal?, strength?})// press a region toward a plane
 api.material('brass')                                  // viewport shading preset (see /ai/deform.md)
+api.print.layerColors([{ z: 0, color: '#ffffff' }, { z: 8, color: '#d01e1e' }]) // print colours by layer height (see /ai/printing.md)
 ```
 
 **Robust booleans + heal — catch silent failures.** `expectUnion` is the one to reach for when an agent has hit "I expected one piece, got three" — it tells you *immediately* instead of after the next render, and the error message includes a bbox/volume dump of each component so you can see which piece floated free.
@@ -1425,7 +1429,7 @@ Users can mark up the model surface with the **Annotate** tool (✏️ in the vi
 
 When the user wants to **tweak it interactively**, asks you to **show them** a tool, or the result is subjective (texture depth, colours, character proportions), **open the tool prefilled instead of applying**: `openTool(id, prefill, {note})` opens the panel with your values in its fields and leaves it to them — it never applies; they preview, adjust and click Apply. On desktop the chat stays beside the panel. Put what you set and what to try in `note` (shown as "Suggested by AI: …"), then read `getUiState().toolState` later to see what they changed. Everything else — "make it knit", "scale it to 80 mm" — you just do with the API.
 
-**Call `readDoc({name: "ui-control"})`** for each tool's prefill keys (`tool-surface`, `tool-paint`, `tool-image-paint`, `tool-palette`, `tool-resize`, `tool-place`, `tool-quality`, `tool-customize`, `tool-voxel-paint`, `tool-print`, `tool-cross-section`, `character-creator`, `convert-to-code`, `detect-parts`, `tool-measure`, `tool-annotate`, the `export-objects` / `export-session` / `publish-model` dialogs, the `import-relief` / `import-image-voxel` wizards, and `open-quality` Settings focus). After the user applies from a panel you opened, your next turn starts with an app-generated `[UI · app note] user applied …` line saying what they settled on.
+**Call `readDoc({name: "ui-control"})`** for each tool's prefill keys (`tool-surface`, `tool-paint`, `tool-image-paint`, `tool-palette`, `tool-resize`, `tool-place`, `tool-quality`, `tool-customize`, `tool-voxel-paint`, `tool-print`, `tool-print-preview`, `tool-cross-section`, `character-creator`, `convert-to-code`, `detect-parts`, `tool-measure`, `tool-annotate`, the `export-objects` / `export-session` / `publish-model` dialogs, the `import-relief` / `import-image-voxel` wizards, and `open-quality` Settings focus). After the user applies from a panel you opened, your next turn starts with an app-generated `[UI · app note] user applied …` line saying what they settled on.
 
 <!-- in-app: (In-app chat only.) **Arrange mode** (from the Insert palette) lets the user click, drag, align and resize parts directly in the viewport. You have no tool for it: to move, copy, align or group parts yourself, use partAction (see Arranging, copying and grouping parts). -->
 

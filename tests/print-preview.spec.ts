@@ -91,6 +91,11 @@ test.describe('Print preview', () => {
     expect(await pw(page, 'setPrintPreview', { bogus: true })).toMatchObject({ error: expect.any(String) });
     expect(await pw(page, 'setLayerColors', [{ z: 1, color: 'red' }])).toMatchObject({ error: expect.stringContaining('#rrggbb') });
 
+    // The 3MF project export carries the layer colours: the per-layer file is in the package.
+    const exported = await pw<{ base64: string; warnings?: string[] }>(page, 'export3MFObjectsData', undefined, 'layers', { bambu: true });
+    expect(exported.warnings).toBeUndefined();
+    expect(Buffer.from(exported.base64, 'base64').includes(Buffer.from('Metadata/custom_gcode_per_layer.xml'))).toBe(true);
+
     // setLayerColors rewrites the call in place; clearLayerColors removes it.
     const set = await pw<{ ok?: boolean; replaced?: boolean; layerColors?: Layers }>(page, 'setLayerColors', [{ z: 0, color: '#111111' }, { z: 10, color: '#ffffff' }]);
     expect(set).toMatchObject({ ok: true, replaced: true });

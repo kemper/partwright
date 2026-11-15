@@ -101,6 +101,81 @@ parametric source and STEP export are then gone, so prefer editing the source
 for parametric models when you can. Use the Split tool when a
 model is too big to print in one piece even at scale.
 
+## Colours by layer height
+
+A model can print in different colours at different heights: the printer
+switches filament at a layer, as you would set on a slicer's layer slider. In a
+manifold-js model, declare it in the code:
+
+```js
+api.print.layerColors([
+  { z: 0, color: '#ffffff' },   // from the bed up: white
+  { z: 8, color: '#d01e1e' },   // from 8 mm up: red
+  { z: 14, color: '#1e50dc' },  // from 14 mm up: blue
+]);
+```
+
+- Each entry means "from height `z` (mm above the bed) up, print in `color`".
+  The bed is the model's lowest point. An entry at `z: 0` sets the colour of
+  the first layers; without one they print in the default grey filament.
+- Heights snap to the nearest layer boundary. The layer height comes from the
+  app setting (0.2 mm by default); a model whose design depends on thin layers
+  can set its own: `api.print.layerColors(changes, { layerHeight: 0.12, firstLayerHeight: 0.2 })`.
+- Last call wins. Unknown keys are rejected.
+
+From the console or an agent, the same thing without editing code by hand:
+
+- `await setLayerColors([{z, color}], {layerHeight?, firstLayerHeight?}?)`
+  writes (or rewrites) the call in the open object's code, runs it and saves a
+  version. Returns `{ok, call, replaced, version?, layerColors}` or `{error}`.
+- `await clearLayerColors()` removes the call.
+- `getLayerColors()` returns `{declared, changes, layerHeight,
+  firstLayerHeight, modelHeight, totalLayers, bands, warnings?}`. `bands` is
+  what actually prints after snapping: `[{color, fromZ, toZ, firstLayer,
+  lastLayer}]`, with 1-based layer numbers.
+
+**Layer colours and paint don't combine on one object.** A slicer ignores
+layer colour changes on an object that carries per-triangle paint. When an
+object has both, `getLayerColors()` says so in `warnings`, and the 3MF project
+export writes the layer colours and leaves that object's paint out.
+
+**Export.** `export3MFObjects` / `export3MFObjectsData` with `bambu: true` (the
+default) write the layer colours into the project: one filament per colour and
+a filament switch at each change, so the slicer opens it with the changes
+already on its layer slider. The result carries `warnings` when something had
+to be left out:
+
+- an object with both paint and layer colours (paint left out);
+- a plate shared by objects with different layer colours. The slicer applies
+  layer changes to a whole plate, so they are left out for that plate. Keep a
+  layer-coloured object on its own plate (the default `plateLayout: 'separate'`);
+- a generic export (`bambu: false`), which can't carry them.
+
+SCAD, BREP and voxel sessions can't declare layer colours yet.
+
+## Print preview
+
+`setPrintPreview({enabled?, layer?, z?, blend?})` shows the open object as the
+bands that will print instead of its own colours, and returns `{enabled,
+showing, layer, totalLayers, z, blend, notes?}`.
+
+- `layer` (how many layers are printed, 1-based) or `z` (mm above the bed)
+  cuts the model there, like scrubbing a slicer's layer slider; the opening is
+  capped in that layer's colour. `null` shows the whole model. Pass one, not
+  both.
+- `blend: true` adds a rough estimate of how thin translucent top layers mix
+  with the colour underneath. It is a guide, not a colour-accurate simulation:
+  real results depend on the filament.
+- While the preview is on, the viewport **and** `renderView` / `renderViews`
+  show it. So to check a layer-colour design: `setPrintPreview({enabled:
+  true})`, render, then `setPrintPreview({enabled: false})`.
+- `showing` is false when the object declares no layer colours; `notes` says
+  why. The preview is per tab and is not saved.
+- It does not show toolpaths, infill, seams, supports or the purge tower, and
+  it won't show thin features a slicer drops.
+
+Users open the same thing from Inspect -> Print preview (`tool-print-preview`).
+
 ## Printing a figure in pieces
 
 To cut a model into separate pieces for printing (head, arms, legs, eye
