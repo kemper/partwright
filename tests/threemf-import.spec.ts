@@ -250,6 +250,20 @@ test.describe('3MF import', () => {
       await pw.runAndSave("const { Manifold } = api; return Manifold.sphere(8, 48).translate([0, 0, 8]);", 'base');
     });
 
+    // Record every status-line text and every dialog title from here on: the
+    // colour pass must name its phases inline, not block the page with a modal.
+    await page.evaluate(() => {
+      const w = window as unknown as { __statuses: string[]; __dialogs: string[] };
+      w.__statuses = [];
+      w.__dialogs = [];
+      new MutationObserver(records => {
+        for (const r of records) for (const n of r.addedNodes) if (n.textContent) w.__statuses.push(n.textContent);
+      }).observe(document.getElementById('status-indicator')!, { childList: true });
+      new MutationObserver(() => {
+        for (const d of document.querySelectorAll('[role="dialog"]')) w.__dialogs.push((d as HTMLElement).innerText);
+      }).observe(document.body, { childList: true, subtree: true });
+    });
+
     await page.locator('#import-wrapper input[type="file"]').setInputFiles({
       name: 'two-boxes.3mf',
       mimeType: 'model/3mf',
@@ -257,6 +271,17 @@ test.describe('3MF import', () => {
     });
     await page.getByRole('dialog').locator('[data-target="current-part"]').click();
     await expect(page.getByText(/Imported two-boxes\.3mf: 24 triangles, 3 colours/)).toBeVisible({ timeout: 30000 });
+
+    const phases = await page.evaluate(() => {
+      const w = window as unknown as { __statuses: string[]; __dialogs: string[] };
+      return { statuses: w.__statuses, colourDialogs: w.__dialogs.filter(t => /colours/i.test(t)), final: document.getElementById('status-indicator')!.textContent };
+    });
+    // Each phase is named in the status line, in order, and the line ends on Ready.
+    const order = ['Loading model...', 'Matching colours...', 'Applying colours...', 'Saving...'].map(l => phases.statuses.indexOf(l));
+    expect(order.every(i => i >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(phases.final).toBe('Ready');
+    expect(phases.colourDialogs).toEqual([]);
 
     const state = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: Record<string, (...a: unknown[]) => unknown> }).partwright;

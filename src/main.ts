@@ -161,6 +161,7 @@ import { probeIndexedInWorker, probeSTLInWorker, STLProbeAbortError, type STLPro
 import { parse3MFInWorker } from './import/threemfParseClient';
 import { matchImportColors, singleColorIndex, type ColorSeedGroup } from './import/colorSeed';
 import { matchImportColorsInWorker } from './import/colorSeedClient';
+import { afterNextPaint } from './ui/afterPaint';
 import { ImportCancelledError, ImportWorkerError } from './import/importWorkerJob';
 import { parse3MF, type ThreeMFParseResult } from './import/parsers/threemf';
 import { looksLikeZip } from './import/zipReader';
@@ -4353,28 +4354,78 @@ async function main() {
   // own position).
   // The seeder gets `isStale` to check after its own awaits, before it does
   // anything lasting (adopting a palette).
+  //
+  // The colours land as their own pass after the uncoloured model is on
+  // screen. On a big mesh the pass is named in the status line first
+  // (importPhase), because building and drawing a per-triangle-coloured mesh
+  // of that size blocks the page.
   type SeedRegionsInput = SeedRegion[] | ((mesh: MeshData, isStale: () => boolean) => SeedRegion[] | Promise<SeedRegion[]>);
   async function seedImportRegions(seedInput: SeedRegionsInput | undefined, matchMesh?: MeshData): Promise<void> {
+    const live = currentMeshData;
+    // The ids describe the mesh that was live when seeding started. A newer
+    // run or an object switch in the meantime replaced it.
+    const isStale = () => currentMeshData !== live;
+    const dropStale = (): boolean => {
+      if (!isStale()) return false;
+      showToast('The model changed while the import’s colours were being matched, so they were not applied.', { variant: 'warn', source: 'import' });
+      return true;
+    };
     let seedRegions: SeedRegion[] | undefined;
     if (typeof seedInput === 'function') {
-      const live = currentMeshData;
       if (!live) return;
-      // The ids describe the mesh that was live when the match started. A
-      // newer run or an object switch in the meantime replaced it.
-      const isStale = () => currentMeshData !== live;
       seedRegions = await seedInput(matchMesh ?? live, isStale);
-      if (isStale()) {
-        showToast('The model changed while the import’s colours were being matched, so they were not applied.', { variant: 'warn', source: 'import' });
-        return;
-      }
+      if (dropStale()) return;
     } else {
       seedRegions = seedInput;
     }
     if (!seedRegions || seedRegions.length === 0) return;
-    for (const seed of seedRegions) {
-      addRegion(seed.name, seed.color, 'subtree', { kind: 'triangles', ids: seed.triangleIds }, new Set(seed.triangleIds), true, seed.slotId);
+    const regions = seedRegions;
+    const phased = await importPhase('Applying colours...');
+    try {
+      if (phased && dropStale()) return;
+      // One reconcile for the whole batch: each addRegion on its own repaints
+      // the model, and on a big mesh every repaint rebuilds the coloured
+      // geometry (hundreds of MB of vertex data).
+      withSyncReconcile(() => {
+        for (const seed of regions) {
+          addRegion(seed.name, seed.color, 'subtree', { kind: 'triangles', ids: seed.triangleIds }, new Set(seed.triangleIds), true, seed.slotId);
+        }
+      });
+      // Keep the label up while the coloured mesh uploads and draws.
+      if (phased) await afterNextPaint();
+    } finally {
+      if (phased) endImportPhase();
     }
-    if (currentMeshData) updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
+  }
+
+  /** Name the phase a big import is in, in the viewport status line, and wait
+   *  for it to paint — the work that follows blocks the page, so a label set
+   *  without the wait would never show. Small meshes skip it (the work is
+   *  instant) and get no extra frame of delay. Returns whether it showed;
+   *  pair with endImportPhase. */
+  async function importPhase(label: string, numTri: number = currentMeshData?.numTri ?? 0): Promise<boolean> {
+    if (numTri < getConfig().renderer.lazyManifoldMinTriangles) return false;
+    // A failed run left its error in the status line: leave it there.
+    if ((getGeometryDataObj() as { status?: string } | null)?.status === 'error') return false;
+    setStatus(statusBar, 'running', label);
+    await afterNextPaint();
+    return true;
+  }
+
+  function endImportPhase(): void {
+    setStatus(statusBar, 'ready', 'Ready');
+  }
+
+  /** Whether the editor still holds the import that was started in object
+   *  `partId` with wrapper `code` (as the editor showed it — setting a value
+   *  can auto-format it). The import's later phases await (the colour
+   *  match runs with the page live), so the user may have switched object or
+   *  session, or edited the code, before the version is saved — saving then
+   *  would write the import into whatever is open now. */
+  function importStillOpen(partId: string | undefined, code: string): boolean {
+    if (getState().currentPart?.id === partId && getValue() === code) return true;
+    showToast('The editor moved on before the import finished, so it was not saved as a version.', { variant: 'warn', source: 'import' });
+    return false;
   }
 
   // Import a parsed mesh (STL today) as a new session.
@@ -4392,18 +4443,29 @@ async function main() {
     // AFTER this clear, so an imported colored mesh's own seeds survive.
     cancelVoxelPaintIfActive();
     dropPaintState();
+    // Uploading and first drawing a big mesh blocks the page before the run's
+    // own status can show: name it first.
+    await importPhase('Loading model...', mesh.numTri);
+    const partId = getState().currentPart?.id;
     setActiveImports([mesh]);
     const code = generateImportCode([mesh], { manifold: opts.manifold });
     setValue(code);
+    const shown = getValue();
     await runCodeSync(code);
     await seedImportRegions(opts.seedRegions);
-    const thumbnail = await captureThumbnail();
-    const geometryData = enrichGeometryDataWithColors(getGeometryDataObj());
-    const label = opts.manifold ? 'imported' : 'imported (render-only)';
-    await saveVersion(code, geometryData, thumbnail, label, undefined, {
-      force: true,
-      importedMeshes: [mesh],
-    });
+    if (!importStillOpen(partId, shown)) return { sessionId: session.id };
+    const saving = await importPhase('Saving...');
+    try {
+      const thumbnail = await captureThumbnail();
+      const geometryData = enrichGeometryDataWithColors(getGeometryDataObj());
+      const label = opts.manifold ? 'imported' : 'imported (render-only)';
+      await saveVersion(code, geometryData, thumbnail, label, undefined, {
+        force: true,
+        importedMeshes: [mesh],
+      });
+    } finally {
+      if (saving) endImportPhase();
+    }
     return { sessionId: session.id };
   }
 
@@ -5840,21 +5902,23 @@ async function main() {
     return idx >= 0 ? result.palette[idx] : undefined;
   }
 
+  /** Cancels the colour match in flight (the inline Cancel button), or null. */
+  let colourMatchCancel: (() => void) | null = null;
+
   /** `matchImportColors`, in a Worker when the meshes are big enough for it to
    *  stall the page (seconds at a couple of million triangles); on the main
-   *  thread for small ones, or if the Worker can't run. The Worker match sits
-   *  behind the progress modal, so the model can't be switched under it; its
-   *  Cancel brings the import in without colours. Colours are optional: a
-   *  match that fails never fails the import. */
+   *  thread for small ones, or if the Worker can't run. The Worker match runs
+   *  with the page live — the uncoloured model stays orbitable — behind the
+   *  inline "Matching colours… Xs" status and the shared Cancel button, which
+   *  brings the import in without colours. Colours are optional: a match that
+   *  fails never fails the import. */
   async function matchImportColorsOffThread(source: MeshData, out: MeshData, triColor: Int32Array): Promise<ColorSeedGroup[]> {
     if (Math.max(source.numTri, out.numTri) < getConfig().renderer.lazyManifoldMinTriangles) return matchImportColors(source, out, triColor);
     const abort = new AbortController();
-    const progressId = startProgress({
-      title: 'Applying colours',
-      message: 'Matching the file’s colours to the model…',
-      indeterminate: true,
-      onCancel: () => abort.abort(),
-    });
+    const label = 'Matching colours...';
+    setStatus(statusBar, 'running', label);
+    const timer = startSurfaceTimer(label);
+    colourMatchCancel = () => abort.abort();
     try {
       return await matchImportColorsInWorker(source, out, triColor, { signal: abort.signal });
     } catch (e) {
@@ -5870,7 +5934,9 @@ async function main() {
         return [];
       }
     } finally {
-      endProgress(progressId);
+      colourMatchCancel = null;
+      stopSurfaceTimer(timer);
+      endImportPhase();
     }
   }
 
@@ -6813,20 +6879,29 @@ async function main() {
     // composing into a SCAD/BREP/voxel part would run the wrapper through the
     // wrong engine and persist the version tagged with the wrong language.
     if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
+    await importPhase('Loading model...', components.reduce((n, c) => n + c.numTri, 0));
+    const partId = getState().currentPart?.id;
     const code = generateImportCode(components, { manifold });
     setActiveImports(components);
     setValue(code);
+    const shown = getValue();
     await runCodeSync(code);
     // Seed any pre-computed colour regions (relief bands) AFTER the live-paint
     // reset above, so the import's own colours survive into the saved version.
     await seedImportRegions(seedRegions);
-    const thumbnail = await captureThumbnail();
-    const geometryData = enrichGeometryDataWithColors(getGeometryDataObj());
-    const label = manifold ? 'imported' : 'imported (render-only)';
-    await saveVersion(code, geometryData, thumbnail, label, undefined, {
-      force: true,
-      importedMeshes: components,
-    });
+    if (!importStillOpen(partId, shown)) return;
+    const saving = await importPhase('Saving...');
+    try {
+      const thumbnail = await captureThumbnail();
+      const geometryData = enrichGeometryDataWithColors(getGeometryDataObj());
+      const label = manifold ? 'imported' : 'imported (render-only)';
+      await saveVersion(code, geometryData, thumbnail, label, undefined, {
+        force: true,
+        importedMeshes: components,
+      });
+    } finally {
+      if (saving) endImportPhase();
+    }
   }
 
   /** Execute a part's latest version off-editor and capture its geometry as a
@@ -7391,12 +7466,14 @@ async function main() {
     const gap = base && add ? Math.max(base.max[0] - base.min[0], add.max[0] - add.min[0]) * getConfig().ui.partArrangeGapRatio : 0;
     const d = base && add ? besideOffset(base, add, gap) : [0, 0, 0] as [number, number, number];
     const placed: ImportedMesh = { ...mesh, vertProperties: translatedVerts(mesh.vertProperties, mesh.numProp, d), parts };
+    await importPhase('Loading model...', baseMesh.numTri + mesh.numTri);
     const previousCode = getValue();
     const previousImports = getActiveImports();
     const imports = [...previousImports, placed];
     const code = composeImportIntoCode(previousCode, imports.length - 1);
     setActiveImports(imports);
     setValue(code);
+    const shown = getValue();
     const ran = await runCodeSync(code);
     const geo = getGeometryDataObj() as { status?: string } | null;
     if (!ran || geo?.status === 'error' || !currentMeshData) {
@@ -7412,7 +7489,14 @@ async function main() {
       const out = currentMeshData;
       await seedImportRegions(seedRegions, { ...out, vertProperties: translatedVerts(out.vertProperties, out.numProp, [-d[0], -d[1], -d[2]]) });
     }
-    const saved = await saveCurrentVersion(`add ${name}`, { importedMeshes: imports });
+    if (!importStillOpen(objectId, shown)) return false;
+    const saving = await importPhase('Saving...');
+    let saved: Awaited<ReturnType<typeof saveCurrentVersion>>;
+    try {
+      saved = await saveCurrentVersion(`add ${name}`, { importedMeshes: imports });
+    } finally {
+      if (saving) endImportPhase();
+    }
     if ('error' in saved && !opts.silent) showToast(`Added ${name}, but saving the version failed: ${saved.error}`, { variant: 'warn', source: 'import' });
     selectObjectParts(parts.names.map(n => `part:${n}`));
     return true;
@@ -10185,6 +10269,7 @@ async function main() {
   // cancels the current engine execution (terminates the geometry Worker).
   cancelInlineBtn.addEventListener('click', () => {
     if (surfaceCarveCancel) { surfaceCarveCancel(); return; }
+    if (colourMatchCancel) { colourMatchCancel(); return; }
     if (cancelSurfaceCompute()) return;
     cancelCurrentExecution();
   });
