@@ -35,6 +35,7 @@
     "figure:smoke": "node scripts/figure-smoke.mjs",
     "human:fit": "node scripts/human-fit.mjs",
     "segment:bench": "node scripts/segment-bench.mjs",
+    "layered-print": "node bin/partwright.mjs layered-print",
     "eval:models": "node scripts/eval-models.mjs",
     "new:modifier": "node scripts/new-modifier.mjs",
     "cli": "node bin/partwright.mjs"
