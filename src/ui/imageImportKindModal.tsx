@@ -1,7 +1,8 @@
 // Chooser shown when an image is imported through the GENERIC import path
 // (toolbar "Choose file…" or drag-and-drop), where the user hasn't yet
 // expressed an intent. Asks whether to turn the image into a printable
-// keychain / tile / relief, or into a colored voxel model. The explicit
+// keychain / tile / relief, a layered filament print, a colored voxel model,
+// or to just attach it to the session as-is (raw). The explicit
 // "Image → relief…" / "Image → voxel…" menu items bypass this chooser and go
 // straight to their respective flow.
 
@@ -9,7 +10,7 @@ import { useEffect, useRef } from 'preact/hooks';
 import { mountPreactModal } from './preact/mount';
 import { BUTTON_CANCEL } from './styleConstants';
 
-export type ImageImportKind = 'relief' | 'voxel';
+export type ImageImportKind = 'relief' | 'layered' | 'voxel' | 'raw';
 
 interface Choice {
   kind: ImageImportKind;
@@ -26,9 +27,19 @@ function buildChoices(recommend: ImageImportKind): Choice[] {
       desc: 'Turn it into a printable colour tile, keychain, sticker, or stepped relief.',
     },
     {
+      kind: 'layered',
+      title: 'Layered filament print',
+      desc: 'HueForge-style: thin translucent layers with filament swaps at chosen heights blend a few filaments into many shades.',
+    },
+    {
       kind: 'voxel',
       title: 'Voxel model',
       desc: 'Turn it into a colored voxel model — flat billboard or brightness-driven relief.',
+    },
+    {
+      kind: 'raw',
+      title: 'Just attach the image (raw)',
+      desc: 'Add it to this session\'s attachments as-is — a reference photo, or a source to turn into a model later.',
     },
   ];
   return raw.map(c => ({ ...c, recommended: c.kind === recommend }));
@@ -77,7 +88,8 @@ function ImageImportKindBody(props: {
   );
 }
 
-/** Ask whether a generically-imported image should become a relief or voxels.
+/** Ask whether a generically-imported image should become a relief, a layered
+ *  print, voxels, or just be attached as-is.
  *  Resolves to the chosen kind, or `null` if the user cancels (so the caller
  *  can abort without mutating any session). */
 export function showImageImportKindModal(opts: {

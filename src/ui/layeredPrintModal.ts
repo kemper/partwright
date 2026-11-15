@@ -14,6 +14,8 @@ import type { LayeredExportMode } from '../relief/layeredPrint/export3mf';
 export interface LayeredPrintModalOptions {
   /** Image URL (data: / blob: / http) to preload. */
   initialSrc?: string;
+  /** Or a picked/dropped file to preload. */
+  initialFile?: File;
   /** Decode + downscale a photo; `dataUrl` is what gets attached to the session. */
   decode: (src: Blob | string) => Promise<{ image: ImageData; dataUrl: string }>;
   solve: (image: RgbaImage, options: Partial<LayeredPrintOptions>, signal: AbortSignal) => Promise<LayeredPrintResult>;
@@ -255,5 +257,6 @@ export function openLayeredPrintModal(opts: LayeredPrintModalOptions): void {
   });
 
   syncButtons(false);
-  if (opts.initialSrc) void load(opts.initialSrc);
+  if (opts.initialFile) void load(opts.initialFile);
+  else if (opts.initialSrc) void load(opts.initialSrc);
 }

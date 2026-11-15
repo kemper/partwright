@@ -58,6 +58,18 @@ test.describe('AI panel image drop', () => {
     await expect(page.getByText('Import image as…')).toBeVisible();
   });
 
+  test('the import chooser offers relief, layered print, voxel and raw; raw just attaches', async ({ page }) => {
+    await dropFile(page, '#viewport', 'photo.png', 'image/png', PNG_B64);
+    const dialog = page.getByRole('dialog', { name: 'Import image as…' });
+    await expect(dialog).toBeVisible();
+    for (const kind of ['relief', 'layered', 'voxel', 'raw']) await expect(dialog.locator(`[data-kind="${kind}"]`)).toHaveCount(1);
+    await page.screenshot({ path: 'test-results/import-image-chooser.png' });
+    const before = await page.evaluate(() => (window as any).partwright.getImages().length);
+    await dialog.locator('[data-kind="raw"]').click();
+    await expect(dialog).toBeHidden();
+    await page.waitForFunction((n) => (window as any).partwright.getImages().length === n + 1, before);
+  });
+
   // CodeMirror preventDefault()s every file drop on the editor, so the
   // document import must not treat a prevented drop as already handled.
   test('dropping an image on the code editor still opens the import chooser', async ({ page }) => {

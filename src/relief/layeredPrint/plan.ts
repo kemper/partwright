@@ -47,9 +47,10 @@ export function planSwapText(p: LayeredPrintPlanRecord): string {
 }
 
 /** Colour a mesh the way a single-nozzle print with this plan's swaps comes
- *  out, measured from the mesh's own bottom (the bed): up-facing triangles get
- *  the composited colour of the layer they sit at; walls get the plain filament
- *  printed at that height; the underside gets the base filament. Works for the
+ *  out, measured from the mesh's own bottom (the bed): every up- or side-facing
+ *  triangle gets the composited colour seen at its highest point (so sides
+ *  read as their region's colour, not as slivers of mid-stack filaments); the
+ *  underside gets the base filament. Works for the
  *  whole model — a frame or text added around the print is coloured by the
  *  filament that is loaded at its height, as it would print. Grouped by colour. */
 export function layeredPrintZRegions(mesh: MeshData, p: LayeredPrintPlanRecord): Array<{ name: string; color: [number, number, number]; triangles: Set<number> }> {
@@ -65,7 +66,6 @@ export function layeredPrintZRegions(mesh: MeshData, p: LayeredPrintPlanRecord):
   const L = Math.min(MAX_COLOUR_LAYERS, Math.max(p.totalLayers, Math.ceil((maxZ - minZ - spec.firstLayerHeight) / spec.layerHeight) + 1, 1));
   const ladder = computeLadder(blocks, L, spec);
   const filCols = p.blocks.map((b) => hexToRgb01(b.hex));
-  const blockAtLayer = (k: number) => { let bi = 0; for (let j = 0; j < blocks.length; j++) if (blocks[j].startLayer <= k) bi = j; return bi; };
   const layerOfZ = (z: number) => Math.max(0, Math.min(L - 1, Math.round((z - minZ - spec.firstLayerHeight) / spec.layerHeight)));
   const groups = new Map<string, { name: string; color: [number, number, number]; triangles: Set<number> }>();
   const add = (key: string, name: string, color: [number, number, number], t: number) => {
@@ -81,12 +81,14 @@ export function layeredPrintZRegions(mesh: MeshData, p: LayeredPrintPlanRecord):
     const up = nz / (Math.hypot(nx, ny, nz) || 1);
     if (up < -0.5) {
       add('f0', `layered print: ${p.blocks[0].name}`, filCols[0], t);
-    } else if (up > 0.2) {
+    } else {
+      // Tops AND sides take the colour seen at the triangle's highest point.
+      // A steep side of the heightmap is a long thin triangle spanning many
+      // layers; colouring it by its mid-height filament gave saw-tooth slivers
+      // of whichever filament sits mid-stack (and a zig-zag base strip). Taking
+      // the top colour makes each region read as one colour down its sides.
       const k = layerOfZ(Math.max(vp[a + 2], vp[b + 2], vp[c + 2]));
       add(`L${k}`, `layered print: layer ${k + 1}`, [ladder[k * 3], ladder[k * 3 + 1], ladder[k * 3 + 2]], t);
-    } else {
-      const bi = blockAtLayer(layerOfZ((vp[a + 2] + vp[b + 2] + vp[c + 2]) / 3));
-      add(`f${bi}`, `layered print: ${p.blocks[bi].name}`, filCols[bi], t);
     }
   }
   return [...groups.values()];

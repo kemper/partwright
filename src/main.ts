@@ -4786,9 +4786,10 @@ async function main() {
     return { filename: out.built.filename, bytes: out.built.blob.size, mode: out.mode, ...(out.mode === 'layer-swap' ? { swapMode: args.swapMode ?? 'ams' } : {}), filaments: out.filaments, swaps: out.swaps };
   }
 
-  function openLayeredPrintDialog(initialSrc?: string): void {
+  function openLayeredPrintDialog(initialSrc?: string, initialFile?: File): void {
     openLayeredPrintModal({
       initialSrc,
+      initialFile,
       decode: (src) => decodePhotoForLayeredPrint(src),
       solve: (image, options, signal) => solveLayeredPrintAsync(image, { ...options, ...layeredPrintLimits() }, signal),
       onCreate: async (result, name, photoDataUrl) => {
@@ -4799,6 +4800,25 @@ async function main() {
         downloadLayeredPrint3MF(layeredPrintRecord(result), layeredPrintMeshData(result), exportArgs);
       },
     });
+  }
+
+  /** "Import raw": attach an image to the session as-is (creating a session
+   *  when none is open) — a reference photo, or a source for later tools. */
+  async function attachRawImage(file: File): Promise<void> {
+    const src = await new Promise<string>((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result));
+      fr.onerror = () => reject(fr.error ?? new Error('could not read the file'));
+      fr.readAsDataURL(file);
+    });
+    if (!getState().session) {
+      const name = file.name.replace(/\.[^.]+$/, '') || 'image';
+      if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
+      await createSession(name, 'manifold-js', name);
+    }
+    const att = normalizeAttachment({ src, kind: 'image', label: file.name, addedAt: Date.now(), source: 'user' }, generateId());
+    commitAttachments([..._getAttachments(), att]);
+    showToast(`Attached ${file.name} to this session (see Attachments).`, { variant: 'success', source: 'import' });
   }
 
   // Seed color regions from an imported stepped-relief STL's existing Z plateaus so the
@@ -5017,6 +5037,14 @@ async function main() {
         if (!kind) return false;
         if (kind === 'relief') {
           openReliefImportFlow(file);
+          return true;
+        }
+        if (kind === 'layered') {
+          openLayeredPrintDialog(undefined, file);
+          return true;
+        }
+        if (kind === 'raw') {
+          await attachRawImage(file);
           return true;
         }
         committed = await handleImageImport(file);
