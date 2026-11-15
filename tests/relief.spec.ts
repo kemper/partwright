@@ -204,6 +204,15 @@ test.describe('Relief Studio', () => {
       { timeout: 15_000 },
     ).toBeGreaterThan(0);
 
+    // The image is attached to the session and the object records the tool, so
+    // Image tools can re-open it (#1256).
+    await page.waitForFunction(() => (window as any).partwright.getImageToolOp()?.tool === 'tile', null, { timeout: 15_000 });
+    const rec = await page.evaluate(() => {
+      const pw = (window as any).partwright;
+      return { op: pw.getImageToolOp(), images: pw.getImages().map((i: { id: string }) => i.id) };
+    });
+    expect(rec.images).toContain(rec.op.image);
+
     // No uncaught errors from the relief flow (the pre-existing import.meta
     // worker warning on plain loads is unrelated and filtered out).
     expect(errors.filter(e => !e.includes('import.meta'))).toEqual([]);

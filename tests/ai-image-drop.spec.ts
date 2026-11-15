@@ -70,6 +70,26 @@ test.describe('AI panel image drop', () => {
     await page.waitForFunction((n) => (window as any).partwright.getImages().length === n + 1, before);
   });
 
+  test('a voxel import from the chooser attaches the image and records the tool (#1256)', async ({ page }) => {
+    // A 4×4 opaque PNG drawn in the page (voxel import needs opaque pixels).
+    const b64 = await page.evaluate(() => {
+      const c = document.createElement('canvas'); c.width = 4; c.height = 4;
+      const g = c.getContext('2d')!; g.fillStyle = '#d2452b'; g.fillRect(0, 0, 4, 4); g.fillStyle = '#2f6fd0'; g.fillRect(2, 0, 2, 4);
+      return c.toDataURL('image/png').split(',')[1];
+    });
+    await dropFile(page, '#viewport', 'tile.png', 'image/png', b64);
+    const dialog = page.getByRole('dialog', { name: 'Import image as…' });
+    await dialog.locator('[data-kind="voxel"]').click();
+    await page.getByRole('button', { name: 'Import', exact: true }).click();
+    await page.waitForFunction(() => (window as any).partwright.getImageToolOp()?.tool === 'voxel', null, { timeout: 30_000 });
+    const res = await page.evaluate(() => {
+      const pw = (window as any).partwright;
+      return { op: pw.getImageToolOp(), images: pw.getImages().map((i: { id: string }) => i.id) };
+    });
+    expect(res.op?.tool).toBe('voxel');
+    expect(res.images).toContain(res.op.image);
+  });
+
   // CodeMirror preventDefault()s every file drop on the editor, so the
   // document import must not treat a prevented drop as already handled.
   test('dropping an image on the code editor still opens the import chooser', async ({ page }) => {

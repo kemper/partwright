@@ -137,10 +137,19 @@ test.describe('Layered print from photo', () => {
     await expect(dialog.getByLabel('AMS slots')).toBeVisible();
     await page.screenshot({ path: 'test-results/layered-print-dialog.png' });
 
+    const objectsBefore = await page.evaluate(() => (window as any).partwright.listObjects().length);
     await dialog.getByRole('button', { name: 'Open in editor' }).click();
+    // The editor already holds work, so the print asks where to land; a new
+    // object in this session gets the photo attached (#1256).
+    await page.getByRole('dialog', { name: 'Layered filament print' }).getByRole('button', { name: /^New object/ }).click();
     await expect(dialog).toBeHidden({ timeout: 90_000 });
-    const plan = await page.evaluate(() => (window as any).partwright.getLayeredPrintPlan());
-    expect(plan.error).toBeUndefined();
+    await page.waitForFunction((n) => (window as any).partwright.listObjects().length > n && (window as any).partwright.getLayeredPrintPlan()?.error === undefined, objectsBefore, { timeout: 90_000 });
+    const after = await page.evaluate(() => {
+      const pw = (window as any).partwright;
+      return { op: pw.getImageToolOp(), images: pw.getImages().map((i: { id: string }) => i.id) };
+    });
+    expect(after.op?.tool).toBe('layeredPrint');
+    expect(after.images).toContain(after.op.image);
     await page.evaluate(() => (window as any).partwright.setCodeView('full'));
     await page.waitForTimeout(1500);
     await page.screenshot({ path: 'test-results/layered-print-session.png' });
