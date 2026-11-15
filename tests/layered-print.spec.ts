@@ -101,6 +101,7 @@ test.describe('Layered print from photo', () => {
     await expect(dialog).toBeHidden({ timeout: 90_000 });
     const plan = await page.evaluate(() => (window as any).partwright.getLayeredPrintPlan());
     expect(plan.error).toBeUndefined();
+    await page.evaluate(() => (window as any).partwright.setCodeView('full'));
     await page.waitForTimeout(1500);
     await page.screenshot({ path: 'test-results/layered-print-session.png' });
   });
