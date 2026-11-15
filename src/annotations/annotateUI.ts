@@ -113,6 +113,7 @@ let saveViewBtn: HTMLButtonElement | null = null;
 let viewTitleInput: HTMLInputElement | null = null;
 let historyHeader: HTMLElement | null = null;
 let historyList: HTMLElement | null = null;
+let pickerDrag: { clampIntoView(): void } | null = null;
 
 const inactiveBtnClass = TOOL_TOGGLE_IDLE;
 const activeBtnClass = TOOL_TOGGLE_ACTIVE;
@@ -319,6 +320,9 @@ function renderHistory(): void {
     return;
   }
   for (const v of views) historyList.appendChild(historyRow(v));
+  // The panel is position:fixed and grows with each saved view; pull it back
+  // inside the window so its lower buttons never end up off-screen.
+  pickerDrag?.clampIntoView();
 }
 
 function historyRow(v: AnnotationView): HTMLElement {
@@ -507,7 +511,7 @@ function createPickerPanel(): HTMLElement {
   // Header: drag handle + title + × close button (shared tool-panel chrome).
   const header = createToolPanelHeader('✏️ Annotate', () => { toggleAnnotateMode(); }, 'Close annotate menu');
   panel.appendChild(header);
-  attachViewportPanelDrag(header, panel);
+  pickerDrag = attachViewportPanelDrag(header, panel);
 
   // Padded content beneath the header.
   const content = document.createElement('div');

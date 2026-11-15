@@ -159,7 +159,9 @@ import { isOrientedEdgeManifold, probeIndexed, probeSTL, type IndexedProbeResult
 import type { ManifoldFacts } from './geometry/manifoldFacts';
 import { probeIndexedInWorker, probeSTLInWorker, STLProbeAbortError, type STLProbeControl } from './import/stlProbeClient';
 import { parse3MFInWorker } from './import/threemfParseClient';
-import { ImportWorkerError } from './import/importWorkerJob';
+import { matchImportColors, singleColorIndex, type ColorSeedGroup } from './import/colorSeed';
+import { matchImportColorsInWorker } from './import/colorSeedClient';
+import { ImportCancelledError, ImportWorkerError } from './import/importWorkerJob';
 import { parse3MF, type ThreeMFParseResult } from './import/parsers/threemf';
 import { looksLikeZip } from './import/zipReader';
 import { parseVox } from './import/parsers/vox';
@@ -4361,11 +4363,30 @@ async function main() {
   // produced — for imports whose colours are keyed to their SOURCE triangle
   // order (3MF), which Manifold.ofMesh reorders, so ids can only be resolved
   // after the run.
-  type SeedRegionsInput = SeedRegion[] | ((mesh: MeshData) => SeedRegion[]);
-  function seedImportRegions(seedInput: SeedRegionsInput | undefined): void {
-    const seedRegions = typeof seedInput === 'function'
-      ? (currentMeshData ? seedInput(currentMeshData) : [])
-      : seedInput;
+  //
+  // A function seeder may match in a Worker (a big import), so this is async.
+  // `matchMesh` is the mesh to match against when it isn't the live one as it
+  // stands (an import placed beside other geometry is matched at the file's
+  // own position).
+  // The seeder gets `isStale` to check after its own awaits, before it does
+  // anything lasting (adopting a palette).
+  type SeedRegionsInput = SeedRegion[] | ((mesh: MeshData, isStale: () => boolean) => SeedRegion[] | Promise<SeedRegion[]>);
+  async function seedImportRegions(seedInput: SeedRegionsInput | undefined, matchMesh?: MeshData): Promise<void> {
+    let seedRegions: SeedRegion[] | undefined;
+    if (typeof seedInput === 'function') {
+      const live = currentMeshData;
+      if (!live) return;
+      // The ids describe the mesh that was live when the match started. A
+      // newer run or an object switch in the meantime replaced it.
+      const isStale = () => currentMeshData !== live;
+      seedRegions = await seedInput(matchMesh ?? live, isStale);
+      if (isStale()) {
+        showToast('The model changed while the import’s colours were being matched, so they were not applied.', { variant: 'warn', source: 'import' });
+        return;
+      }
+    } else {
+      seedRegions = seedInput;
+    }
     if (!seedRegions || seedRegions.length === 0) return;
     for (const seed of seedRegions) {
       addRegion(seed.name, seed.color, 'subtree', { kind: 'triangles', ids: seed.triangleIds }, new Set(seed.triangleIds), true, seed.slotId);
@@ -4392,7 +4413,7 @@ async function main() {
     const code = generateImportCode([mesh], { manifold: opts.manifold });
     setValue(code);
     await runCodeSync(code);
-    seedImportRegions(opts.seedRegions);
+    await seedImportRegions(opts.seedRegions);
     const thumbnail = await captureThumbnail();
     const geometryData = enrichGeometryDataWithColors(getGeometryDataObj());
     const label = opts.manifold ? 'imported' : 'imported (render-only)';
@@ -5933,17 +5954,80 @@ async function main() {
     return listFilaments().map(s => s.id);
   }
 
-  interface ThreeMFColorInfo { paletteName: string | null; coloredTriangles: number; colors: number; skippedColors: number }
+  interface ThreeMFColorInfo {
+    paletteName: string | null;
+    coloredTriangles: number;
+    colors: number;
+    skippedColors: number;
+    /** The file's one colour, when every triangle carries it (so it imported unpainted). */
+    singleColor?: { name: string; hex: string };
+  }
+
+  /** `singleColorIndex` of a file's triangles, scanned once per file (a split
+   *  import builds one seeder per object over the same file). */
+  const singleColorOf = new WeakMap<Int32Array, number>();
+  function fileSingleColor(result: ThreeMFParseResult): ThreeMFParseResult['palette'][number] | undefined {
+    let idx = singleColorOf.get(result.triColor);
+    if (idx === undefined) {
+      idx = singleColorIndex(result.triColor);
+      singleColorOf.set(result.triColor, idx);
+    }
+    return idx >= 0 ? result.palette[idx] : undefined;
+  }
+
+  /** `matchImportColors`, in a Worker when the meshes are big enough for it to
+   *  stall the page (seconds at a couple of million triangles); on the main
+   *  thread for small ones, or if the Worker can't run. The Worker match sits
+   *  behind the progress modal, so the model can't be switched under it; its
+   *  Cancel brings the import in without colours. Colours are optional: a
+   *  match that fails never fails the import. */
+  async function matchImportColorsOffThread(source: MeshData, out: MeshData, triColor: Int32Array): Promise<ColorSeedGroup[]> {
+    if (Math.max(source.numTri, out.numTri) < getConfig().renderer.lazyManifoldMinTriangles) return matchImportColors(source, out, triColor);
+    const abort = new AbortController();
+    const progressId = startProgress({
+      title: 'Applying colours',
+      message: 'Matching the file’s colours to the model…',
+      indeterminate: true,
+      onCancel: () => abort.abort(),
+    });
+    try {
+      return await matchImportColorsInWorker(source, out, triColor, { signal: abort.signal });
+    } catch (e) {
+      if (e instanceof ImportCancelledError) {
+        showToast('Skipped the file’s colours.', { variant: 'neutral', source: 'import' });
+        return [];
+      }
+      errorLog.capture({ level: 'warn', source: 'import', message: `Colour match worker failed; matching on the main thread instead: ${(e as Error).message}` });
+      try {
+        return matchImportColors(source, out, triColor);
+      } catch (err) {
+        showToast(`Could not apply the file’s colours: ${(err as Error).message}`, { variant: 'warn', source: 'import' });
+        return [];
+      }
+    } finally {
+      endProgress(progressId);
+    }
+  }
 
   /** Colour seeder for a 3MF import. Manifold.ofMesh reorders triangles, so the
    *  source's per-triangle colours can only be keyed AFTER the import wrapper
-   *  runs: each output triangle maps to its nearest source triangle by centroid
-   *  and takes that triangle's palette entry, grouped into one region per
-   *  colour. Only exact centroid matches are coloured, so geometry composed in
-   *  from the current object keeps its own look. The palette is adopted lazily
-   *  here — i.e. only once the user actually placed the import (a cancelled
-   *  target modal never creates a palette). */
-  function build3MFSeeder(p3: Parsed3MF, paletteName: string, adoptPalette: boolean): { seed: (out: MeshData) => SeedRegion[]; info: ThreeMFColorInfo } | undefined {
+   *  runs: each output triangle takes the palette entry of the source triangle
+   *  its centroid coincides with (`matchImportColors`), grouped into one region
+   *  per colour. Only coinciding triangles are coloured, so geometry composed
+   *  in from the current object keeps its own look. The palette is adopted
+   *  lazily here — i.e. only once the user actually placed the import (a
+   *  cancelled target modal never creates a palette).
+   *
+   *  A BIG file whose triangles all carry ONE colour (any unpainted single-
+   *  filament slicer project) imports unpainted: a paint region over the whole
+   *  model tells nothing apart, and at this size it costs a triangle-by-
+   *  triangle match, a region holding every triangle id in each saved version,
+   *  and the per-triangle-coloured render path. `info.singleColor` reports the
+   *  colour. Below the big-mesh threshold those costs are nothing, so a small
+   *  single-colour file keeps its colour and filament slot (and round-trips).
+   *  Judged on the whole file (for several files imported together, on the
+   *  batch), never per object: objects on different filaments keep theirs. */
+  function build3MFSeeder(p3: Parsed3MF, paletteName: string, adoptPalette: boolean): { seed: (out: MeshData, isStale?: () => boolean) => SeedRegion[] | Promise<SeedRegion[]>; info: ThreeMFColorInfo } | undefined {
     const { result, source } = p3;
     if (result.colorSource === 'none' || result.palette.length === 0) return undefined;
     // A per-triangle-coloured scan can carry thousands of distinct colours;
@@ -5951,40 +6035,23 @@ async function main() {
     if (result.palette.length > getConfig().import.threeMfMaxColors) {
       return { seed: () => [], info: { paletteName: null, coloredTriangles: 0, colors: 0, skippedColors: result.palette.length } };
     }
+    const single = result.mesh.numTri >= getConfig().renderer.lazyManifoldMinTriangles ? fileSingleColor(result) : undefined;
+    if (single) {
+      return { seed: () => [], info: { paletteName: null, coloredTriangles: 0, colors: 0, skippedColors: 0, singleColor: { name: single.name, hex: single.hex } } };
+    }
     const info: ThreeMFColorInfo = { paletteName: null, coloredTriangles: 0, colors: 0, skippedColors: 0 };
-    const seed = (out: MeshData): SeedRegion[] => {
+    const seed = async (out: MeshData, isStale?: () => boolean): Promise<SeedRegion[]> => {
+      const groups = await matchImportColorsOffThread(source, out, p3.triColor);
+      // The model moved on during the match: no palette, no colour counts.
+      if (isStale?.()) return [];
       const slotIds = adoptPalette ? adopt3MFPalette(paletteName, result.palette) : null;
       if (slotIds) info.paletteName = paletteName;
-      const bbox = bboxFromMesh(source);
-      const diag = bbox
-        ? Math.hypot(bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2])
-        : 1;
-      const eps2 = (Math.max(diag, 1e-3) * 1e-5) ** 2;
-      const nearest = nearestTriangleMap(source, out);
-      const sv = source.vertProperties, st = source.triVerts, sp = source.numProp;
-      const ov = out.vertProperties, ot = out.triVerts, op = out.numProp;
-      const groups = new Map<number, number[]>();
-      for (let t = 0; t < out.numTri; t++) {
-        const o = nearest[t];
-        if (o < 0) continue;
-        const colorIdx = p3.triColor[o];
-        if (colorIdx < 0) continue;
-        let d2 = 0;
-        for (let k = 0; k < 3; k++) {
-          const sc = (sv[st[o * 3] * sp + k] + sv[st[o * 3 + 1] * sp + k] + sv[st[o * 3 + 2] * sp + k]) / 3;
-          const oc = (ov[ot[t * 3] * op + k] + ov[ot[t * 3 + 1] * op + k] + ov[ot[t * 3 + 2] * op + k]) / 3;
-          d2 += (sc - oc) ** 2;
-        }
-        if (d2 > eps2) continue;
-        let ids = groups.get(colorIdx);
-        if (!ids) { ids = []; groups.set(colorIdx, ids); }
-        ids.push(t);
-      }
       const regions: SeedRegion[] = [];
-      for (const [idx, ids] of [...groups].sort((a, b) => a[0] - b[0])) {
-        const entry = result.palette[idx];
-        regions.push({ name: entry.name, color: hexToRgb(entry.hex), triangleIds: ids, slotId: slotIds?.[idx] });
-        info.coloredTriangles += ids.length;
+      for (const g of groups) {
+        const entry = result.palette[g.colorIdx];
+        if (!entry) continue;
+        regions.push({ name: entry.name, color: hexToRgb(entry.hex), triangleIds: Array.from(g.triangleIds), slotId: slotIds?.[g.colorIdx] });
+        info.coloredTriangles += g.triangleIds.length;
       }
       info.colors = regions.length;
       return regions;
@@ -6000,6 +6067,7 @@ async function main() {
     let msg = parts.join(', ');
     if (info?.paletteName) msg += ` — palette “${info.paletteName}” (${result.palette.length} slot${result.palette.length === 1 ? '' : 's'}) is now active`;
     if (info && info.skippedColors > 0) msg += `. Its ${info.skippedColors.toLocaleString()} colours exceed the ${getConfig().import.threeMfMaxColors}-colour import limit, so it came in uncoloured`;
+    if (info?.singleColor) msg += `. The file uses one colour (${info.singleColor.name}), so this large model came in unpainted`;
     if (result.skippedParts > 0) msg += `. Skipped ${result.skippedParts} modifier/support part${result.skippedParts === 1 ? '' : 's'}`;
     return msg + '.';
   }
@@ -6174,6 +6242,7 @@ async function main() {
       coloredTriangles: known.reduce((s, i) => s + i.coloredTriangles, 0),
       colors: known.reduce((s, i) => s + i.colors, 0),
       skippedColors: Math.max(...known.map(i => i.skippedColors)),
+      ...(known[0].singleColor ? { singleColor: known[0].singleColor } : {}),
     };
   }
 
@@ -6885,7 +6954,7 @@ async function main() {
     await runCodeSync(code);
     // Seed any pre-computed colour regions (relief bands) AFTER the live-paint
     // reset above, so the import's own colours survive into the saved version.
-    seedImportRegions(seedRegions);
+    await seedImportRegions(seedRegions);
     const thumbnail = await captureThumbnail();
     const geometryData = enrichGeometryDataWithColors(getGeometryDataObj());
     const label = manifold ? 'imported' : 'imported (render-only)';
@@ -7476,7 +7545,7 @@ async function main() {
     // position: shift the result back for the match.
     if (typeof seedRegions === 'function') {
       const out = currentMeshData;
-      seedImportRegions(seedRegions({ ...out, vertProperties: translatedVerts(out.vertProperties, out.numProp, [-d[0], -d[1], -d[2]]) }));
+      await seedImportRegions(seedRegions, { ...out, vertProperties: translatedVerts(out.vertProperties, out.numProp, [-d[0], -d[1], -d[2]]) });
     }
     const saved = await saveCurrentVersion(`add ${name}`, { importedMeshes: imports });
     if ('error' in saved && !opts.silent) showToast(`Added ${name}, but saving the version failed: ${saved.error}`, { variant: 'warn', source: 'import' });
@@ -16444,6 +16513,7 @@ async function main() {
             palette: result.palette.map(e => ({ name: e.name, hex: e.hex })),
             colorRegions: info?.colors ?? 0,
             colorsSkipped: info?.skippedColors ?? 0,
+            singleColor: info?.singleColor ?? null,
             activePalette: info?.paletteName ?? null,
             objects: result.objects,
             plates: result.plates.map(p => ({ id: p.id, name: p.name })),
@@ -16475,6 +16545,7 @@ async function main() {
           palette: p3.result.palette.map(e => ({ name: e.name, hex: e.hex })),
           colorRegions: seeder?.info.colors ?? 0,
           colorsSkipped: seeder?.info.skippedColors ?? 0,
+          singleColor: seeder?.info.singleColor ?? null,
           activePalette: seeder?.info.paletteName ?? null,
           objects: p3.result.objects,
           plates: p3.result.plates.map(p => ({ id: p.id, name: p.name })),
