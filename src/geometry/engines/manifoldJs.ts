@@ -1,5 +1,5 @@
 import type { Engine, MeshResult, ValidateResult } from './types';
-import { compileModelCode, hardenModelShared } from '../modelEval';
+import { compileModelCode, hardenModelShared, sealBulkRecords } from '../modelEval';
 import { javaScriptSyntaxDiagnostics, runtimeDiagnostic, modelCodeDiagnostics } from '../sourceDiagnostics';
 import { createCurvesNamespace } from '../curves';
 import { createMeshOpsNamespace } from '../meshOps';
@@ -877,11 +877,13 @@ export const manifoldJsEngine: Engine = {
     // `Manifold.ofMesh()`. Metadata (filename/format) is kept off this object
     // so Embind doesn't choke on unexpected fields; user code that needs the
     // source filename can read it from the generated code comment.
-    const imports = getActiveImports().map(m => ({
+    // Sealed by hand and exposed through an accessor below, so the harden pass
+    // never walks the vertex / index arrays (see sealBulkRecords).
+    const imports = sealBulkRecords(getActiveImports().map(m => ({
       numProp: m.numProp,
       vertProperties: m.vertProperties,
       triVerts: m.triVerts,
-    }));
+    })));
 
     // `api.importWithParts(i)` — `Manifold.ofMesh(api.imports[i])` plus the
     // parts committed on that import by part detection (#1025), registered as
@@ -1056,7 +1058,7 @@ export const manifoldJsEngine: Engine = {
       print,
       image,
       layeredPrint,
-      imports,
+      get imports() { return imports; },
       importWithParts,
       renderMesh,
     };
