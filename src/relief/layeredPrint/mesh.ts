@@ -6,7 +6,7 @@
 // the flat underside costs 2·(W+H) triangles instead of a second full grid.
 // Centred on the XY origin; Z up; image top at +Y.
 
-import type { HueforgeResult } from './solver';
+import type { LayeredPrintResult } from './solver';
 
 export interface HeightfieldMesh {
   vertProperties: Float32Array;
@@ -87,6 +87,6 @@ export function buildHeightfieldMesh(heights: Float32Array, W: number, H: number
   return { vertProperties: vp, triVerts: tv, numVert, numTri, numProp: 3, numTopTri };
 }
 
-export function hueforgeMesh(r: HueforgeResult): HeightfieldMesh {
+export function layeredPrintMesh(r: LayeredPrintResult): HeightfieldMesh {
   return buildHeightfieldMesh(r.heightsMm, r.gridWidth, r.gridHeight, r.widthMm, r.depthMm);
 }

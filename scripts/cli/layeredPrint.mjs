@@ -1,7 +1,7 @@
-// `partwright hueforge` — photo → HueForge-style filament-layering print.
+// `partwright layered-print` — photo → HueForge-style filament-layering print.
 //
 // Boots Vite SSR (no browser), decodes the photo with sharp, runs the pure
-// solver (src/relief/hueforge/solver.ts), and writes:
+// solver (src/relief/layeredPrint/solver.ts), and writes:
 //   <out>.3mf             Bambu Studio / Orca project, filament changes at layers
 //                         (--swap ams: automatic AMS tool changes; pause: manual)
 //   <out>.preview.png     photo | predicted print, side by side
@@ -11,11 +11,12 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import sharp from 'sharp';
 import { createServer } from 'vite';
 
-export async function loadHueforgeModules() {
+export async function loadLayeredPrintModules() {
   const server = await createServer({ configFile: false, server: { middlewareMode: true, watch: null }, appType: 'custom', logLevel: 'silent', optimizeDeps: { noDiscovery: true } });
-  const solver = await server.ssrLoadModule('/src/relief/hueforge/solver.ts');
-  const exp = await server.ssrLoadModule('/src/relief/hueforge/export3mf.ts');
-  return { solver, exp, close: () => server.close() };
+  const solver = await server.ssrLoadModule('/src/relief/layeredPrint/solver.ts');
+  const exp = await server.ssrLoadModule('/src/relief/layeredPrint/export3mf.ts');
+  const plan = await server.ssrLoadModule('/src/relief/layeredPrint/plan.ts');
+  return { solver, exp, plan, close: () => server.close() };
 }
 
 async function decode(file) {
@@ -51,14 +52,14 @@ async function writePreview(path, r) {
  *         baseFilament, chroma, smoothing, denoise, iterations, seed,
  *         swap: 'ams'|'pause'|'both', printer, nozzle, out, name }
  */
-export async function runHueforge(photo, opts) {
+export async function runLayeredPrint(photo, opts) {
   const img = await decode(photo);
-  const { solver, exp, close } = await loadHueforgeModules();
+  const { solver, exp, plan, close } = await loadLayeredPrintModules();
   try {
     const num = (v) => (v === undefined ? undefined : Number(v));
     const filaments = opts.filamentsFile ? JSON.parse(readFileSync(opts.filamentsFile, 'utf8')) : undefined;
     const t0 = Date.now();
-    const r = solver.solveHueforge(img, {
+    const r = solver.solveLayeredPrint(img, {
       numColors: num(opts.colors),
       widthMm: num(opts.width),
       pixelSizeMm: num(opts.pixel),
@@ -75,19 +76,19 @@ export async function runHueforge(photo, opts) {
       baseFilament: opts.baseFilament,
     });
     const solveMs = Date.now() - t0;
-    const out = opts.out ?? photo.replace(/\.[^.]+$/, '') + '.hueforge';
-    const name = opts.name ?? 'hueforge';
+    const out = opts.out ?? photo.replace(/\.[^.]+$/, '') + '-layered-print';
+    const name = opts.name ?? 'layered-print';
     const modes = opts.swap === 'both' ? ['ams', 'pause'] : [opts.swap ?? 'ams'];
     const files = [];
     for (const mode of modes) {
-      const built = exp.buildHueforge3MF(r, { swapMode: mode, printer: opts.printer, nozzle: opts.nozzle, name });
+      const built = exp.buildLayeredPrint3MF(r, { swapMode: mode, printer: opts.printer, nozzle: opts.nozzle, name });
       const path = modes.length > 1 ? `${out}.${mode}.3mf` : `${out}.3mf`;
       writeFileSync(path, Buffer.from(await built.blob.arrayBuffer()));
       files.push(path);
     }
     await writePreview(`${out}.preview.png`, r);
-    writeFileSync(`${out}.swaps.txt`, solver.hueforgeSwapText(r) + '\n');
-    return { ...solver.hueforgeSummary(r), solveMs, files, preview: `${out}.preview.png`, swapsText: `${out}.swaps.txt` };
+    writeFileSync(`${out}.swaps.txt`, plan.planSwapText(plan.layeredPrintRecord(r)) + '\n');
+    return { ...solver.layeredPrintSummary(r), solveMs, files, preview: `${out}.preview.png`, swapsText: `${out}.swaps.txt` };
   } finally {
     await close();
   }

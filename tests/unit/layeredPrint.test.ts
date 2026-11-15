@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { computeLadder, layerTop, layerBottom, layerCountFor, rgb01ToLab } from '../../src/relief/hueforge/optics';
-import { solveHueforge, resolveHueforgeOptions, hueforgeSwapText, hueforgeSummary } from '../../src/relief/hueforge/solver';
-import { buildHeightfieldMesh } from '../../src/relief/hueforge/mesh';
-import { hueforgeLayerPlan } from '../../src/relief/hueforge/export3mf';
+import { computeLadder, layerTop, layerBottom, layerCountFor, rgb01ToLab } from '../../src/relief/layeredPrint/optics';
+import { solveLayeredPrint, resolveLayeredPrintOptions, layeredPrintSummary } from '../../src/relief/layeredPrint/solver';
+import { buildHeightfieldMesh } from '../../src/relief/layeredPrint/mesh';
+import { layeredPrintLayerPlan, layeredPrintMeshData } from '../../src/relief/layeredPrint/export3mf';
+import { layeredPrintRecord, planMeshMismatch, planSwapText } from '../../src/relief/layeredPrint/plan';
 import { buildCustomGcodePerLayerXml } from '../../src/export/threemfProject';
 
 const spec = { firstLayerHeight: 0.16, layerHeight: 0.08 };
@@ -30,7 +31,7 @@ function edgeCounts(triVerts: Uint32Array, numTri: number) {
   return bad;
 }
 
-describe('hueforge optics', () => {
+describe('layeredPrint optics', () => {
   it('layer geometry: first layer is thicker', () => {
     expect(layerTop(0, spec)).toBeCloseTo(0.16);
     expect(layerTop(4, spec)).toBeCloseTo(0.48);
@@ -60,10 +61,10 @@ describe('hueforge optics', () => {
   });
 });
 
-describe('hueforge solver', () => {
+describe('layeredPrint solver', () => {
   it('reproduces a black→white gradient with a dark base and a light top', () => {
     const img = rgba(64, 16, (x) => { const v = Math.round((x / 63) * 255); return [v, v, v]; });
-    const r = solveHueforge(img, { numColors: 2, widthMm: 40, pixelSizeMm: 1, maxHeightMm: 3.6, baseHeightMm: 0.16, filaments: [BLACK, WHITE, RED], iterations: 3000, smoothing: 0 });
+    const r = solveLayeredPrint(img, { numColors: 2, widthMm: 40, pixelSizeMm: 1, maxHeightMm: 3.6, baseHeightMm: 0.16, filaments: [BLACK, WHITE, RED], iterations: 3000, smoothing: 0 });
     expect(r.blocks.map((b) => b.filament.name)).toEqual(['Black', 'White']);
     expect(r.swaps).toHaveLength(1);
     // Height rises left→right along the gradient.
@@ -75,8 +76,8 @@ describe('hueforge solver', () => {
       const k = (h - 0.16) / 0.08;
       expect(Math.abs(k - Math.round(k))).toBeLessThan(1e-4);
     }
-    expect(hueforgeSwapText(r)).toMatch(/swap to White/);
-    expect(hueforgeSummary(r).filaments[0].name).toBe('Black');
+    expect(planSwapText(layeredPrintRecord(r))).toMatch(/swap to White/);
+    expect(layeredPrintSummary(r).filaments[0].name).toBe('Black');
   });
 
   it('is deterministic for a seed and prunes swaps that do not help', () => {
@@ -84,8 +85,8 @@ describe('hueforge solver', () => {
     const GREY = { name: 'Grey', hex: '#808080', td: 1.5 };
     const pool = [BLACK, WHITE, RED, GREY];
     const img = rgba(24, 24, () => [128, 128, 128]);
-    const a = solveHueforge(img, { numColors: 4, widthMm: 20, pixelSizeMm: 1, iterations: 2000, filaments: pool });
-    const b = solveHueforge(img, { numColors: 4, widthMm: 20, pixelSizeMm: 1, iterations: 2000, filaments: pool });
+    const a = solveLayeredPrint(img, { numColors: 4, widthMm: 20, pixelSizeMm: 1, iterations: 2000, filaments: pool });
+    const b = solveLayeredPrint(img, { numColors: 4, widthMm: 20, pixelSizeMm: 1, iterations: 2000, filaments: pool });
     expect(a.blocks.map((x) => x.filament.name)).toEqual(b.blocks.map((x) => x.filament.name));
     expect(a.blocks.length).toBeLessThanOrEqual(2);
     expect(a.blocks[a.blocks.length - 1].filament.name).toBe('Grey');
@@ -94,19 +95,19 @@ describe('hueforge solver', () => {
 
   it('honours a forced base filament', () => {
     const img = rgba(32, 8, (x) => (x < 16 ? [250, 250, 250] : [200, 20, 20]));
-    const r = solveHueforge(img, { numColors: 3, widthMm: 20, pixelSizeMm: 1, filaments: [BLACK, WHITE, RED], baseFilament: 'White', iterations: 1500 });
+    const r = solveLayeredPrint(img, { numColors: 3, widthMm: 20, pixelSizeMm: 1, filaments: [BLACK, WHITE, RED], baseFilament: 'White', iterations: 1500 });
     expect(r.blocks[0].filament.name).toBe('White');
   });
 
   it('clamps options', () => {
-    const o = resolveHueforgeOptions({ numColors: 99, layerHeight: -1, pixelSizeMm: 0 });
+    const o = resolveLayeredPrintOptions({ numColors: 99, layerHeight: -1, pixelSizeMm: 0 });
     expect(o.numColors).toBe(16);
     expect(o.layerHeight).toBeGreaterThan(0);
     expect(o.pixelSizeMm).toBeGreaterThan(0);
   });
 });
 
-describe('hueforge mesh + 3MF plan', () => {
+describe('layeredPrint mesh + 3MF plan', () => {
   it('heightfield mesh is closed and edge-manifold', () => {
     const W = 7, H = 5;
     const heights = new Float32Array(W * H).map((_, i) => 0.16 + (i % 4) * 0.08);
@@ -124,17 +125,35 @@ describe('hueforge mesh + 3MF plan', () => {
 
   it('builds a Bambu custom_gcode_per_layer plan from a solve', () => {
     const img = rgba(40, 10, (x) => { const v = Math.round((x / 39) * 255); return [v, v, v]; });
-    const r = solveHueforge(img, { numColors: 3, widthMm: 20, pixelSizeMm: 1, filaments: [BLACK, WHITE, RED], iterations: 1500, pruneDeltaE: 0 });
-    const plan = hueforgeLayerPlan(r, 'ams');
+    const r = solveLayeredPrint(img, { numColors: 3, widthMm: 20, pixelSizeMm: 1, filaments: [BLACK, WHITE, RED], iterations: 1500, pruneDeltaE: 0 });
+    const plan = layeredPrintLayerPlan(r, 'ams');
     expect(plan.filamentColors).toHaveLength(r.blocks.length);
     expect(plan.changes.map((c) => c.filament)).toEqual(r.swaps.map((_, i) => i + 2));
     const xml = buildCustomGcodePerLayerXml(plan);
     expect(xml).toMatch(/<custom_gcodes_per_layer>/);
     expect(xml).toMatch(/type="2" extruder="2"/);
     expect(xml).toMatch(/<mode value="MultiAsSingle"\/>/);
-    const pause = buildCustomGcodePerLayerXml(hueforgeLayerPlan(r, 'pause'));
+    const pause = buildCustomGcodePerLayerXml(layeredPrintLayerPlan(r, 'pause'));
     expect(pause).toMatch(/type="1" extruder="1"/);
     expect(pause).toMatch(/gcode="M400 U1"/);
     expect(pause).toMatch(/SingleExtruder/);
+  });
+});
+
+describe('layered print guards', () => {
+  const img = rgba(40, 10, (x) => { const v = Math.round((x / 39) * 255); return [v, v, v]; });
+
+  it('refuses grids and layer counts over the caps', () => {
+    expect(() => solveLayeredPrint(img, { widthMm: 100, pixelSizeMm: 0.1, maxCells: 10_000 })).toThrow(/cells/);
+    expect(() => solveLayeredPrint(img, { maxHeightMm: 10, layerHeight: 0.04, maxLayers: 50, pixelSizeMm: 1, widthMm: 20 })).toThrow(/layers/);
+  });
+
+  it('detects a mesh that no longer matches the plan', () => {
+    const r = solveLayeredPrint(img, { numColors: 2, widthMm: 20, pixelSizeMm: 1, filaments: [BLACK, WHITE], iterations: 500 });
+    const plan = layeredPrintRecord(r);
+    const mesh = layeredPrintMeshData(r);
+    expect(planMeshMismatch(plan, mesh)).toBeNull();
+    const scaled = { ...mesh, vertProperties: mesh.vertProperties.map((v, i) => (i % 3 === 2 ? v * 2 : v)) };
+    expect(planMeshMismatch(plan, scaled)).toMatch(/no longer matches/);
   });
 });

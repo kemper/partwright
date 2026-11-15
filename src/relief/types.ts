@@ -292,8 +292,8 @@ export interface SwapGuide {
 /** Optical preview mode. */
 export type PreviewMode = 'flat' | 'ams' | 'single-nozzle';
 
-/** A solved HueForge schedule, small enough for localStorage. */
-export interface HueforgePlanRecord {
+/** A solved layered-print (HueForge-style) schedule, small enough for localStorage. */
+export interface LayeredPrintPlanRecord {
   /** Filament blocks bottom → top; `startLayer` is 0-based. */
   blocks: Array<{ name: string; hex: string; td: number; startLayer: number }>;
   layerHeight: number;
@@ -314,9 +314,9 @@ export interface ReliefSettings {
   baseThickness: number;
   previewMode: PreviewMode;
   options?: ReliefOptions;
-  /** Set for HueForge-style filament-layering reliefs (createHueforge): the
+  /** Set for HueForge-style filament-layering reliefs (createLayeredPrint): the
    *  solved swap schedule, which the layer-swap 3MF export needs. */
-  hueforge?: HueforgePlanRecord;
+  layeredPrint?: LayeredPrintPlanRecord;
   // The source image is NOT kept here — photos can exceed the localStorage
   // quota, so it lives in IndexedDB (the `reliefSources` store, see
   // src/relief/reliefSource.ts), keyed by session id like these settings.

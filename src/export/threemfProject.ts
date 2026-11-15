@@ -605,6 +605,7 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
   const plan = bambu ? opts.layerPlan : undefined;
   if (plan) {
     if (plan.filamentColors.length < 1 || plan.filamentColors.length > MAX_BAMBU_FILAMENTS) throw new Error(`Layer plan needs 1..${MAX_BAMBU_FILAMENTS} filaments.`);
+    if (plan.filamentColors.some((h) => !/^#?[0-9a-fA-F]{6}$/.test(h))) throw new Error('Layer plan: filament colours must be "#rrggbb".');
     for (const c of plan.changes) {
       if (!(c.filament >= 1 && c.filament <= plan.filamentColors.length) || !(c.z > 0)) throw new Error('Layer plan: each change needs z > 0 and a filament index within the plan.');
     }
@@ -1187,6 +1188,17 @@ function buildProjectSettings(filamentColors: string[], printer: BambuPrinterSpe
     cfg.layer_height = String(plan.layerHeight);
     cfg.initial_layer_print_height = String(plan.firstLayerHeight);
     cfg.sparse_infill_density = plan.infillDensity ?? '100%';
+    // The printer profile bounds layer height (0.08–0.28 mm for a 0.4 nozzle);
+    // widen it to the plan's heights so the slicer neither flags the project
+    // nor slices on a different grid (which would move every swap).
+    const lo = Math.min(plan.layerHeight, plan.firstLayerHeight);
+    const hi = Math.max(plan.layerHeight, plan.firstLayerHeight);
+    const widen = (key: string, pick: (cur: number) => number) => {
+      const v = cfg[key];
+      if (Array.isArray(v)) cfg[key] = v.map((x) => { const n = parseFloat(String(x)); return Number.isFinite(n) ? String(pick(n)) : x; });
+    };
+    widen('min_layer_height', (cur) => Math.min(cur, lo));
+    widen('max_layer_height', (cur) => Math.max(cur, hi));
   }
 
   return JSON.stringify(cfg, null, 4);

@@ -116,14 +116,14 @@ Import the `.stl` normally, then in the Relief Studio panel use **Detect levels*
 to seed a color region per existing Z plateau (or, programmatically, paint Z
 slabs). Then preview + read the swap guide as above.
 
-## HueForge
+## Layered photo prints
 
 A HueForge-style print (filament layering) is a heightmap printed in thin
 layers, with the filament swapped at chosen layers. Thin plastic is
 translucent, so the colour at each point depends on how much of each filament
 lies under the surface there: a handful of filaments gives many shades.
 
-`createHueforge` solves the whole thing from a photo:
+`createLayeredPrint` solves the whole thing from a photo:
 
 1. picks the filaments (from the built-in list, or the user's own spools), their
    order bottom→top, and the layer each one starts at;
@@ -133,7 +133,7 @@ lies under the surface there: a handful of filaments gives many shades.
    `renderView` / `renderViews` show what the print should look like.
 
 ```js
-await partwright.createHueforge({
+await partwright.createLayeredPrint({
   src: 'data:image/jpeg;base64,...',   // or an http(s) URL; AI tool: imageRef
   colors: 8,          // MAXIMUM filaments; swaps that barely help are dropped
   widthMm: 120,       // depth follows the photo
@@ -146,10 +146,10 @@ await partwright.createHueforge({
 // -> { sessionId, blocks: [{name, hex, td, startLayer}], swaps: [{layer, z, name, hex, td}],
 //      totalLayers, totalHeightMm, widthMm, depthMm, meanDeltaE }
 
-partwright.getHueforgePlan()        // same plan + `instructions` text for the user
-partwright.listHueforgeFilaments()  // the built-in candidate list
+partwright.getLayeredPrintPlan()        // same plan + `instructions` text for the user
+partwright.listLayeredPrintFilaments()  // the built-in candidate list
 
-partwright.exportHueforge3MF({ swapMode: 'ams', printer: 'p1s' })
+partwright.exportLayeredPrint3MF({ swapMode: 'ams', printer: 'p1s' })
 // Bambu Studio / Orca 3MF: one object, layer height + first layer + 100% infill
 // set to match, and a filament change at each swap layer.
 //   'ams'   — automatic filament changes (one AMS slot per filament)
@@ -167,5 +167,13 @@ partwright.exportHueforge3MF({ swapMode: 'ams', printer: 'p1s' })
 - **Colourful photos** are the hard case: every pixel shares one stack of
   filaments, so two saturated hues that each need to sit directly on a light
   base compete. More `maxHeightMm` and 8–10 `colors` help most.
-- Headless (CLI agents in the repo): `npm run hueforge -- photo.jpg --colors 8
+- **The plan lives in this browser** (localStorage, keyed by session), not in the
+  session file: a session exported/imported or opened from a share link has
+  the painted mesh but no plan, so `exportLayeredPrint3MF` asks you to
+  re-create it. The export also refuses if the open model no longer matches
+  the plan's size (edited, scaled, or another object open).
+- Size guards (App Config → Import): at most `layeredPrintMaxCells` heightmap
+  cells and `layeredPrintMaxLayers` layers; past them `createLayeredPrint`
+  returns `{error}` — raise `pixelSizeMm` or lower `maxHeightMm`.
+- Headless (CLI agents in the repo): `npm run layered-print -- photo.jpg --colors 8
   --swap both` writes the 3MF(s), a photo-vs-prediction PNG, and the swap list.

@@ -6,12 +6,12 @@
 //   2. assigns every pixel the layer height whose composited colour best matches
 //      it, with an edge-preserving smoothness term so the surface isn't noisy.
 // The result drives the heightmap mesh (mesh.ts), the 3MF layer-change plan
-// (export/hueforge3mf.ts), and a predicted-appearance preview image.
+// (export/layeredPrint3mf.ts), and a predicted-appearance preview image.
 //
 // Pure, deterministic (seeded), DOM-free: runs in the browser, in Node (the
-// `partwright hueforge` CLI), and in the vitest unit tier.
+// `partwright layered-print` CLI), and in the vitest unit tier.
 
-import { HUEFORGE_FILAMENT_LIBRARY, type HueforgeFilament } from './filamentLibrary';
+import { LAYERED_PRINT_FILAMENT_LIBRARY, type LayeredPrintFilament } from './filamentLibrary';
 import {
   computeLadder, ladderToLab, layerCountFor, layerTop, layerBottom, rgb01ToLab,
   type LayerSpec, type ScheduleBlock,
@@ -24,7 +24,7 @@ export interface RgbaImage {
   data: Uint8ClampedArray | Uint8Array;
 }
 
-export interface HueforgeOptions {
+export interface LayeredPrintOptions {
   /** Maximum number of distinct filaments (= swaps + 1), 1..16. Swaps that
    *  barely change the result are pruned (see `pruneDeltaE`). */
   numColors: number;
@@ -40,7 +40,7 @@ export interface HueforgeOptions {
   baseHeightMm: number;
   /** Candidate filaments. When more than `numColors`, the solver picks the
    *  subset; when fewer, it uses all of them. Default: the built-in library. */
-  filaments?: readonly HueforgeFilament[];
+  filaments?: readonly LayeredPrintFilament[];
   /** Force the bottom (base) filament by name. Default: the darkest candidate. */
   baseFilament?: string;
   /** Weight of hue/chroma vs lightness in the colour match. 1 = full colour
@@ -56,11 +56,15 @@ export interface HueforgeOptions {
   /** RNG seed (the solve is deterministic for a given seed). */
   seed: number;
   /** A filament swap is dropped when removing it raises the mean colour error
-   *  by less than this (ΔE). 0 keeps exactly `numColors`. */
+   *  by less than this (ΔE). 0 drops only swaps whose removal doesn't hurt. */
   pruneDeltaE: number;
+  /** Refuse grids larger than this many cells (memory / mesh-size guard). */
+  maxCells: number;
+  /** Refuse plans with more print layers than this. */
+  maxLayers: number;
 }
 
-export const DEFAULT_HUEFORGE_OPTIONS: HueforgeOptions = {
+export const DEFAULT_LAYERED_PRINT_OPTIONS: LayeredPrintOptions = {
   numColors: 8,
   widthMm: 120,
   pixelSizeMm: 0.3,
@@ -74,19 +78,21 @@ export const DEFAULT_HUEFORGE_OPTIONS: HueforgeOptions = {
   iterations: 60000,
   seed: 1,
   pruneDeltaE: 0.05,
+  maxCells: 1_000_000,
+  maxLayers: 160,
 };
 
 /** One filament change, in slicer terms. */
-export interface HueforgeSwap {
+export interface LayeredPrintSwap {
   /** 1-based slicer layer number where the new filament starts. */
   layer: number;
   /** print_z (top) of that layer, mm — the `top_z` a 3MF layer change uses. */
   z: number;
-  filament: HueforgeFilament;
+  filament: LayeredPrintFilament;
 }
 
-export interface HueforgeResult {
-  options: HueforgeOptions;
+export interface LayeredPrintResult {
+  options: LayeredPrintOptions;
   /** Heightmap grid size (cells). Row 0 is the BOTTOM of the image (world -Y). */
   gridWidth: number;
   gridHeight: number;
@@ -98,7 +104,7 @@ export interface HueforgeResult {
   heightsMm: Float32Array;
   /** Filament blocks bottom→top (block 0 = base). */
   blocks: ScheduleBlock[];
-  swaps: HueforgeSwap[];
+  swaps: LayeredPrintSwap[];
   totalLayers: number;
   totalHeightMm: number;
   /** Predicted appearance, RGBA, image orientation (row 0 = top). */
@@ -257,7 +263,7 @@ function adaptiveBins(lab: Float32Array, rgb: Float32Array, n: number): ColorBin
   return reduceBins(buildBins(lab, rgb, n, 5), 400);
 }
 
-function luminanceOf(f: HueforgeFilament): number {
+function luminanceOf(f: LayeredPrintFilament): number {
   const h = f.hex.replace(/^#/, '');
   const n = parseInt(h, 16);
   return 0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255);
@@ -271,12 +277,12 @@ interface Sched { f: number[]; s: number[] }
 class ScheduleScorer {
   evals = 0;
   private readonly bins: ColorBins;
-  private readonly pool: readonly HueforgeFilament[];
+  private readonly pool: readonly LayeredPrintFilament[];
   private readonly L: number;
   private readonly minLayer: number;
   private readonly spec: LayerSpec;
   private readonly chroma: number;
-  constructor(bins: ColorBins, pool: readonly HueforgeFilament[], L: number, minLayer: number, spec: LayerSpec, chroma: number) {
+  constructor(bins: ColorBins, pool: readonly LayeredPrintFilament[], L: number, minLayer: number, spec: LayerSpec, chroma: number) {
     this.bins = bins; this.pool = pool; this.L = L; this.minLayer = minLayer; this.spec = spec; this.chroma = chroma;
   }
 
@@ -478,7 +484,7 @@ function kmeansBins(bins: ColorBins, N: number, rand: () => number): Array<[numb
 /** Start schedule from the photo's dominant colours: snap each k-means
  *  centroid to the nearest unused filament, order by lightness, and spread
  *  the swaps evenly up the stack. */
-function paletteSchedule(bins: ColorBins, pool: readonly HueforgeFilament[], N: number, L: number, minLayer: number, rand: () => number, darkFirst: boolean, baseIdx: number, lockBase: boolean): Sched {
+function paletteSchedule(bins: ColorBins, pool: readonly LayeredPrintFilament[], N: number, L: number, minLayer: number, rand: () => number, darkFirst: boolean, baseIdx: number, lockBase: boolean): Sched {
   const poolLab = pool.map((f) => { const h = f.hex.replace('#', ''); const v = parseInt(h, 16); return rgb01ToLab(((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255); });
   const chosen: number[] = lockBase ? [baseIdx] : [];
   const cents = kmeansBins(bins, N + 2, rand);
@@ -563,8 +569,8 @@ function assignLayers(
 // ── public entry ────────────────────────────────────────────────────────────
 
 /** Resolve user options against defaults and clamp to sane ranges. */
-export function resolveHueforgeOptions(o: Partial<HueforgeOptions> = {}): HueforgeOptions {
-  const d = DEFAULT_HUEFORGE_OPTIONS;
+export function resolveLayeredPrintOptions(o: Partial<LayeredPrintOptions> = {}): LayeredPrintOptions {
+  const d = DEFAULT_LAYERED_PRINT_OPTIONS;
   const num = (v: unknown, def: number, lo: number, hi: number) =>
     typeof v === 'number' && Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : def;
   const layerHeight = num(o.layerHeight, d.layerHeight, 0.04, 0.4);
@@ -586,18 +592,21 @@ export function resolveHueforgeOptions(o: Partial<HueforgeOptions> = {}): Huefor
     iterations: Math.round(num(o.iterations, d.iterations, 0, 1000000)),
     seed: Math.round(num(o.seed, d.seed, 0, 2 ** 31)),
     pruneDeltaE: num(o.pruneDeltaE, d.pruneDeltaE, 0, 5),
+    maxCells: Math.round(num(o.maxCells, d.maxCells, 100, 1e8)),
+    maxLayers: Math.round(num(o.maxLayers, d.maxLayers, 2, 10_000)),
   };
 }
 
-export function solveHueforge(img: RgbaImage, partial: Partial<HueforgeOptions> = {}): HueforgeResult {
-  const opts = resolveHueforgeOptions(partial);
-  if (img.width < 2 || img.height < 2) throw new Error('hueforge: image too small');
+export function solveLayeredPrint(img: RgbaImage, partial: Partial<LayeredPrintOptions> = {}): LayeredPrintResult {
+  const opts = resolveLayeredPrintOptions(partial);
+  if (img.width < 2 || img.height < 2) throw new Error('layeredPrint: image too small');
   const spec: LayerSpec = { firstLayerHeight: opts.firstLayerHeight, layerHeight: opts.layerHeight };
 
   // Grid: one cell per pixelSize, aspect preserved.
   const W = Math.max(2, Math.round(opts.widthMm / opts.pixelSizeMm) + 1);
   const H = Math.max(2, Math.round((W - 1) * (img.height / img.width)) + 1);
   const n = W * H;
+  if (n > opts.maxCells) throw new Error(`print is ${W} × ${H} = ${n.toLocaleString('en-US')} cells, over the ${opts.maxCells.toLocaleString('en-US')} limit — use a larger pixelSizeMm or a smaller widthMm`);
   let rgb = resampleToGrid(img, W, H);
   for (let i = 0; i < opts.denoise; i++) rgb = boxBlur3(rgb, W, H);
   const lab = new Float32Array(n * 3);
@@ -607,10 +616,11 @@ export function solveHueforge(img: RgbaImage, partial: Partial<HueforgeOptions> 
   }
 
   const L = layerCountFor(opts.maxHeightMm, spec);
+  if (L > opts.maxLayers) throw new Error(`${L} layers is over the ${opts.maxLayers}-layer limit — lower maxHeightMm or raise layerHeight`);
   let minLayer = 0;
   while (minLayer < L - 1 && layerTop(minLayer, spec) < opts.baseHeightMm - 1e-6) minLayer++;
 
-  const pool = (opts.filaments && opts.filaments.length > 0 ? opts.filaments : HUEFORGE_FILAMENT_LIBRARY).slice();
+  const pool = (opts.filaments && opts.filaments.length > 0 ? opts.filaments : LAYERED_PRINT_FILAMENT_LIBRARY).slice();
   const bins = adaptiveBins(lab, rgb, n);
   const scorer = new ScheduleScorer(bins, pool, L, minLayer, spec, opts.chromaWeight);
 
@@ -704,7 +714,7 @@ export function solveHueforge(img: RgbaImage, partial: Partial<HueforgeOptions> 
 
   // Drop blocks that start above the tallest pixel — they would never print.
   const printed = blocks.filter((b, k) => k === 0 || b.startLayer <= maxLayer);
-  const swaps: HueforgeSwap[] = printed.slice(1).map((b) => ({
+  const swaps: LayeredPrintSwap[] = printed.slice(1).map((b) => ({
     layer: b.startLayer + 1,
     z: round3(layerTop(b.startLayer, spec)),
     filament: b.filament,
@@ -733,30 +743,12 @@ function round3(v: number): number {
   return Math.round(v * 1000) / 1000;
 }
 
-/** Human-readable swap instructions (for a single-nozzle printer with manual
- *  swaps, or to check an AMS plan). */
-export function hueforgeSwapText(r: HueforgeResult): string {
-  const o = r.options;
-  const lines: string[] = [];
-  lines.push(`HueForge-style print — ${r.blocks.length} filaments, ${r.totalLayers} layers, ${r.totalHeightMm} mm tall, ${round1(r.widthMm)} × ${round1(r.depthMm)} mm`);
-  lines.push(`Slicer: layer height ${o.layerHeight} mm, first layer ${o.firstLayerHeight} mm, 100% infill, print flat (face up).`);
-  lines.push('');
-  const b0 = r.blocks[0];
-  lines.push(`Start with: ${b0.filament.name} (${b0.filament.hex}, TD ${b0.filament.td})`);
-  for (const s of r.swaps) {
-    lines.push(`At layer ${s.layer} (Z ${s.z.toFixed(2)} mm): swap to ${s.filament.name} (${s.filament.hex}, TD ${s.filament.td})`);
-  }
-  lines.push('');
-  lines.push(`Predicted mean colour error: ΔE ${r.meanDeltaE.toFixed(1)}`);
-  return lines.join('\n');
-}
-
 function round1(v: number): number {
   return Math.round(v * 10) / 10;
 }
 
 /** JSON-friendly summary (no big arrays). */
-export function hueforgeSummary(r: HueforgeResult): {
+export function layeredPrintSummary(r: LayeredPrintResult): {
   filaments: Array<{ name: string; hex: string; td: number; startLayer: number; startZ: number }>;
   swaps: Array<{ layer: number; z: number; filament: string; hex: string }>;
   totalLayers: number; totalHeightMm: number; widthMm: number; depthMm: number;

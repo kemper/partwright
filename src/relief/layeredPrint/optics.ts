@@ -13,7 +13,7 @@
 //
 // Pure math, no DOM.
 
-import type { HueforgeFilament } from './filamentLibrary';
+import type { LayeredPrintFilament } from './filamentLibrary';
 
 /** Layer geometry: first layer is usually thicker (0.16) than the rest (0.08). */
 export interface LayerSpec {
@@ -24,7 +24,7 @@ export interface LayerSpec {
 /** One filament block of a swap schedule: `filament` prints from layer
  *  `startLayer` (0-based) up to the next block's start. Block 0 starts at 0. */
 export interface ScheduleBlock {
-  filament: HueforgeFilament;
+  filament: LayeredPrintFilament;
   startLayer: number;
 }
 

@@ -1,22 +1,22 @@
-// "HueForge print from photo" dialog — the non-AI front end to the HueForge
+// "Layered print from photo" dialog — the non-AI front end to the layered-print (HueForge-style)
 // solver. Pick a photo, set the colour count / size / height, solve (in a
 // Worker), compare photo vs predicted print side by side with the filament
 // stack + swap layers, then download the layer-swap 3MF or open the result as
 // a session. main.ts owns the solve/commit/download callbacks; the same
-// operations are on window.partwright (createHueforge / exportHueforge3MF).
+// operations are on window.partwright (createLayeredPrint / exportLayeredPrint3MF).
 
 import { createModalShell } from './modalShell';
 import { BUTTON_PRIMARY, BUTTON_SECONDARY, BUTTON_CANCEL } from './styleConstants';
 import { BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER } from '../export/threemfProject';
-import type { HueforgeOptions, HueforgeResult, RgbaImage } from '../relief/hueforge/solver';
-import type { HueforgeSwapMode } from '../relief/hueforge/export3mf';
+import type { LayeredPrintOptions, LayeredPrintResult, RgbaImage } from '../relief/layeredPrint/solver';
+import type { LayeredPrintSwapMode } from '../relief/layeredPrint/export3mf';
 
-export interface HueforgeModalOptions {
+export interface LayeredPrintModalOptions {
   /** Image URL (data: / blob: / http) to preload. */
   initialSrc?: string;
-  solve: (image: RgbaImage, options: Partial<HueforgeOptions>, signal: AbortSignal) => Promise<HueforgeResult>;
-  onCreate: (result: HueforgeResult, name: string) => Promise<void>;
-  onDownload: (result: HueforgeResult, swapMode: HueforgeSwapMode, printer: string) => void;
+  solve: (image: RgbaImage, options: Partial<LayeredPrintOptions>, signal: AbortSignal) => Promise<LayeredPrintResult>;
+  onCreate: (result: LayeredPrintResult, name: string) => Promise<void>;
+  onDownload: (result: LayeredPrintResult, swapMode: LayeredPrintSwapMode, printer: string) => void;
 }
 
 /** Longest side the photo is decoded at — the solver's grid is far coarser. */
@@ -24,7 +24,7 @@ const MAX_DECODE_PX = 1600;
 
 async function decodeToImageData(src: Blob | string): Promise<{ image: ImageData; name: string }> {
   let bitmap: ImageBitmap;
-  let name = 'hueforge';
+  let name = 'layered-print';
   if (typeof src === 'string') {
     const img = new Image();
     img.crossOrigin = 'anonymous';
@@ -77,11 +77,11 @@ function readNum(input: HTMLInputElement, fallback: number): number {
   return Number.isFinite(v) ? v : fallback;
 }
 
-export function openHueforgeModal(opts: HueforgeModalOptions): void {
+export function openLayeredPrintModal(opts: LayeredPrintModalOptions): void {
   let abort: AbortController | null = null;
   let timer: ReturnType<typeof setInterval> | null = null;
   const shell = createModalShell({
-    title: 'HueForge print from photo',
+    title: 'Layered print from photo',
     widthClass: 'max-w-lg sm:max-w-3xl',
     scrollable: true,
     onClose: () => { abort?.abort(); if (timer) clearInterval(timer); },
@@ -99,7 +99,7 @@ export function openHueforgeModal(opts: HueforgeModalOptions): void {
   fileInput.type = 'file';
   fileInput.accept = 'image/*';
   fileInput.className = 'hidden';
-  fileInput.setAttribute('data-testid', 'hueforge-file');
+  fileInput.setAttribute('data-testid', 'layered-print-file');
   const pickBtn = document.createElement('button');
   pickBtn.className = BUTTON_SECONDARY;
   pickBtn.textContent = 'Choose photo…';
@@ -122,18 +122,18 @@ export function openHueforgeModal(opts: HueforgeModalOptions): void {
 
   const status = document.createElement('p');
   status.className = 'text-[12px] text-zinc-400 min-h-[1.25rem]';
-  status.setAttribute('data-testid', 'hueforge-status');
+  status.setAttribute('data-testid', 'layered-print-status');
   shell.body.appendChild(status);
 
   const canvas = document.createElement('canvas');
   canvas.className = 'w-full rounded border border-zinc-700 bg-zinc-900 hidden';
-  canvas.setAttribute('data-testid', 'hueforge-preview');
+  canvas.setAttribute('data-testid', 'layered-print-preview');
   canvas.setAttribute('aria-label', 'Photo (left) and predicted print (right)');
   shell.body.appendChild(canvas);
 
   const stack = document.createElement('div');
   stack.className = 'flex flex-col gap-1';
-  stack.setAttribute('data-testid', 'hueforge-stack');
+  stack.setAttribute('data-testid', 'layered-print-stack');
   shell.body.appendChild(stack);
 
   const cancelBtn = document.createElement('button');
@@ -152,8 +152,8 @@ export function openHueforgeModal(opts: HueforgeModalOptions): void {
   shell.footer.append(cancelBtn, solveBtn, downloadBtn, createBtn);
 
   let image: ImageData | null = null;
-  let name = 'hueforge';
-  let result: HueforgeResult | null = null;
+  let name = 'layered-print';
+  let result: LayeredPrintResult | null = null;
 
   function syncButtons(busy: boolean): void {
     solveBtn.disabled = busy || !image;
@@ -162,7 +162,7 @@ export function openHueforgeModal(opts: HueforgeModalOptions): void {
     for (const b of [solveBtn, downloadBtn, createBtn]) b.classList.toggle('opacity-50', b.disabled);
   }
 
-  function drawResult(r: HueforgeResult): void {
+  function drawResult(r: LayeredPrintResult): void {
     const W = r.gridWidth, H = r.gridHeight, gap = Math.max(4, Math.round(W / 60));
     canvas.width = W * 2 + gap; canvas.height = H;
     const ctx = canvas.getContext('2d');
@@ -238,7 +238,7 @@ export function openHueforgeModal(opts: HueforgeModalOptions): void {
 
   fileInput.addEventListener('change', () => { const f = fileInput.files?.[0]; if (f) void load(f); });
   solveBtn.addEventListener('click', () => { void runSolve(); });
-  downloadBtn.addEventListener('click', () => { if (result) opts.onDownload(result, swap.select.value as HueforgeSwapMode, printer.select.value); });
+  downloadBtn.addEventListener('click', () => { if (result) opts.onDownload(result, swap.select.value as LayeredPrintSwapMode, printer.select.value); });
   createBtn.addEventListener('click', async () => {
     if (!result) return;
     syncButtons(true);

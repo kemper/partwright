@@ -6,12 +6,12 @@
 // representative values for common PLA colours, NOT measurements of any one
 // product — the solver only needs them to be in the right ballpark, and users
 // who own a TD meter (or a TD table for their spools) should pass their own
-// filament list instead (see `HueforgeFilament`).
+// filament list instead (see `LayeredPrintFilament`).
 //
 // Pure data, no DOM — used by the solver in the browser, the Worker-free CLI,
 // and the unit tests.
 
-export interface HueforgeFilament {
+export interface LayeredPrintFilament {
   /** Display name, e.g. "White". Shown in swap instructions. */
   name: string;
   /** Opaque colour, "#rrggbb". */
@@ -22,7 +22,7 @@ export interface HueforgeFilament {
 
 /** A broad generic set: neutrals, skin/earth tones, and saturated primaries,
  *  so the solver can pick a good subset for most photos. */
-export const HUEFORGE_FILAMENT_LIBRARY: readonly HueforgeFilament[] = [
+export const LAYERED_PRINT_FILAMENT_LIBRARY: readonly LayeredPrintFilament[] = [
   // Neutrals
   { name: 'Black', hex: '#161616', td: 0.6 },
   { name: 'Charcoal', hex: '#3b3b3d', td: 0.9 },

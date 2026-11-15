@@ -1279,6 +1279,26 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={10_000} max={200_000_000} integer
           onChange={v => set('import', 'threeMfMaxTriangles', v)}
         />
+        <Field cfgKey="import.layeredPrintMaxCells"
+          label="Layered print max cells"
+          unit="cells"
+          hint="Largest heightmap (width × depth cells) a layered photo print may solve."
+          tooltip="A layered photo print scores every heightmap cell against every print layer, so memory grows with cells × layers and the mesh grows with cells. Larger prints or finer pixel sizes past this limit are refused with an error instead of freezing the tab. The default fits a 300 × 300 mm print at 0.3 mm pixels."
+          defaultValue={APP_CONFIG_DEFAULTS.import.layeredPrintMaxCells}
+          value={c.import.layeredPrintMaxCells}
+          min={10_000} max={10_000_000} integer
+          onChange={v => set('import', 'layeredPrintMaxCells', v)}
+        />
+        <Field cfgKey="import.layeredPrintMaxLayers"
+          label="Layered print max layers"
+          unit="layers"
+          hint="Most print layers a layered photo print may use."
+          tooltip="Max height divided by layer height. More layers means more shades but a slower solve and longer print."
+          defaultValue={APP_CONFIG_DEFAULTS.import.layeredPrintMaxLayers}
+          value={c.import.layeredPrintMaxLayers}
+          min={10} max={1000} integer
+          onChange={v => set('import', 'layeredPrintMaxLayers', v)}
+        />
         <Field cfgKey="import.threeMfMaxEntryMB"
           label="3MF max part size"
           unit="MB"

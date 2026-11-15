@@ -1,28 +1,28 @@
-// HueForge solve → Bambu Studio / Orca 3MF with filament changes at layer
+// Layered-print solve (HueForge-style) → Bambu Studio / Orca 3MF with filament changes at layer
 // heights. One object (the heightmap), one plate, the slicer's layer heights
 // and 100% infill set to match the plan.
 
 import { build3MFProject, type LayerSwapPlan } from '../../export/threemfProject';
 import type { BuiltExport } from '../../export/gltf';
 import type { MeshData } from '../../geometry/types';
-import type { HueforgeResult } from './solver';
-import { hueforgeMesh } from './mesh';
-import { hueforgeRecord, planToLayerSwapPlan } from './plan';
-import type { HueforgePlanRecord } from '../types';
+import type { LayeredPrintResult } from './solver';
+import { layeredPrintMesh } from './mesh';
+import { layeredPrintRecord, planToLayerSwapPlan } from './plan';
+import type { LayeredPrintPlanRecord } from '../types';
 
-export type HueforgeSwapMode = LayerSwapPlan['swapMode'];
+export type LayeredPrintSwapMode = LayerSwapPlan['swapMode'];
 
-export function hueforgeLayerPlan(r: HueforgeResult, swapMode: HueforgeSwapMode): LayerSwapPlan {
-  return planToLayerSwapPlan(hueforgeRecord(r), swapMode);
+export function layeredPrintLayerPlan(r: LayeredPrintResult, swapMode: LayeredPrintSwapMode): LayerSwapPlan {
+  return planToLayerSwapPlan(layeredPrintRecord(r), swapMode);
 }
 
-export function hueforgeMeshData(r: HueforgeResult): MeshData {
-  const m = hueforgeMesh(r);
+export function layeredPrintMeshData(r: LayeredPrintResult): MeshData {
+  const m = layeredPrintMesh(r);
   return { vertProperties: m.vertProperties, triVerts: m.triVerts, numVert: m.numVert, numTri: m.numTri, numProp: m.numProp };
 }
 
-export interface Hueforge3MFOptions {
-  swapMode?: HueforgeSwapMode;
+export interface LayeredPrint3MFOptions {
+  swapMode?: LayeredPrintSwapMode;
   /** Bambu printer id (see BAMBU_PRINTERS). */
   printer?: string;
   nozzle?: string;
@@ -31,14 +31,14 @@ export interface Hueforge3MFOptions {
   mesh?: MeshData;
 }
 
-export function buildHueforge3MF(r: HueforgeResult, opts: Hueforge3MFOptions = {}): BuiltExport {
-  return buildPlan3MF(hueforgeRecord(r), opts.mesh ?? hueforgeMeshData(r), opts);
+export function buildLayeredPrint3MF(r: LayeredPrintResult, opts: LayeredPrint3MFOptions = {}): BuiltExport {
+  return buildPlan3MF(layeredPrintRecord(r), opts.mesh ?? layeredPrintMeshData(r), opts);
 }
 
 /** Same, from a persisted plan record + the session's heightmap mesh. Any
  *  per-triangle colours on `mesh` are dropped (the layer plan colours it). */
-export function buildPlan3MF(plan: HueforgePlanRecord, mesh: MeshData, opts: Hueforge3MFOptions = {}): BuiltExport {
-  const name = opts.name ?? 'hueforge';
+export function buildPlan3MF(plan: LayeredPrintPlanRecord, mesh: MeshData, opts: LayeredPrint3MFOptions = {}): BuiltExport {
+  const name = opts.name ?? 'layered-print';
   const bare: MeshData = { vertProperties: mesh.vertProperties, triVerts: mesh.triVerts, numVert: mesh.numVert, numTri: mesh.numTri, numProp: mesh.numProp };
   return build3MFProject([{ name, mesh: bare }], {
     bambu: true,

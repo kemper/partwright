@@ -25,7 +25,7 @@ async function gotoEditor(page: import('playwright/test').Page): Promise<void> {
     try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* ignore */ }
   });
   await page.goto('/editor');
-  await page.waitForFunction(() => !!(window as any).partwright?.createHueforge);
+  await page.waitForFunction(() => !!(window as any).partwright?.createLayeredPrint);
   // Engine warmup: the session import runs the import wrapper through the engine.
   await page.evaluate(async () => {
     const pw = (window as any).partwright;
@@ -37,17 +37,17 @@ async function gotoEditor(page: import('playwright/test').Page): Promise<void> {
   });
 }
 
-test.describe('HueForge print from photo', () => {
-  test('createHueforge solves, opens a session, and exports a layer-swap 3MF', async ({ page }) => {
+test.describe('Layered print from photo', () => {
+  test('createLayeredPrint solves, opens a session, and exports a layer-swap 3MF', async ({ page }) => {
     test.setTimeout(180_000);
     await gotoEditor(page);
     const src = await syntheticImage(page);
 
     const res = await page.evaluate(async (src) => {
       const pw = (window as any).partwright;
-      const bad = await pw.createHueforge({ src, colors: 99 });
-      const created = await pw.createHueforge({ src, colors: 5, widthMm: 60, pixelSizeMm: 0.5, maxHeightMm: 2, effort: 0.3, name: 'hf spec' });
-      const plan = pw.getHueforgePlan();
+      const bad = await pw.createLayeredPrint({ src, colors: 99 });
+      const created = await pw.createLayeredPrint({ src, colors: 5, widthMm: 60, pixelSizeMm: 0.5, maxHeightMm: 2, effort: 0.3, name: 'hf spec' });
+      const plan = pw.getLayeredPrintPlan();
       return { bad, created, plan };
     }, src);
 
@@ -60,7 +60,7 @@ test.describe('HueForge print from photo', () => {
     expect(res.plan.instructions).toMatch(/swap to/);
 
     const download = page.waitForEvent('download');
-    const exp = await page.evaluate(() => (window as any).partwright.exportHueforge3MF({ swapMode: 'ams', printer: 'p1s' }));
+    const exp = await page.evaluate(() => (window as any).partwright.exportLayeredPrint3MF({ swapMode: 'ams', printer: 'p1s' }));
     expect(exp.error).toBeUndefined();
     const dl = await download;
     expect(dl.suggestedFilename()).toMatch(/\.3mf$/);
@@ -71,20 +71,20 @@ test.describe('HueForge print from photo', () => {
     test.setTimeout(180_000);
     await gotoEditor(page);
     const src = await syntheticImage(page);
-    await page.evaluate((src) => (window as any).partwright.openHueforgeDialog(src), src);
+    await page.evaluate((src) => (window as any).partwright.openLayeredPrintDialog(src), src);
 
-    const dialog = page.getByRole('dialog', { name: 'HueForge print from photo' });
+    const dialog = page.getByRole('dialog', { name: 'Layered print from photo' });
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByTestId('hueforge-status')).toHaveText(/predicted print/, { timeout: 90_000 });
-    await expect(dialog.getByTestId('hueforge-preview')).toBeVisible();
-    await expect(dialog.getByTestId('hueforge-stack')).toContainText('Start:');
-    await page.screenshot({ path: 'test-results/hueforge-dialog.png' });
+    await expect(dialog.getByTestId('layered-print-status')).toHaveText(/predicted print/, { timeout: 90_000 });
+    await expect(dialog.getByTestId('layered-print-preview')).toBeVisible();
+    await expect(dialog.getByTestId('layered-print-stack')).toContainText('Start:');
+    await page.screenshot({ path: 'test-results/layered-print-dialog.png' });
 
     await dialog.getByRole('button', { name: 'Open in editor' }).click();
     await expect(dialog).toBeHidden({ timeout: 90_000 });
-    const plan = await page.evaluate(() => (window as any).partwright.getHueforgePlan());
+    const plan = await page.evaluate(() => (window as any).partwright.getLayeredPrintPlan());
     expect(plan.error).toBeUndefined();
     await page.waitForTimeout(1500);
-    await page.screenshot({ path: 'test-results/hueforge-session.png' });
+    await page.screenshot({ path: 'test-results/layered-print-session.png' });
   });
 });
