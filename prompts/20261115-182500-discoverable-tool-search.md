@@ -42,3 +42,9 @@ search button left the "Did you know?" strip's slot at 147 px, under its
 200 px minimum, so the strip hid (and editor-hints e2e failed). The button now
 reads just "Search" below 2xl (1536 px) and shows "Search tools… ⌘K" above it;
 the slot is back to ~243 px at 1280.
+
+**CI follow-up — keep the Tools menu on one row**: the labelled "Search all…"
+entry wrapped the Tools row (already at its 1152 px cap at 1280 px) onto a
+second row, pushing docked tool panels down so resize-model's Apply button
+landed off-screen. The menu entry is now an icon-only magnifier with the label
+in its tooltip and aria-label; the row is one line again.

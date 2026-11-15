@@ -52,7 +52,7 @@ export interface PopoverGroupOptions {
   label: string;
   /** Button tooltip / aria-label. */
   title: string;
-  /** Pin a "Search all tools…" entry at the end of the menu that opens the
+  /** Pin an icon-only search entry at the end of the menu that opens the
    *  command palette, so people browsing the menu learn search exists. */
   searchEntry?: boolean;
 }
@@ -138,9 +138,13 @@ export function createPopoverGroup(opts: PopoverGroupOptions): PopoverGroup {
     const search = document.createElement('button');
     search.type = 'button';
     search.id = `${opts.id}-search`;
-    search.className = 'order-last flex items-center gap-1.5 px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs border border-dashed border-zinc-600 text-zinc-400 [@media(hover:hover)]:hover:text-zinc-100 [@media(hover:hover)]:hover:border-zinc-400 transition-colors';
-    search.title = `Search every tool and action (${combo(MOD_LABEL, 'K')})`;
-    search.innerHTML = '<svg aria-hidden="true" viewBox="0 0 16 16" class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg><span>Search all…</span>';
+    // Icon-only: the Tools row already runs near its max width at common
+    // laptop sizes, and a labelled entry wrapped it onto a second row (pushing
+    // docked tool panels down). The label lives in the tooltip / aria-label.
+    search.className = 'order-last flex items-center justify-center px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs border border-dashed border-zinc-600 text-zinc-400 [@media(hover:hover)]:hover:text-zinc-100 [@media(hover:hover)]:hover:border-zinc-400 transition-colors';
+    search.title = `Search all tools and actions (${combo(MOD_LABEL, 'K')})`;
+    search.setAttribute('aria-label', 'Search all tools and actions');
+    search.innerHTML = '<svg aria-hidden="true" viewBox="0 0 16 16" class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg>';
     search.addEventListener('click', () => { close(); openCommandPalette(); });
     menu.appendChild(search);
   }
