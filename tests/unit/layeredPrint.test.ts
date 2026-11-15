@@ -8,6 +8,7 @@ import { layeredPrintRecord, layeredPrintZRegions, planSwapText } from '../../sr
 import { parseLayeredPrintOptions, layeredPrintCode, planToScheduleOption } from '../../src/relief/layeredPrint/sandboxApi';
 import { sourceImageRefs, hashImagePixels } from '../../src/geometry/modelImages';
 import { buildCustomGcodePerLayerXml } from '../../src/export/threemfProject';
+import { toLayeredPrintFilaments, LAYERED_PRINT_TD_MIN, LAYERED_PRINT_TD_MAX } from '../../src/relief/layeredPrint/filamentLibrary';
 
 const spec = { firstLayerHeight: 0.16, layerHeight: 0.08 };
 const BLACK = { name: 'Black', hex: '#000000', td: 0.6 };
@@ -245,5 +246,45 @@ describe('painted (AMS) export', () => {
     const swap = buildLayeredPrint3MF(r, { mode: 'layer-swap', swapMode: 'pause' });
     expect(swap.swaps).toBe(r.blocks.length - 1);
     expect(swap.filaments.map((f) => f.name)).toEqual(r.blocks.map((b) => b.filament.name));
+  });
+});
+
+describe('toLayeredPrintFilaments (palette spools → solver pool)', () => {
+  it('normalises hex, clamps TD, trims names, and skips unreadable colours', () => {
+    const pool = toLayeredPrintFilaments([
+      { name: '  Ink  ', hex: '#1A1A1A', td: 0.6 },
+      { name: 'Paper', hex: 'fff', td: 3 },
+      { name: 'Glass', hex: '#88ccee', td: 999 },
+      { name: 'Opaque', hex: '#202020', td: 0 },
+      { name: '', hex: '#00ff00', td: 2 },
+      { name: 'Broken', hex: 'not-a-colour', td: 1 },
+      { name: 'NaN TD', hex: '#123456', td: Number.NaN },
+    ]);
+    expect(pool).toEqual([
+      { name: 'Ink', hex: '#1a1a1a', td: 0.6 },
+      { name: 'Paper', hex: '#ffffff', td: 3 },
+      { name: 'Glass', hex: '#88ccee', td: LAYERED_PRINT_TD_MAX },
+      { name: 'Opaque', hex: '#202020', td: LAYERED_PRINT_TD_MIN },
+      { name: '#00ff00', hex: '#00ff00', td: 2 },
+      { name: 'NaN TD', hex: '#123456', td: 1.5 },
+    ]);
+  });
+
+  it('drops extra slot fields (id) and caps long names', () => {
+    const [f] = toLayeredPrintFilaments([{ id: 'fil-1', name: 'x'.repeat(200), hex: '#abcdef', td: 1 } as { name: string; hex: string; td: number }]);
+    expect(Object.keys(f).sort()).toEqual(['hex', 'name', 'td']);
+    expect(f.name).toHaveLength(80);
+  });
+
+  it('a palette pool drives the solve: the stack uses only those filaments', () => {
+    const pool = toLayeredPrintFilaments([
+      { name: 'Spool Ink', hex: '#101018', td: 0.6 },
+      { name: 'Spool Paper', hex: '#f4f4ee', td: 3.4 },
+    ]);
+    const img = rgba(24, 16, (x) => { const v = Math.round((x / 23) * 255); return [v, v, v]; });
+    const r = solveLayeredPrint(img, { filaments: pool, numColors: 4, widthMm: 20, pixelSizeMm: 1, iterations: 500 });
+    const names = new Set(pool.map((f) => f.name));
+    expect(r.blocks.length).toBeGreaterThan(0);
+    for (const b of r.blocks) expect(names.has(b.filament.name)).toBe(true);
   });
 });

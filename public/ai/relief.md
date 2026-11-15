@@ -165,11 +165,18 @@ await partwright.createLayeredPrint({
   src: 'data:image/jpeg;base64,...',   // or an http(s) URL; AI tool: imageRef
   colors: 8,          // MAXIMUM filaments; swaps that barely help are dropped
   widthMm: 120, maxHeightMm: 2.4,
-  // filaments: [{ name: 'Black', hex: '#161616', td: 0.6 }, ...],  // the user's spools
+  // filaments: 'palette',   // the user's own spools: the active filament palette, TD included
+  // filaments: [{ name: 'Black', hex: '#161616', td: 0.6 }, ...],  // or an explicit list
   // baseFilament: 'Black', chromaWeight, smoothing, pixelSizeMm, effort, seed
 })
 // -> { sessionId, blocks: [{name, hex, td, startLayer}], swaps: [{layer, z, name, hex, td}],
 //      totalLayers, totalHeightMm, widthMm, depthMm, meanDeltaE }
+
+// filaments: 'palette' reads getPalette().slots ({name, hex, td}); set a spool's TD with
+// updateFilament(id, { td }). TD (transmission distance) = the thickness in mm at which
+// the filament stops showing the colour beneath: measure it with a TD meter, or use the
+// maker's value. An empty palette is an error (omit filaments for the built-in list).
+// AI tool: usePalette: true.
 
 partwright.getLayeredPrintPlan()        // last run's plan + `instructions` + `schedule` (paste-ready)
 partwright.listLayeredPrintFilaments()  // the built-in candidate list
@@ -197,7 +204,12 @@ directly (often looks closer to the preview when the TDs are only estimates).
   thickness (mm) at which a filament stops letting the colour below show
   through. A layer of thickness `t` covers what's beneath with opacity
   `min(1, t / TD)`. The built-in TDs are typical values for common PLA colours;
-  if the user knows their spools' TDs, use them.
+  if the user knows their spools' TDs, use them — `filaments: 'palette'` picks
+  from their own palette spools.
+- **The dialog** (command palette → "Photo → layered filament print…") offers
+  the same: a Filaments choice (Built-in / My palette, with each spool's TD
+  editable inline, written back to the palette) and an Advanced section (base
+  filament, colour vs lightness = `chromaWeight`, `smoothing`, `pixelSizeMm`).
 - **Judging the result:** `meanDeltaE` under ~10 is a good match; above ~15
   means the photo needs more colours, more height, or filaments closer to its
   palette. Render the model and compare it with the photo.

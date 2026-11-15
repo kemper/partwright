@@ -145,4 +145,65 @@ test.describe('Layered print from photo', () => {
     await page.waitForTimeout(1500);
     await page.screenshot({ path: 'test-results/layered-print-session.png' });
   });
+
+  test('dialog solves from my palette spools, with TD edited inline and advanced settings', async ({ page }) => {
+    test.setTimeout(180_000);
+    await gotoEditor(page);
+    const src = await syntheticImage(page);
+
+    // Empty the (fresh) palette: the API shorthand refuses, the dialog explains.
+    const empty = await page.evaluate(async (src) => {
+      const pw = (window as any).partwright;
+      for (const s of pw.getPalette().slots) pw.removeFilament(s.id);
+      return {
+        empty: await pw.createLayeredPrint({ src, filaments: 'palette' }),
+        typo: await pw.createLayeredPrint({ src, filaments: 'pallete' }),
+      };
+    }, src);
+    expect(empty.empty.error).toMatch(/palette is empty/);
+    expect(empty.typo.error).toMatch(/'palette'/);
+
+    await page.evaluate((src) => (window as any).partwright.openLayeredPrintDialog(src), src);
+    const dialog = page.getByRole('dialog', { name: 'Layered print from photo' });
+    await expect(dialog.getByTestId('layered-print-status')).toHaveText(/predicted print/, { timeout: 90_000 });
+    const source = dialog.getByLabel(/^Filaments/);
+    await source.selectOption('palette');
+    await expect(dialog.getByTestId('layered-print-palette-empty')).toBeVisible();
+
+    // Add the user's spools: the open dialog picks them up live.
+    await page.evaluate(() => {
+      const pw = (window as any).partwright;
+      pw.addFilament({ name: 'Spool Ink', hex: '#14141c', td: 0.6 });
+      pw.addFilament({ name: 'Spool Ember', hex: '#e8702a', td: 2.4 });
+      pw.addFilament({ name: 'Spool Paper', hex: '#f6f2e8', td: 3 });
+    });
+    await expect(source.locator('option[value="palette"]')).toHaveText('My palette (3)');
+    await expect(dialog.getByTestId('layered-print-palette-row')).toHaveCount(3);
+    await expect(dialog.getByTestId('layered-print-palette')).toContainText('TD meter');
+
+    // Edit a TD inline: it writes back to the palette.
+    const td = dialog.getByLabel('TD of Spool Paper (mm)');
+    await td.fill('4.2');
+    await td.press('Enter');
+    await expect.poll(() => page.evaluate(() => (window as any).partwright.getPalette().slots.find((s: any) => s.name === 'Spool Paper')?.td)).toBe(4.2);
+
+    // Advanced: the base-filament list follows the active pool.
+    await dialog.getByTestId('layered-print-advanced').locator('summary').click();
+    const base = dialog.getByLabel('Base filament');
+    await expect(base.locator('option')).toHaveText(['Auto (darkest)', 'Spool Ink', 'Spool Ember', 'Spool Paper']);
+    await base.selectOption('Spool Ink');
+    await dialog.getByLabel('Pixel size (mm)').fill('0.5');
+    await dialog.getByLabel('Smoothing').fill('2');
+    await dialog.getByLabel('Colour vs lightness').fill('0.8');
+
+    await dialog.getByRole('button', { name: 'Solve' }).click();
+    const stack = dialog.getByTestId('layered-print-stack');
+    await expect(stack).toContainText('Start: Spool Ink', { timeout: 90_000 });
+    await expect(dialog.getByTestId('layered-print-status')).toHaveText(/predicted print/, { timeout: 90_000 });
+    const names = await stack.locator(':scope > div.flex').evaluateAll((rows) => rows.map((r) => (r.textContent ?? '').replace(/^(Start|Layer \d+ \(Z [\d.]+ mm\)): /, '').replace(/ \(#.*$/, '')));
+    expect(names.length).toBeGreaterThan(0);
+    for (const n of names) expect(['Spool Ink', 'Spool Ember', 'Spool Paper']).toContain(n);
+    if (names.includes('Spool Paper')) await expect(stack).toContainText('Spool Paper (#f6f2e8, TD 4.2)');
+    await page.screenshot({ path: 'test-results/layered-print-palette.png' });
+  });
 });

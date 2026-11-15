@@ -223,7 +223,7 @@ import { layeredPrintRecord, layeredPrintZRegions, planSwaps, planSwapText } fro
 import { layeredPrintCode, planToScheduleOption } from './relief/layeredPrint/sandboxApi';
 import { setModelImageProvider, hashImagePixels, type ModelImage } from './geometry/modelImages';
 import type { LayeredPrintPlanRecord } from './relief/types';
-import { LAYERED_PRINT_FILAMENT_LIBRARY, type LayeredPrintFilament } from './relief/layeredPrint/filamentLibrary';
+import { LAYERED_PRINT_FILAMENT_LIBRARY, toLayeredPrintFilaments, type LayeredPrintFilament } from './relief/layeredPrint/filamentLibrary';
 import { DEFAULT_LAYERED_PRINT_OPTIONS, type LayeredPrintOptions, type LayeredPrintResult } from './relief/layeredPrint/solver';
 import { openLayeredPrintModal } from './ui/layeredPrintModal';
 import { mountReliefStudio, type ReliefStudioHandle } from './ui/reliefStudio';
@@ -18153,9 +18153,12 @@ async function main() {
     async createLayeredPrint(args: {
       src: string; colors?: number; widthMm?: number; maxHeightMm?: number; baseHeightMm?: number;
       layerHeight?: number; firstLayerHeight?: number; pixelSizeMm?: number;
-      filaments?: LayeredPrintFilament[]; baseFilament?: string; chromaWeight?: number; smoothing?: number;
+      filaments?: LayeredPrintFilament[] | 'palette'; baseFilament?: string; chromaWeight?: number; smoothing?: number;
       effort?: number; seed?: number; name?: string;
     }): Promise<unknown> {
+      // `filaments: 'palette'` = the user's own spools (the active filament
+      // palette, TD included), resolved once here so validation sees the list.
+      let paletteFilaments: LayeredPrintFilament[] | null = null;
       const KEYS = ['src', 'colors', 'widthMm', 'maxHeightMm', 'baseHeightMm', 'layerHeight', 'firstLayerHeight', 'pixelSizeMm', 'filaments', 'baseFilament', 'chromaWeight', 'smoothing', 'effort', 'seed', 'name'];
       const checked = guard(() => {
         assertObject(args, 'createLayeredPrint(args)');
@@ -18174,7 +18177,12 @@ async function main() {
         assertNumber(args.seed, 'createLayeredPrint(seed)', { optional: true, integer: true, min: 0 });
         assertString(args.baseFilament, 'createLayeredPrint(baseFilament)', { optional: true });
         assertString(args.name, 'createLayeredPrint(name)', { optional: true });
-        if (args.filaments !== undefined) {
+        if (args.filaments === 'palette') {
+          paletteFilaments = toLayeredPrintFilaments(listFilaments());
+          if (paletteFilaments.length === 0) throw new ValidationError("createLayeredPrint(filaments: 'palette'): the filament palette is empty — add spools with addFilament({name, hex, td}), pass a filaments array, or omit filaments to use the built-in list");
+        } else if (typeof args.filaments === 'string') {
+          throw new ValidationError(`createLayeredPrint(filaments) must be an array of {name, hex, td} or 'palette', got ${JSON.stringify(args.filaments)}`);
+        } else if (args.filaments !== undefined) {
           const list = assertArray(args.filaments, 'createLayeredPrint(filaments)');
           list.forEach((f, i) => {
             const o = assertObject(f, `createLayeredPrint(filaments[${i}])`) as Record<string, unknown>;
@@ -18187,7 +18195,7 @@ async function main() {
           if (list.length === 0) throw new ValidationError('createLayeredPrint(filaments) must list at least one filament (omit it to use the built-in list)');
         }
         if (args.baseFilament !== undefined) {
-          const pool = (args.filaments as LayeredPrintFilament[] | undefined) ?? LAYERED_PRINT_FILAMENT_LIBRARY;
+          const pool = paletteFilaments ?? (args.filaments as LayeredPrintFilament[] | undefined) ?? LAYERED_PRINT_FILAMENT_LIBRARY;
           const want = args.baseFilament.toLowerCase();
           if (!pool.some((f) => f.name.toLowerCase() === want || f.hex.toLowerCase() === want)) {
             throw new ValidationError(`createLayeredPrint(baseFilament) "${args.baseFilament}" is not in the filament list (${pool.map((f) => f.name).join(', ')})`);
@@ -18202,7 +18210,9 @@ async function main() {
         const options: Partial<LayeredPrintOptions> = {
           numColors: args.colors, widthMm: args.widthMm, maxHeightMm: args.maxHeightMm, baseHeightMm: args.baseHeightMm,
           layerHeight: args.layerHeight, firstLayerHeight: args.firstLayerHeight, pixelSizeMm: args.pixelSizeMm,
-          filaments: args.filaments?.map((f) => ({ name: f.name, hex: f.hex.startsWith('#') ? f.hex : `#${f.hex}`, td: f.td })),
+          filaments: paletteFilaments ?? (Array.isArray(args.filaments)
+            ? args.filaments.map((f) => ({ name: f.name, hex: f.hex.startsWith('#') ? f.hex : `#${f.hex}`, td: f.td }))
+            : undefined),
           baseFilament: args.baseFilament, chromaWeight: args.chromaWeight, smoothing: args.smoothing, seed: args.seed,
           iterations: args.effort !== undefined ? Math.round(DEFAULT_LAYERED_PRINT_OPTIONS.iterations * args.effort) : undefined,
           ...layeredPrintLimits(),
@@ -25101,7 +25111,7 @@ async function main() {
         'splitImportIntoObjects': { signature: 'await splitImportIntoObjects() -- Split the open object (a single unedited mesh import, e.g. a multi-body STL) into one object per piece -> {objects:[{id,name}]} or {error}', docs: '/ai/file-io.md' },
         'importImageAsRelief': { signature: "await importImageAsRelief({src, mode?: 'luminance'|'quantized'|'ai', options?, quantized?, preprocess?, crop?}) -- Colour tile / stepped-relief object from an image (data: or http(s) URL) -> {sessionId} or {error}", docs: '/ai/relief.md' },
         'importSvgAsRelief': { signature: 'await importSvgAsRelief({svgText, options?, quantized?, preprocess?}) -- Multi-colour tile from raw SVG; each <path fill> becomes one crisp region -> {sessionId} or {error}', docs: '/ai/relief.md#make-a-part-from-an-svg' },
-        'createLayeredPrint': { signature: "await createLayeredPrint({src, colors?: 8, widthMm?: 120, maxHeightMm?: 2.4, baseHeightMm?, layerHeight?: 0.08, firstLayerHeight?: 0.16, pixelSizeMm?: 0.3, filaments?: [{name, hex, td}], baseFilament?, chromaWeight?, smoothing?, effort?, seed?, name?}) -- HueForge-style filament-layering print from a photo: picks filaments + swap layers + per-pixel heights, opens a new session -> {sessionId, blocks, swaps, meanDeltaE, ...} or {error}", docs: '/ai/relief.md#layered-photo-prints' },
+        'createLayeredPrint': { signature: "await createLayeredPrint({src, colors?: 8, widthMm?: 120, maxHeightMm?: 2.4, baseHeightMm?, layerHeight?: 0.08, firstLayerHeight?: 0.16, pixelSizeMm?: 0.3, filaments?: [{name, hex, td}] | 'palette', baseFilament?, chromaWeight?, smoothing?, effort?, seed?, name?}) -- HueForge-style filament-layering print from a photo: picks filaments (built-in list, your own [{name, hex, td}], or 'palette' = your filament palette's spools) + swap layers + per-pixel heights, opens a new session -> {sessionId, blocks, swaps, meanDeltaE, ...} or {error}", docs: '/ai/relief.md#layered-photo-prints' },
         'getLayeredPrintPlan': { signature: 'getLayeredPrintPlan() -- The current layered print: filaments, swap layers/heights, instructions text -> plan or {error}', docs: '/ai/relief.md#layered-photo-prints' },
         'listLayeredPrintFilaments': { signature: 'listLayeredPrintFilaments() -- Built-in filament list (name, hex, TD mm) createLayeredPrint chooses from', docs: '/ai/relief.md#layered-photo-prints' },
         'exportLayeredPrint3MF': { signature: "exportLayeredPrint3MF({mode?: 'layer-swap'|'painted', swapMode?: 'ams'|'pause', slots?: 1..16, paintFilaments?: 'library'|'palette'|'exact', printer?, nozzle?, filename?}) -- Download the layered print as a Bambu/Orca 3MF: filament changes at the swap layers, or painted regions reduced to AMS slots -> {filename, bytes, mode, filaments, swaps} or {error}", docs: '/ai/relief.md#layered-photo-prints' },

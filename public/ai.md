@@ -372,7 +372,7 @@ await partwright.importFromUrl(url, {target?, sessionName?, stepMode?, geometryO
 // Image / SVG -> colour tile or stepped relief (new session). See /ai/relief.md.
 await partwright.importImageAsRelief({src, mode?: 'luminance'|'quantized'|'ai', options?, quantized?, preprocess?, crop?}) // -> {sessionId} or {error}
 // Photo -> HueForge-style filament-layering print: model code api.layeredPrint(api.image(id), {schedule}); createLayeredPrint solves + writes it. See /ai/relief.md#layered-photo-prints.
-await partwright.createLayeredPrint({src, colors?: 8, widthMm?, maxHeightMm?, filaments?: [{name, hex, td}], ...}) // -> {sessionId, blocks, swaps, meanDeltaE} or {error}
+await partwright.createLayeredPrint({src, colors?: 8, widthMm?, maxHeightMm?, filaments?: [{name, hex, td}] | 'palette', ...}) // -> {sessionId, blocks, swaps, meanDeltaE} or {error}
 partwright.getLayeredPrintPlan()                       // filaments, swap layers, instructions text
 partwright.exportLayeredPrint3MF({swapMode?: 'ams'|'pause', printer?}) // Bambu/Orca 3MF with the filament changes built in
 await partwright.importSvgAsRelief({svgText, options?, quantized?, preprocess?})  // each <path fill> = one crisp colour region -> {sessionId} or {error}
