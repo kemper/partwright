@@ -9,7 +9,7 @@ import { createModalShell } from './modalShell';
 import { BUTTON_PRIMARY, BUTTON_SECONDARY, BUTTON_CANCEL } from './styleConstants';
 import { BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER } from '../export/threemfProject';
 import type { LayeredPrintOptions, LayeredPrintResult, RgbaImage } from '../relief/layeredPrint/solver';
-import type { LayeredExportMode } from '../relief/layeredPrint/export3mf';
+import type { LayeredExportMode, LayeredPaintColors, LayeredPaintSides } from '../relief/layeredPrint/export3mf';
 
 export interface LayeredPrintModalOptions {
   /** Image URL (data: / blob: / http) to preload. */
@@ -21,8 +21,9 @@ export interface LayeredPrintModalOptions {
   solve: (image: RgbaImage, options: Partial<LayeredPrintOptions>, signal: AbortSignal) => Promise<LayeredPrintResult>;
   /** Open the solved print as a new code session with the photo attached. */
   onCreate: (result: LayeredPrintResult, name: string, photoDataUrl: string) => Promise<void>;
-  /** Download a 3MF for the solve (the same export path as the editor's). */
-  onDownload: (result: LayeredPrintResult, args: { mode: LayeredExportMode; swapMode?: 'ams' | 'pause'; slots?: number; paintFilaments?: 'library' | 'palette' | 'exact'; printer: string }) => void;
+  /** Download a 3MF for the solve (the same export path as the editor's).
+   *  `photo` = the decoded photo, for painted colours taken from it. */
+  onDownload: (result: LayeredPrintResult, args: { mode: LayeredExportMode; swapMode?: 'ams' | 'pause'; slots?: number; paintFilaments?: 'library' | 'palette' | 'exact'; paintColors?: LayeredPaintColors; sides?: LayeredPaintSides; printer: string }, photo: RgbaImage | undefined) => void;
 }
 
 function numberField(label: string, value: number, min: number, max: number, step: number, hint: string): { row: HTMLElement; input: HTMLInputElement } {
@@ -98,7 +99,7 @@ export function openLayeredPrintModal(opts: LayeredPrintModalOptions): void {
     ['ams', 'Layer swaps (AMS)'],
     ['pause', 'Layer swaps (manual pauses)'],
     ['painted', 'Painted regions (AMS)'],
-  ], 'ams', 'Layer swaps: the filament changes at chosen heights and thin translucent layers blend (AMS changes automatically; manual pauses for you to swap). Painted: each region prints in its own filament, coloured like the preview — needs an AMS, more filament changes, but colours don\'t depend on translucency.');
+  ], 'ams', 'Layer swaps: the filament changes at chosen heights and thin translucent layers blend (AMS changes automatically; manual pauses for you to swap). Painted: each region prints in its own filament, coloured from the photo — needs an AMS, more filament changes, but colours don\'t depend on translucency.');
   const printer = selectField('Printer', BAMBU_PRINTERS.map((p) => [p.id, p.label]), DEFAULT_BAMBU_PRINTER, 'Bambu printer profile for the 3MF.');
   grid.append(colors.row, width.row, height.row, swap.row, printer.row);
   shell.body.appendChild(grid);
@@ -106,13 +107,21 @@ export function openLayeredPrintModal(opts: LayeredPrintModalOptions): void {
   // Painted-mode options (shown only for "Painted regions").
   const paintedRow = document.createElement('div');
   paintedRow.className = 'grid grid-cols-2 sm:grid-cols-5 gap-2 hidden';
-  const slots = numberField('AMS slots', 8, 1, 16, 1, 'How many filaments the painted 3MF may use. The preview colours are reduced to this many.');
-  const paintSource = selectField('Painted colours', [
+  const slots = numberField('AMS slots', 8, 1, 16, 1, 'How many filaments the painted 3MF may use. The colours are reduced to this many.');
+  const colorSource = selectField('Colours from', [
+    ['photo', 'Photo'],
+    ['preview', 'Predicted print'],
+  ], 'photo', 'Photo: each region takes the photo\'s colour there, so hues the layer blend can\'t make (a dusty blue) survive. Predicted print: the layer-swap look shown on the right.');
+  const paintSource = selectField('Snap to', [
     ['library', 'Nearest real filaments'],
     ['palette', 'My palette'],
-    ['exact', 'Exact preview shades'],
-  ], 'library', 'Snap the colours to filaments that exist (the built-in list, or your palette), or keep the exact preview shades (you would need filaments in those colours).');
-  paintedRow.append(slots.row, paintSource.row);
+    ['exact', 'Exact shades'],
+  ], 'library', 'Snap the colours to filaments that exist (the built-in list, or your palette), or keep the exact shades (you would need filaments in those colours).');
+  const sides = selectField('Sides', [
+    ['region', 'Region colour'],
+    ['layers', 'Layer stripes'],
+  ], 'region', 'Region colour: each side wall takes the colour of the region above it. Layer stripes: the sides are cut at the swap heights and each band shows the filament printed there.');
+  paintedRow.append(slots.row, colorSource.row, paintSource.row, sides.row);
   shell.body.appendChild(paintedRow);
   swap.select.addEventListener('change', () => paintedRow.classList.toggle('hidden', swap.select.value !== 'painted'));
 
@@ -240,8 +249,14 @@ export function openLayeredPrintModal(opts: LayeredPrintModalOptions): void {
     if (!result) return;
     const v = swap.select.value;
     opts.onDownload(result, v === 'painted'
-      ? { mode: 'painted', slots: Math.round(readNum(slots.input, 8)), paintFilaments: paintSource.select.value as 'library' | 'palette' | 'exact', printer: printer.select.value }
-      : { mode: 'layer-swap', swapMode: v as 'ams' | 'pause', printer: printer.select.value });
+      ? {
+        mode: 'painted', slots: Math.round(readNum(slots.input, 8)),
+        paintFilaments: paintSource.select.value as 'library' | 'palette' | 'exact',
+        paintColors: colorSource.select.value as LayeredPaintColors,
+        sides: sides.select.value as LayeredPaintSides,
+        printer: printer.select.value,
+      }
+      : { mode: 'layer-swap', swapMode: v as 'ams' | 'pause', printer: printer.select.value }, image ?? undefined);
   });
   createBtn.addEventListener('click', async () => {
     if (!result) return;

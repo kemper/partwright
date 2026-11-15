@@ -118,8 +118,31 @@ test.describe('Layered print from photo', () => {
     expect(painted.mode).toBe('painted');
     expect(painted.filaments.length).toBeGreaterThan(0);
     expect(painted.filaments.length).toBeLessThanOrEqual(4);
+    // Painted colours come from the source photo by default (the model's
+    // api.image attachment), with region-coloured sides.
+    expect(painted.paintColors).toBe('photo');
+    expect(painted.sides).toBe('region');
+    expect(painted.note).toBeUndefined();
+
+    // Layer stripes on the sides, and the preview colour source.
+    const download3 = page.waitForEvent('download');
+    const striped = await page.evaluate(() => (window as any).partwright.exportLayeredPrint3MF({ mode: 'painted', slots: 6, sides: 'layers' }));
+    expect(striped.error).toBeUndefined();
+    await download3;
+    expect(striped.sides).toBe('layers');
+    expect(striped.paintColors).toBe('photo');
+    const download4 = page.waitForEvent('download');
+    const preview = await page.evaluate(() => (window as any).partwright.exportLayeredPrint3MF({ mode: 'painted', slots: 4, paintColors: 'preview' }));
+    expect(preview.error).toBeUndefined();
+    await download4;
+    expect(preview.paintColors).toBe('preview');
+
     const bad = await page.evaluate(() => (window as any).partwright.exportLayeredPrint3MF({ mode: 'layer-swap', slots: 4 }));
     expect(bad.error).toMatch(/painted/);
+    const badSides = await page.evaluate(() => (window as any).partwright.exportLayeredPrint3MF({ sides: 'layers' }));
+    expect(badSides.error).toMatch(/painted/);
+    const badSource = await page.evaluate(() => (window as any).partwright.exportLayeredPrint3MF({ mode: 'painted', paintColors: 'blend' }));
+    expect(badSource.error).toMatch(/paintColors/);
   });
 
   test('dialog previews the predicted print and opens it in the editor', async ({ page }) => {
@@ -135,7 +158,13 @@ test.describe('Layered print from photo', () => {
     await expect(dialog.getByTestId('layered-print-stack')).toContainText('Start:');
     await dialog.getByLabel('Export as').selectOption('painted');
     await expect(dialog.getByLabel('AMS slots')).toBeVisible();
+    await expect(dialog.getByLabel('Colours from')).toHaveValue('photo');
+    await dialog.getByLabel('Sides').selectOption('layers');
     await page.screenshot({ path: 'test-results/layered-print-dialog.png' });
+    // The dialog's painted download samples the photo it holds.
+    const download = page.waitForEvent('download');
+    await dialog.getByRole('button', { name: 'Download 3MF' }).click();
+    expect((await download).suggestedFilename()).toMatch(/\.3mf$/);
 
     await dialog.getByRole('button', { name: 'Open in editor' }).click();
     await expect(dialog).toBeHidden({ timeout: 90_000 });
