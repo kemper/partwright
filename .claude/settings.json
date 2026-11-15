@@ -4,6 +4,7 @@
     "allow": [
       "Bash(npx ast-grep:*)",
       "Bash(npx --package @ast-grep/cli ast-grep:*)",
+      "Bash(node scripts/slicer-cli.mjs:*)",
       "mcp__serena__find_symbol",
       "mcp__serena__find_referencing_symbols",
       "mcp__serena__get_symbols_overview",
