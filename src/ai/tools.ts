@@ -2546,12 +2546,12 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: 'applyImageTool',
-    description: "Turn an image attached to the session into an object with an IMAGE TOOL, or re-apply a tool to the open object with new settings. REQUIRES USER CONFIRMATION. tool: 'tile' (flat colour keychain/tile), 'silhouette' (tile cut to the subject), 'steppedRelief' (each colour cluster at its own height), 'lithophane' (brightness → height), 'layeredPrint' (HueForge-style filament layering), 'voxel' (pixel-art cubes). Image: `image` = attachment id (from getImages), `imageRef` (1-based getReferenceImages index), or `src` (attaches a new image). replace: true re-applies to the open object (a new version; undo = version history), and params for the same tool MERGE over its stored ones — so tweak one setting at a time (e.g. {quantized: {clusters: 6}}). params: relief tools take ReliefOptions sections {common: {widthMm, maxHeight, baseThickness, resolution, smoothing, removeBackground}, quantized: {clusters, output, shape, cornerRadiusMm, holes, …}, luminance: {invert, gamma, levels}, preprocess: {brightness, contrast, saturation, levelsLow, levelsHigh}}; voxel takes importImageAsVoxels options; layeredPrint takes api.layeredPrint options. The tool's settings are stored in the object's code (`// @image-tool {...}` header) — read them with getImageToolOp.",
+    description: "Turn an image attached to the session into an object with an IMAGE TOOL, or re-apply a tool to the open object with new settings. REQUIRES USER CONFIRMATION. tool: 'tile' (flat colour keychain/tile), 'silhouette' (tile cut to the subject), 'steppedRelief' (each colour cluster at its own height), 'lithophane' (brightness → height), 'layeredPrint' (HueForge-style filament layering), 'voxel' (pixel-art cubes). Image: `image` = attachment id (from getAttachments), `imageRef` (1-based getReferenceImages index), or `src` (attaches a new image). replace: true re-applies to the open object (a new version; undo = version history), and params for the same tool MERGE over its stored ones — so tweak one setting at a time (e.g. {quantized: {clusters: 6}}). params: relief tools take ReliefOptions sections {common: {widthMm, maxHeight, baseThickness, resolution, smoothing, removeBackground}, quantized: {clusters, output, shape, cornerRadiusMm, holes, …}, luminance: {invert, gamma, levels}, preprocess: {brightness, contrast, saturation, levelsLow, levelsHigh}}; voxel takes importImageAsVoxels options; layeredPrint takes api.layeredPrint options. The tool's settings are stored in the object's code (`// @image-tool {...}` header) — read them with getImageToolOp.",
     input_schema: {
       type: 'object',
       properties: {
         tool: { type: 'string', enum: ['tile', 'silhouette', 'steppedRelief', 'lithophane', 'layeredPrint', 'voxel'] },
-        image: { type: 'string', description: 'Attachment id of the image (getImages).' },
+        image: { type: 'string', description: 'Attachment id of the image (getAttachments).' },
         imageRef: { type: 'integer', minimum: 1, description: '1-based index into getReferenceImages, instead of image.' },
         src: { type: 'string', description: 'Attach this image (data: or http(s) URL) and use it.' },
         params: {
@@ -3076,8 +3076,6 @@ const ALWAYS_AVAILABLE = new Set([
   'listCatalog',
   // Creates a NEW session from an image (confirmed), like importImageAsVoxels.
   'createLayeredPrint',
-  // Makes / re-applies an object from an attached image (confirmed).
-  'applyImageTool',
   'getImageToolOp',
   'listImageTools',
   'getLayeredPrintPlan',
@@ -3247,7 +3245,7 @@ export const RETRY_SAFE_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams', 'setCurvatureQuality']);
-const SAVE_GATED = new Set(['runAndSave', 'fitHumanToPhoto', 'forkVersion', 'loadVersion', 'saveVersion', 'resolveModelDrift', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts', 'partAction', 'undoPartEdit', 'splitIntoPieces']);
+const SAVE_GATED = new Set(['applyImageTool', 'runAndSave', 'fitHumanToPhoto', 'forkVersion', 'loadVersion', 'saveVersion', 'resolveModelDrift', 'deleteObjectPart', 'restoreObjectPart', 'applySurfaceTexture', 'applyVoronoiLamp', 'engraveModel', 'voxelizeModel', 'convertToCode', 'scaleModel', 'placeModel', 'rotateModel', 'layFlatModel', 'acceptParts', 'buildCharacter', 'randomCharacter', 'mirrorModel', 'renameVersion', 'deleteVersion', 'simplifyModel', 'mergeObjects', 'healCurrent', 'saveAllObjects', 'renameObjectPart', 'bakeObjectPartColor', 'extractObjectPiece', 'extractObjectParts', 'partAction', 'undoPartEdit', 'splitIntoPieces']);
 /** SAVE_GATED tools that touch version history WITHOUT executing new code, so
  *  they only need the saveVersions scope (not runCode). */
 const SAVE_NON_RUNNING = new Set(['loadVersion', 'saveVersion', 'renameVersion', 'deleteVersion', 'saveAllObjects']);
@@ -4781,8 +4779,10 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       const { imageRef, ...rest } = input;
       const args = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== null)) as Record<string, unknown>;
       if (typeof imageRef === 'number') {
-        const imgs = typeof api.getImages === 'function' ? (api.getImages() as Array<{ id?: string }>) : [];
-        const entry = Array.isArray(imgs) ? imgs[imageRef - 1] : undefined;
+        // Same indexing as getReferenceImages: only images that carry pixels.
+        const raw = typeof api.getImages === 'function' ? (api.getImages() as Array<{ id?: string; src?: string }>) : [];
+        const imgs = Array.isArray(raw) ? raw.filter((im) => typeof im.src === 'string' && im.src.length > 0) : [];
+        const entry = imgs[imageRef - 1];
         if (!entry?.id) return { error: `applyImageTool: no reference image at index ${imageRef}. Call getReferenceImages to list them.` };
         args.image = entry.id;
       }
