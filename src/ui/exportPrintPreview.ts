@@ -130,6 +130,10 @@ export function createExportPrintPreview(
   // that never asks for it is exactly the dialog it was.
   el.append(head, hint);
 
+  // The dialog confirms on Enter from anywhere inside it. Enter in this block
+  // (typing a layer number, pressing Show) is about the preview, never "Export".
+  el.addEventListener('keydown', (e) => { if (e.key === 'Enter') e.stopPropagation(); });
+
   function renderChrome(): void {
     toggle.textContent = shown ? 'Hide' : 'Show';
     toggle.setAttribute('aria-expanded', String(shown));
@@ -165,6 +169,7 @@ export function createExportPrintPreview(
       slider.range.classList.add('flex-1', ...TOUCH.split(' '));
       slider.range.dataset.exportPrintPreviewLayer = '';
       slider.input.classList.add(...TOUCH.split(' '));
+      slider.input.dataset.exportPrintPreviewLayerInput = '';
       sliderWrap.append(slider.range, slider.input);
     } else if (!raf) {
       slider.set(Math.min(frame.layer || total, total));
@@ -181,8 +186,9 @@ export function createExportPrintPreview(
   async function draw(): Promise<void> {
     if (disposed || !shown) return;
     const id = objectId;
-    if (!id) { frame = null; status.textContent = 'Tick an object to preview it.'; showFrame(); return; }
+    // Every draw supersedes the ones before it, including one that has nothing to draw.
     const mine = ++generation;
+    if (!id) { frame = null; status.textContent = 'Tick an object to preview it.'; showFrame(); return; }
     if (!frame) { status.textContent = 'Preparing the preview…'; showFrame(); }
     let next: ExportPrintPreviewFrame | null = null;
     try {
@@ -227,7 +233,7 @@ export function createExportPrintPreview(
     shown = !shown;
     rememberedShown = shown;
     renderChrome();
-    if (shown) { syncObjects(); void draw(); }
+    if (shown) { syncObjects(); void draw(); } else generation++; // drop a render still in flight
   });
   objectSel.addEventListener('change', () => {
     objectId = objectSel.value || null;

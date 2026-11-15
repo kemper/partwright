@@ -172,14 +172,31 @@ export function splitMeshByBands(mesh: MeshData, opts: LayerBandOptions): LayerB
 
   // Heights (above the bed) to split at: band starts, and with blending the
   // layer tops where the see-through colour still changes.
-  const planeSet = new Set<number>();
-  const addPlane = (z: number) => { if (z > EPS && z < height - EPS) planeSet.add(Math.round(z * 1e5) / 1e5); };
-  for (const b of bands.slice(1)) addPlane(b.fromZ);
+  // Two lists. Walls and undersides only ever take a band's own colour, so
+  // they are split at the band starts alone. Upward-facing faces can also
+  // change shade from layer to layer, so they get the extra planes; cutting a
+  // tall wall at every layer would multiply the mesh for nothing.
+  const inRange = (z: number) => z > EPS && z < height - EPS;
+  const planeKey = (z: number) => Math.round(z * 1e5) / 1e5;
+  const bandSet = new Set<number>();
+  for (const b of bands.slice(1)) if (inRange(b.fromZ)) bandSet.add(planeKey(b.fromZ));
+  const blendSet = new Set<number>(bandSet);
   if (blend) {
-    for (const b of bands.slice(1)) for (let k = 0; k < blend.maxLayers && b.firstLayer + k <= b.lastLayer; k++) addPlane(layerTopZ(b.firstLayer + k, profile));
+    for (const b of bands.slice(1)) {
+      for (let k = 0; k < blend.maxLayers && b.firstLayer + k <= b.lastLayer; k++) {
+        const layer = b.firstLayer + k;
+        // With a supplied prediction, a plane is only needed where the shade
+        // really changes: it stops changing once a filament is thick enough.
+        if (blend.colorOnTopOf && layer < b.lastLayer && blend.colorOnTopOf(layer) === blend.colorOnTopOf(layer + 1)) continue;
+        const z = layerTopZ(layer, profile);
+        if (inRange(z)) blendSet.add(planeKey(z));
+      }
+    }
   }
   // In model coordinates, so pieces keep the model's own vertex values.
-  const planes = Float64Array.from([...planeSet].sort((a, b) => a - b), (z) => z + bedZ);
+  const toPlanes = (set: Set<number>) => Float64Array.from([...set].sort((a, b) => a - b), (z) => z + bedZ);
+  const bandPlanes = toPlanes(bandSet);
+  const blendPlanes = blend ? toPlanes(blendSet) : bandPlanes;
 
   // Colour per layer, worked out once instead of per piece.
   const lastLayer = Math.max(totalLayers - 1, bands[bands.length - 1].lastLayer);
@@ -211,7 +228,6 @@ export function splitMeshByBands(mesh: MeshData, opts: LayerBandOptions): LayerB
   };
 
   const out = new TriSink(numTri + (numTri >> 2));
-  const nPlanes = planes.length;
 
   for (let t = 0; t < numTri; t++) {
     const ia = triVerts[t * 3] * numProp, ib = triVerts[t * 3 + 1] * numProp, ic = triVerts[t * 3 + 2] * numProp;
@@ -232,6 +248,8 @@ export function splitMeshByBands(mesh: MeshData, opts: LayerBandOptions): LayerB
 
     const table = seesThrough ? seeRgb! : bandRgb;
     const flatDown = flat && upness < 0;
+    const planes = seesThrough ? blendPlanes : bandPlanes;
+    const nPlanes = planes.length;
 
     // First plane above the triangle's lowest point (binary search).
     let lo = 0, hi = nPlanes;
@@ -324,28 +342,50 @@ type P2 = [number, number];
 
 /** Chain cut segments (in XY) into closed loops. `open` is true when some chain did not close. */
 function chainLoops(segments: [P2, P2][]): { loops: P2[][]; open: boolean } {
-  const key = (p: P2) => `${Math.round(p[0] * 1e4)},${Math.round(p[1] * 1e4)}`;
-  const next = new Map<string, { to: P2; toKey: string; used: boolean }[]>();
+  // Two triangles that share an edge can be split differently (a wall is cut
+  // at fewer heights than the top face next to it), so the same cut point can
+  // arrive with slightly different coordinates. Points within TOL of each
+  // other are one point: each new point adopts the id of a neighbour it finds
+  // in its own grid cell or the eight around it.
+  const TOL = 1e-4;
+  const cells = new Map<string, { x: number; y: number; id: number }[]>();
+  let nextId = 0;
+  const idOf = (p: P2): number => {
+    const cx = Math.floor(p[0] / TOL), cy = Math.floor(p[1] / TOL);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const list = cells.get(`${cx + dx},${cy + dy}`);
+        if (!list) continue;
+        for (const q of list) if (Math.abs(q.x - p[0]) <= TOL && Math.abs(q.y - p[1]) <= TOL) return q.id;
+      }
+    }
+    const id = nextId++;
+    const k = `${cx},${cy}`;
+    const list = cells.get(k);
+    if (list) list.push({ x: p[0], y: p[1], id }); else cells.set(k, [{ x: p[0], y: p[1], id }]);
+    return id;
+  };
+  const next = new Map<number, { to: P2; toId: number; used: boolean }[]>();
   for (const [a, b] of segments) {
-    const ka = key(a), kb = key(b);
-    if (ka === kb) continue;
-    let outs = next.get(ka);
-    if (!outs) { outs = []; next.set(ka, outs); }
-    outs.push({ to: b, toKey: kb, used: false });
+    const ia = idOf(a), ib = idOf(b);
+    if (ia === ib) continue;
+    let outs = next.get(ia);
+    if (!outs) { outs = []; next.set(ia, outs); }
+    outs.push({ to: b, toId: ib, used: false });
   }
   const loops: P2[][] = [];
   let open = false;
-  for (const [startKey, outs] of next) {
+  for (const [startId, outs] of next) {
     for (const first of outs) {
       if (first.used) continue;
       const loop: P2[] = [];
-      let edge: { to: P2; toKey: string; used: boolean } | undefined = first;
+      let edge: { to: P2; toId: number; used: boolean } | undefined = first;
       let closed = false;
       while (edge && !edge.used) {
         edge.used = true;
         loop.push(edge.to);
-        if (edge.toKey === startKey) { closed = true; break; }
-        edge = next.get(edge.toKey)?.find((e) => !e.used);
+        if (edge.toId === startId) { closed = true; break; }
+        edge = next.get(edge.toId)?.find((e) => !e.used);
       }
       if (!closed) open = true;
       else if (loop.length >= 3) loops.push(loop);

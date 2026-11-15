@@ -271,7 +271,8 @@ export function registerHostTools(deps: HostToolDeps): void {
       filament: { type: 'string', description: 'Filament type id (3mf-bambu).' },
       plateLayout: { type: 'enum', values: ['separate', 'grid', 'group', 'custom'], description: "Bambu plate layout ('custom' = the user picks a plate per row)." },
       packStrategy: { type: 'enum', values: ['grid', 'horizontal', 'vertical'], description: '3MF packing.' },
-      split: { type: 'object', description: 'Object name or id → "whole" | "pieces" | "parts": one exported object per separate piece / labelled part. A split the object can\'t use falls back to whole once it is measured (listExportItems shows what applies).' },      printPreview: { type: 'boolean', description: 'Open with the Print preview block showing: how a ticked object will print (its colours, layer by layer). 3MF exports only.' },
+      split: { type: 'object', description: 'Object name or id → "whole" | "pieces" | "parts": one exported object per separate piece / labelled part. A split the object can\'t use falls back to whole once it is measured (listExportItems shows what applies).' },
+      printPreview: { type: 'boolean', description: 'Open with the Print preview block showing: how a ticked object will print (its colours, layer by layer). 3MF exports only.' },
     },
     enabled: () => deps.exports.canExport(),
     open: (prefill, ctx) => {

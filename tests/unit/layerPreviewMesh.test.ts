@@ -242,6 +242,57 @@ describe('buildLayerPreviewMesh', () => {
     expect(areaWhere(ts, (t) => Math.abs(t.nz) < 0.5)).toBeCloseTo(200, 4);
   });
 
+  it('with blending, walls are split at the colour changes only, and a cut across mixed faces is still capped', () => {
+    // A gabled house: 10 x 20 footprint, walls to 5 mm, ridge at 10 mm along Y.
+    // The roof planes face up (they blend); the two gable walls are vertical
+    // and share SLOPED edges with the roof, so the two are split differently.
+    const verts = [
+      0, 0, 0, 10, 0, 0, 10, 20, 0, 0, 20, 0,     // 0-3 floor
+      0, 0, 5, 10, 0, 5, 10, 20, 5, 0, 20, 5,     // 4-7 eaves
+      5, 0, 10, 5, 20, 10,                        // 8-9 ridge
+    ];
+    const tris = [
+      0, 2, 1, 0, 3, 2,               // floor (down)
+      0, 1, 5, 0, 5, 4,               // front wall (y = 0)
+      1, 2, 6, 1, 6, 5,               // right wall
+      2, 3, 7, 2, 7, 6,               // back wall
+      3, 0, 4, 3, 4, 7,               // left wall
+      4, 5, 8, 7, 9, 6,               // gables (vertical)
+      5, 6, 9, 5, 9, 8,               // right roof plane
+      7, 4, 8, 7, 8, 9,               // left roof plane
+    ];
+    const house: MeshData = { vertProperties: new Float32Array(verts), triVerts: new Uint32Array(tris), numVert: 10, numTri: tris.length / 3, numProp: 3 };
+    const twoBands = resolveLayerBands('#000000', [{ z: 2, color: '#ffffff' }], 10, P);
+    let asked = 0;
+    // A prediction that changes on every layer: the worst case for splitting.
+    const blend = { transmissionOf: () => 1, maxLayers: 50, minUpNormal: 0.5, colorOnTopOf: (layer: number) => { asked++; return '#' + (0x101010 + layer * 0x030201).toString(16).padStart(6, '0'); } };
+    const opaque = splitMeshByBands(house, { bands: twoBands, profile: P });
+    const blended = splitMeshByBands(house, { bands: twoBands, profile: P, blend });
+    expect(asked).toBeGreaterThan(0);
+    // Only the roof was cut finer: the eight wall triangles, two gables and the floor are as in the opaque split.
+    const wallish = (m: { positions: Float32Array; numTri: number }) => {
+      let n = 0;
+      for (let t = 0; t < m.numTri; t++) {
+        const q = m.positions.subarray(t * 9, t * 9 + 9);
+        const nz = (q[3] - q[0]) * (q[7] - q[1]) - (q[4] - q[1]) * (q[6] - q[0]);
+        const len = Math.hypot((q[4] - q[1]) * (q[8] - q[2]) - (q[5] - q[2]) * (q[7] - q[1]), (q[5] - q[2]) * (q[6] - q[0]) - (q[3] - q[0]) * (q[8] - q[2]), nz);
+        if (nz / len < 0.5) n++;
+      }
+      return n;
+    };
+    expect(wallish(blended)).toBe(wallish(opaque));
+    expect(blended.numTri).toBeGreaterThan(opaque.numTri + 40);
+    // Cuts through the roof cross gables (coarse) and roof planes (fine) at once.
+    for (const cutZ of [5.9, 6.5, 7.3, 8.1, 9.3]) {
+      const r = cutBandMesh(blended, cutZ);
+      expect(r.capped).toBe(true);
+      const cap = trisOf(r.mesh).filter((t) => t.nz > 0.99 && t.z.every((z) => Math.abs(z - r.cutZ!) < 1e-5));
+      // At height h in the roof the section is (10 - 2 (h - 5)) wide and 20 long.
+      // (The outline is taken a hair below the layer top, so on a slope it is a few microns wider.)
+      expect(areaWhere(cap, () => true)).toBeCloseTo((10 - 2 * (r.cutZ! - 5)) * 20, 1);
+    }
+  });
+
   it('handles an empty mesh', () => {
     const empty: MeshData = { vertProperties: new Float32Array(0), triVerts: new Uint32Array(0), numVert: 0, numTri: 0, numProp: 3 };
     expect(buildLayerPreviewMesh(empty, { bands, profile: P })).toMatchObject({ totalLayers: 0, shownLayers: 0, cutZ: null });

@@ -7319,14 +7319,14 @@ async function main() {
       const declared = declaresLayerColors(b.layerColors ?? null) ? b.layerColors! : null;
       const spec = layerColours ? declared : null;
       const blend = view.blend && spec !== null;
-      const key = `${spec ? 'layers' : 'paint'}:${blend}`;
+      const profile = printLayerProfile(spec);
+      const key = `${spec ? 'layers' : 'paint'}:${blend}:${profile.layerHeight}:${profile.firstLayerHeight}`;
       let memo = previewSplits.get(id);
       if (!memo || memo.key !== key) {
         const vp = b.mesh.vertProperties, np = b.mesh.numProp;
         const min: [number, number, number] = [Infinity, Infinity, Infinity];
         const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
         for (let v = 0; v < b.mesh.numVert; v++) for (let a = 0; a < 3; a++) { const c = vp[v * np + a]; if (c < min[a]) min[a] = c; if (c > max[a]) max[a] = c; }
-        const profile = printLayerProfile(spec);
         let split: LayerBandMesh;
         if (spec) {
           const { base, changes } = splitBaseColor(spec, profile, DEFAULT_LAYER_BASE_COLOR);
@@ -7345,6 +7345,9 @@ async function main() {
       const canvas = renderSingleViewCanvas(cut.mesh, {
         elevation: STANDARD_VIEWS.iso.elevation, azimuth: STANDARD_VIEWS.iso.azimuth,
         ortho: STANDARD_VIEWS.iso.ortho, size: view.size, annotations: false,
+        // A small picture of what may be a very large object: draw big ones
+        // from the simplified proxy, so dragging the slider stays responsive.
+        thumbnail: true,
         // Framed on the whole object, so scrubbing the layers doesn't move the camera.
         frame: memo.frame,
       });
@@ -26863,6 +26866,13 @@ async function main() {
       syncClipSliderBounds();
       // The run just redrew the model in its own colours; put the print
       // preview back on top when it is on, and let an open panel refresh.
+      // A panel draft is an edit of api.print.layerColors. If this run turned
+      // the object into a layered photo print (whose swaps are read-only here),
+      // the draft no longer has anything to edit.
+      if (currentLayeredPlan && !currentLayerColors && printPreviewDraft) {
+        printPreviewDraft = null;
+        printPreviewDraftScope = null;
+      }
       showPrintPreviewIfActive();
       onPrintPreviewChange?.();
       // A fresh run replaces the geometry, so any simplify baseline is stale.

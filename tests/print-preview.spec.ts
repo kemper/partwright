@@ -174,6 +174,14 @@ test.describe('Print preview', () => {
     // Scrub to layer 45 and turn blending on: the frame is redrawn, the export choices are untouched.
     await block.locator('[data-export-print-preview-layer]').fill('45');
     await expect(block.locator('[data-export-print-preview-readout]')).toHaveText('45 of 120, 9 mm');
+    // Typing a layer and pressing Enter is about the preview: it must not press Export.
+    const box = block.locator('[data-export-print-preview-layer-input]');
+    await box.fill('30');
+    await box.press('Enter');
+    await expect(block.locator('[data-export-print-preview-readout]')).toHaveText('30 of 120, 6 mm');
+    await expect(modal).toBeVisible();
+    await block.locator('[data-export-print-preview-layer]').fill('45');
+    await expect(block.locator('[data-export-print-preview-readout]')).toHaveText('45 of 120, 9 mm');
     await block.locator('[data-export-print-preview-blend]').check();
     await expect(block.locator('[data-export-print-preview-stage] canvas')).toBeVisible();
     await page.screenshot({ path: 'test-results/export-print-preview-cut.png' });
