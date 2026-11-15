@@ -216,7 +216,10 @@ import { meshBounds } from './color/slabPaint';
 import { openReliefImportModal, type ReliefStagedOptions } from './ui/reliefImportModal';
 import { solveLayeredPrintAsync } from './relief/layeredPrint/layeredPrintClient';
 import { layeredPrintMeshData, buildPlan3MF } from './relief/layeredPrint/export3mf';
-import { layeredPrintRecord, layeredPrintSeedRegions, planMeshMismatch, planSwaps, planSwapText } from './relief/layeredPrint/plan';
+import { layeredPrintRecord, layeredPrintZRegions, planSwaps, planSwapText } from './relief/layeredPrint/plan';
+import { layeredPrintCode, planToScheduleOption } from './relief/layeredPrint/sandboxApi';
+import { setModelImageProvider, hashImagePixels, type ModelImage } from './geometry/modelImages';
+import type { LayeredPrintPlanRecord } from './relief/types';
 import { LAYERED_PRINT_FILAMENT_LIBRARY, type LayeredPrintFilament } from './relief/layeredPrint/filamentLibrary';
 import { DEFAULT_LAYERED_PRINT_OPTIONS, type LayeredPrintOptions, type LayeredPrintResult } from './relief/layeredPrint/solver';
 import { openLayeredPrintModal } from './ui/layeredPrintModal';
@@ -483,6 +486,81 @@ import { extractPositions, maxEdgeLength, minEdgeLength, estimateRefineTriangles
 
 /** The viewport clip-plane Z slider + typed box (bound in initClipControls). */
 let clipZEntry: SliderEntry | null = null;
+
+/** Swap plan recorded by the last successful run's `api.layeredPrint` (null
+ *  when the model has none). Module scope: set by the run handler, read by the
+ *  layered-print API, export and colouring. */
+let currentLayeredPlan: LayeredPrintPlanRecord | null = null;
+
+/** Blob or URL → ImageBitmap. URLs load through an <img> (the CSP blocks
+ *  fetch() of data: URLs; http sources need CORS). */
+async function loadPhotoBitmap(src: Blob | string): Promise<ImageBitmap> {
+  if (typeof src !== 'string') return createImageBitmap(src);
+  const img = new Image();
+  if (!src.startsWith('data:') && !src.startsWith('blob:')) img.crossOrigin = 'anonymous';
+  img.src = src;
+  await img.decode();
+  return createImageBitmap(img);
+}
+
+/** Decode a photo (data:/blob:/http URL, Blob or File) for a layered print:
+ *  downscale to App Config's longest side, re-encode as a JPEG data URL (what
+ *  is stored as the session attachment) and return the RGBA of THAT encoding,
+ *  so the dialog's solve and the model's run see identical pixels. */
+async function decodePhotoForLayeredPrint(src: Blob | string): Promise<{ image: ImageData; dataUrl: string }> {
+  const bitmap = await loadPhotoBitmap(src);
+  const maxPx = getConfig().import.layeredPrintMaxImagePx;
+  const scale = Math.min(1, maxPx / Math.max(bitmap.width, bitmap.height));
+  const w = Math.max(2, Math.round(bitmap.width * scale)), h = Math.max(2, Math.round(bitmap.height * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas unavailable');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  bitmap.close();
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+  return { image: await decodeAttachmentPixels(dataUrl), dataUrl };
+}
+
+/** Attachment src → RGBA (no resize — attachments made for layered prints are
+ *  already downscaled; others are capped to the same longest side). */
+async function decodeAttachmentPixels(src: string): Promise<ImageData> {
+  const bitmap = await loadPhotoBitmap(src);
+  const maxPx = getConfig().import.layeredPrintMaxImagePx;
+  const scale = Math.min(1, maxPx / Math.max(bitmap.width, bitmap.height));
+  const w = Math.max(2, Math.round(bitmap.width * scale)), h = Math.max(2, Math.round(bitmap.height * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas unavailable');
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  bitmap.close();
+  return ctx.getImageData(0, 0, w, h);
+}
+
+/** Decoded attachments for api.image, cached per id + src. */
+const modelImageCache = new Map<string, { src: string; image: ModelImage }>();
+setModelImageProvider(async (ids) => {
+  const out: ModelImage[] = [];
+  for (const id of ids) {
+    const att = _getAttachments().find((a) => a.id === id && a.kind === 'image');
+    if (!att) continue;
+    const hit = modelImageCache.get(id);
+    if (hit && hit.src === att.src) { out.push(hit.image); continue; }
+    try {
+      const img = await decodeAttachmentPixels(att.src);
+      const data = new Uint8ClampedArray(img.data);
+      const image: ModelImage = { id, width: img.width, height: img.height, data, hash: hashImagePixels(img.width, img.height, data) };
+      modelImageCache.set(id, { src: att.src, image });
+      out.push(image);
+    } catch (e) {
+      errorLog.capture({ level: 'warn', source: 'import', message: `api.image('${id}'): could not decode the attachment`, detail: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return out;
+});
 
 // === Attachment helpers (shared by the setImages/addImage + setAttachments/
 // addAttachment API methods) ===
@@ -4029,6 +4107,15 @@ async function main() {
     const { labelColors, labelMap, paintOps } = result;
     const layer: ColorRegion[] = [];
     let order = 0;
+    if (result.layeredPrint) {
+      for (const g of layeredPrintZRegions(mesh, result.layeredPrint as LayeredPrintPlanRecord)) {
+        layer.push({
+          id: order, name: g.name, color: g.color, source: 'model',
+          descriptor: { kind: 'triangles', ids: [...g.triangles] },
+          order: order++, visible: true, triangles: g.triangles,
+        });
+      }
+    }
     if (labelColors && labelMap && labelColors.size > 0) {
       for (const [name, color] of labelColors) {
         const tris = labelMap.get(name);
@@ -4633,38 +4720,10 @@ async function main() {
     return commitGeneratedRelief(result, opts, sourceName, sourceFile, true, interactive);
   }
 
-  // === HueForge-style filament layering (photo → swap schedule + heightmap) ===
-  /** Turn a finished solve into a new relief session: the heightmap mesh (a
-   *  real Manifold — it's watertight), painted with the predicted print
-   *  colours, plus the plan record the layer-swap 3MF export needs. */
-  async function commitLayeredPrintResult(result: LayeredPrintResult, sourceName: string): Promise<{ sessionId: string }> {
-    const md = layeredPrintMeshData(result);
-    const record = layeredPrintRecord(result);
-    const mesh: ImportedMesh = {
-      id: generateId(),
-      filename: `${sourceName}-layered-print`,
-      format: 'relief',
-      vertProperties: md.vertProperties,
-      triVerts: md.triVerts,
-      numVert: md.numVert,
-      numTri: md.numTri,
-      numProp: md.numProp,
-    };
-    // Function seeder: resolved against the mesh after Manifold.ofMesh, which
-    // may reorder triangles.
-    const { sessionId } = await importMeshPayload(mesh, sourceName, { manifold: true, seedRegions: (m) => layeredPrintSeedRegions(m, record) });
-    setReliefSettings(sessionId, {
-      // Not a Relief Studio session: the studio's painted-plateau swap guide,
-      // optical previews and layer-height field would contradict the solved
-      // plan. The plan is read through getLayeredPrintPlan / the export.
-      isRelief: false,
-      layerHeight: record.layerHeight,
-      baseThickness: record.firstLayerHeight,
-      previewMode: 'flat',
-      layeredPrint: record,
-    });
-    return { sessionId };
-  }
+  // === Layered (HueForge-style) filament prints — code-native ===
+  // The print lives in model code: `api.layeredPrint(api.image('<attachment
+  // id>'), {..., schedule})`. The photo is a session attachment; the engine
+  // Worker solves the heights (memoized) and returns the plan with the run.
 
   /** Size guards from App Config, passed into every solve. */
   function layeredPrintLimits(): Pick<LayeredPrintOptions, 'maxCells' | 'maxLayers'> {
@@ -4672,18 +4731,38 @@ async function main() {
     return { maxCells: c.layeredPrintMaxCells, maxLayers: c.layeredPrintMaxLayers };
   }
 
-  /** The current session's layered-print plan, or null. */
-  function currentLayeredPrintPlan() {
-    const sid = getState().session?.id ?? null;
-    return sid ? getReliefSettings(sid)?.layeredPrint ?? null : null;
+  /** The plan recorded by the last successful run, or null. */
+  function currentLayeredPrintPlan(): LayeredPrintPlanRecord | null {
+    return currentLayeredPlan;
+  }
+
+  /** Create a fresh session whose code is the layered print, with the photo
+   *  as its attachment, run it, and save v1. */
+  async function createLayeredPrintSession(photoDataUrl: string, result: LayeredPrintResult, name: string): Promise<{ sessionId: string }> {
+    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
+    const session = await createSession(name, 'manifold-js', name);
+    cancelVoxelPaintIfActive();
+    dropPaintState();
+    setActiveImports([]);
+    const photo = normalizeAttachment({ src: photoDataUrl, kind: 'image', mediaType: 'image/jpeg', label: `${name} photo`, description: 'Source photo for the layered print (read by api.image in the model code).', addedAt: Date.now(), source: 'user' }, generateId());
+    commitAttachments([photo]);
+    const code = layeredPrintCode(photo.id, result.options, layeredPrintRecord(result));
+    setValue(code);
+    const ok = await runCodeSync(code);
+    if (!ok || !currentLayeredPlan) throw new Error('the layered-print model did not run — see the editor error');
+    const thumbnail = await captureThumbnail();
+    const geometryData = enrichGeometryDataWithColors(getGeometryDataObj());
+    await saveVersion(code, geometryData, thumbnail, 'layered print', undefined, { force: true });
+    return { sessionId: session.id };
   }
 
   function openLayeredPrintDialog(initialSrc?: string): void {
     openLayeredPrintModal({
       initialSrc,
+      decode: (src) => decodePhotoForLayeredPrint(src),
       solve: (image, options, signal) => solveLayeredPrintAsync(image, { ...options, ...layeredPrintLimits() }, signal),
-      onCreate: async (result, name) => {
-        await commitLayeredPrintResult(result, name);
+      onCreate: async (result, name, photoDataUrl) => {
+        await createLayeredPrintSession(photoDataUrl, result, name);
         showToast(`Layered print created — ${result.blocks.length} filaments, ${result.swaps.length} swaps`, { variant: 'success', source: 'import' });
       },
       onDownload: (result, swapMode, printer) => {
@@ -17631,7 +17710,8 @@ async function main() {
       });
       if (typeof checked === 'object' && checked !== null && 'error' in checked) return checked;
       try {
-        const image = await dataUrlToImageData(args.src);
+        const photo = await decodePhotoForLayeredPrint(args.src);
+        const image = photo.image;
         const options: Partial<LayeredPrintOptions> = {
           numColors: args.colors, widthMm: args.widthMm, maxHeightMm: args.maxHeightMm, baseHeightMm: args.baseHeightMm,
           layerHeight: args.layerHeight, firstLayerHeight: args.firstLayerHeight, pixelSizeMm: args.pixelSizeMm,
@@ -17641,8 +17721,8 @@ async function main() {
           ...layeredPrintLimits(),
         };
         const result = await solveLayeredPrintAsync(image, options);
-        const { sessionId } = await commitLayeredPrintResult(result, args.name ?? 'layered-print');
-        const plan = layeredPrintRecord(result);
+        const { sessionId } = await createLayeredPrintSession(photo.dataUrl, result, args.name ?? 'layered-print');
+        const plan = currentLayeredPlan ?? layeredPrintRecord(result);
         return { sessionId, ...plan, swaps: planSwaps(plan) };
       } catch (e) {
         return { error: `createLayeredPrint failed: ${e instanceof Error ? e.message : String(e)}` };
@@ -17652,8 +17732,8 @@ async function main() {
      *  printable instruction text. */
     getLayeredPrintPlan(): unknown {
       const plan = currentLayeredPrintPlan();
-      if (!plan) return { error: 'getLayeredPrintPlan: no layered-print plan for the current session on this device — create one with createLayeredPrint({src}). (Plans are kept in this browser, so a session imported from a file or share link has none.)' };
-      return { ...plan, swaps: planSwaps(plan), instructions: planSwapText(plan) };
+      if (!plan) return { error: 'getLayeredPrintPlan: the current model has no api.layeredPrint(...) — create one with createLayeredPrint({src}), or run the model if it does.' };
+      return { ...plan, swaps: planSwaps(plan), schedule: planToScheduleOption(plan), instructions: planSwapText(plan) };
     },
     /** The built-in filament list createLayeredPrint picks from (name, hex, TD mm). */
     listLayeredPrintFilaments(): LayeredPrintFilament[] {
@@ -17674,9 +17754,7 @@ async function main() {
       });
       if (typeof checked === 'object' && checked !== null && 'error' in checked) return checked;
       const plan = currentLayeredPrintPlan();
-      if (!plan || !currentMeshData) return { error: 'exportLayeredPrint3MF: no layered-print plan for the current session on this device — create one with createLayeredPrint({src}). (Plans are kept in this browser, so a session imported from a file or share link has none.)' };
-      const mismatch = planMeshMismatch(plan, currentMeshData);
-      if (mismatch) return { error: `exportLayeredPrint3MF: ${mismatch}` };
+      if (!plan || !currentMeshData) return { error: 'exportLayeredPrint3MF: the current model has no api.layeredPrint(...) — create one with createLayeredPrint({src}), or run the model if it does.' };
       try {
         const built = buildPlan3MF(plan, currentMeshData, { swapMode: args?.swapMode ?? 'ams', printer: args?.printer, nozzle: args?.nozzle, name: args?.filename ?? 'layered-print' });
         downloadBlob(built.blob, built.filename, '3MF');
@@ -26068,6 +26146,15 @@ async function main() {
       // This layer never locks the editor and is never serialized; the user's
       // manual paint composites on top of it. See src/color/regions.ts.
       const modelColorDecls: { name: string; color: [number, number, number]; triangles: Set<number>; descriptor?: RegionDescriptor; perTriColors?: Map<number, [number, number, number]> }[] = [];
+      // Layered print (api.layeredPrint): colour the whole model by height the
+      // way the filament swaps will print it. Pushed first so api.label colours
+      // and api.paint.* (pushed after) draw on top.
+      currentLayeredPlan = (result.layeredPrint as LayeredPrintPlanRecord | undefined) ?? null;
+      if (currentLayeredPlan && result.mesh) {
+        for (const g of layeredPrintZRegions(result.mesh, currentLayeredPlan)) {
+          modelColorDecls.push({ ...g, descriptor: { kind: 'triangles', ids: [...g.triangles] } });
+        }
+      }
       if (result.labelColors && currentLabelMap) {
         for (const [name, color] of result.labelColors) {
           const triangles = currentLabelMap.get(name);

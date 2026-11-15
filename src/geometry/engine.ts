@@ -8,6 +8,7 @@ import { replicadEngine } from './engines/replicad';
 import { voxelEngine } from './engines/voxel';
 import { cloneImportForWorker, getActiveImports, type ImportedMesh } from '../import/importedMesh';
 import { getCompanionFiles } from '../import/companionFiles';
+import { collectModelImages, sourceImageRefs } from './modelImages';
 import { getDefaultCircularSegments } from './qualitySettings';
 import { getConfig } from '../config/appConfig';
 import type { ManifoldFacts } from './manifoldFacts';
@@ -530,6 +531,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       paintOps: (msg.paintOps as MeshResult['paintOps']) ?? undefined,
       surfaceOps: (msg.surfaceOps as MeshResult['surfaceOps']) ?? undefined,
       materialSpec: msg.materialSpec ?? undefined,
+      layeredPrint: msg.layeredPrint ?? undefined,
       renderOnly: !!msg.renderOnly,
       lostLabels: lostLabels && lostLabels.length > 0 ? lostLabels : undefined,
       // The validator's normalized schema (re-run through normalizeParamSchema),
@@ -804,6 +806,8 @@ export async function executeCodeAsync(
   // specific version's code without disturbing — or depending on — the live
   // active-imports register, which another tab/run may be mutating.
   const imports = (explicitImports ?? getActiveImports()).map(cloneImportForWorker);
+  // Attachment images the code reads via api.image('<id>') (none otherwise).
+  const images = l === 'manifold-js' && sourceImageRefs(source).length > 0 ? await collectModelImages(source) : [];
 
   return new Promise<MeshResult>((resolve, reject) => {
     // No hard timeout on the render path: a slow model is bounded by the user,
@@ -826,7 +830,7 @@ export async function executeCodeAsync(
     // figures rough out fast. The Worker further gates on the source actually
     // doing an SDF `.build()`, so non-SDF code never pays for a second pass.
     const sdfPreviewScale = (onPreview && l === 'manifold-js') ? getConfig().renderer.sdfPreviewScale : undefined;
-    worker.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, manifoldFactsMinTriangles: getConfig().renderer.lazyManifoldMinTriangles, voxelSdfMaxSamples: getConfig().import.voxelSdfMaxSamples, containmentSamples: getConfig().renderer.containmentSamples, modelLog: { maxLines: getConfig().renderer.modelLogMaxLines, maxChars: getConfig().renderer.modelLogMaxChars }, ...(sdfPreviewScale ? { sdfPreviewScale } : {}), ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
+    worker.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, manifoldFactsMinTriangles: getConfig().renderer.lazyManifoldMinTriangles, voxelSdfMaxSamples: getConfig().import.voxelSdfMaxSamples, containmentSamples: getConfig().renderer.containmentSamples, modelLog: { maxLines: getConfig().renderer.modelLogMaxLines, maxChars: getConfig().renderer.modelLogMaxChars }, ...(sdfPreviewScale ? { sdfPreviewScale } : {}), ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}), ...(images.length > 0 ? { images, layeredPrintMaxCells: getConfig().import.layeredPrintMaxCells, layeredPrintMaxLayers: getConfig().import.layeredPrintMaxLayers } : {}) });
   });
 }
 

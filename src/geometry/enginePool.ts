@@ -24,6 +24,7 @@ import type { MeshData } from './types';
 import { cloneImportForWorker, type ImportedMesh } from '../import/importedMesh';
 import { createEngineWorker, isEngineSandboxUnavailableError, type EngineWorkerHandle } from '../sandbox/sandboxHost';
 import { checkEngineWorkerMessage } from './workerMessageValidation';
+import { collectModelImages, sourceImageRefs } from './modelImages';
 import { reportLockdownRefusal } from './lockdownRefusalLog';
 import { errorLog } from '../diagnostics/errorLog';
 import { getEngineTrustDomain, onEngineTrustDomainChange } from './trustDomain';
@@ -37,6 +38,8 @@ export interface PoolBuildRequest {
   imports?: ImportedMesh[];
   /** SCAD companion files (MEMFS path → source). */
   companionFiles?: Record<string, string>;
+  /** Decoded attachment images for api.image (filled in by buildInPool). */
+  images?: import('./modelImages').ModelImage[];
   /** Fired the moment a free worker picks this job up off the queue (i.e. the
    *  part actually starts meshing, as opposed to waiting behind others). Lets a
    *  per-part progress UI flip a row from "queued" to "rendering". */
@@ -258,7 +261,7 @@ function dispatch(pw: PoolWorker, job: Job): void {
   // The job left the queue for a real worker — a per-part progress UI reads this
   // as "rendering started". Guarded so a throwing callback can't wedge dispatch.
   try { job.req.onStart?.(); } catch { /* progress callback must not break dispatch */ }
-  const { code, lang, params, imports, companionFiles } = job.req;
+  const { code, lang, params, imports, companionFiles, images } = job.req;
   const wireImports = (imports ?? []).map(cloneImportForWorker);
   pw.worker.postMessage({
     type: 'execute',
@@ -270,6 +273,7 @@ function dispatch(pw: PoolWorker, job: Job): void {
     params: params ?? null,
     voxelSdfMaxSamples: getConfig().import.voxelSdfMaxSamples,
     ...(companionFiles && Object.keys(companionFiles).length > 0 ? { companionFiles } : {}),
+    ...(images && images.length > 0 ? { images, layeredPrintMaxCells: getConfig().import.layeredPrintMaxCells, layeredPrintMaxLayers: getConfig().import.layeredPrintMaxLayers } : {}),
   });
 }
 
@@ -278,6 +282,11 @@ function dispatch(pw: PoolWorker, job: Job): void {
 export function buildInPool(req: PoolBuildRequest): Promise<PoolBuildResult> {
   if ((req.domain ?? getEngineTrustDomain()) !== getEngineTrustDomain()) {
     return Promise.reject(new Error('Build cancelled — the session changed before it ran'));
+  }
+  // Code that reads attachment images (api.image('<id>')) needs them decoded
+  // first; everything else queues synchronously, as before.
+  if (req.lang === 'manifold-js' && !req.images && sourceImageRefs(req.code).length > 0) {
+    return collectModelImages(req.code).then((images) => buildInPool({ ...req, images }));
   }
   ensureWorkers();
   return new Promise<PoolBuildResult>((resolve, reject) => {

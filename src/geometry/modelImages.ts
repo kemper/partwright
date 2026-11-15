@@ -1,0 +1,65 @@
+// Images that model code can read: `api.image(id)` resolves a session
+// attachment (by id) to decoded RGBA pixels. LEAF module — shared by the main
+// thread (which decodes attachments and ships the referenced ones with each
+// execute message) and the engine Worker (which installs them for the run).
+//
+// Pixels travel only when the code mentions `api.image(` — `sourceImageRefs`
+// finds the ids — so ordinary models pay nothing.
+
+export interface ModelImage {
+  id: string;
+  width: number;
+  height: number;
+  /** RGBA, row 0 = top of the image. */
+  data: Uint8ClampedArray;
+  /** Content hash (dims + sampled pixels) — the solve-cache key. */
+  hash: string;
+}
+
+/** Attachment ids named by literal `api.image('<id>')` calls in `code`. */
+export function sourceImageRefs(code: string): string[] {
+  const out = new Set<string>();
+  const re = /\bapi\.image\(\s*(['"`])([^'"`\n]{1,200})\1\s*\)/g;
+  for (let m = re.exec(code); m; m = re.exec(code)) out.add(m[2]);
+  return [...out];
+}
+
+/** Cheap content hash: dimensions + a strided FNV-1a over the pixels. */
+export function hashImagePixels(width: number, height: number, data: Uint8ClampedArray): string {
+  let h = 0x811c9dc5 ^ width ^ (height << 16);
+  const step = Math.max(1, Math.floor(data.length / 65536));
+  for (let i = 0; i < data.length; i += step) {
+    h ^= data[i];
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return `${width}x${height}:${h.toString(16)}:${data.length}`;
+}
+
+// ── Worker-side registry for the current run ────────────────────────────────
+
+let active = new Map<string, ModelImage>();
+
+export function setActiveModelImages(images: ModelImage[] | undefined): void {
+  active = new Map((images ?? []).map((im) => [im.id, im]));
+}
+
+export function getActiveModelImage(id: string): ModelImage | null {
+  return active.get(id) ?? null;
+}
+
+// ── Main-thread provider (registered by main.ts) ────────────────────────────
+
+type Provider = (ids: string[]) => Promise<ModelImage[]>;
+let provider: Provider | null = null;
+
+export function setModelImageProvider(p: Provider | null): void {
+  provider = p;
+}
+
+/** Decoded images for the attachment ids `code` references (empty when the
+ *  code names none or no provider is registered, e.g. in Node). */
+export async function collectModelImages(code: string): Promise<ModelImage[]> {
+  const ids = sourceImageRefs(code);
+  if (ids.length === 0 || !provider) return [];
+  return provider(ids);
+}

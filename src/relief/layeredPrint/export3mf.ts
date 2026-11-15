@@ -7,7 +7,7 @@ import type { BuiltExport } from '../../export/gltf';
 import type { MeshData } from '../../geometry/types';
 import type { LayeredPrintResult } from './solver';
 import { layeredPrintMesh } from './mesh';
-import { layeredPrintRecord, planToLayerSwapPlan } from './plan';
+import { layeredPrintRecord, planSwaps } from './plan';
 import type { LayeredPrintPlanRecord } from '../types';
 
 export type LayeredPrintSwapMode = LayerSwapPlan['swapMode'];
@@ -48,4 +48,16 @@ export function buildPlan3MF(plan: LayeredPrintPlanRecord, mesh: MeshData, opts:
     filament: 'pla',
     layerPlan: planToLayerSwapPlan(plan, opts.swapMode ?? 'ams'),
   });
+}
+
+export function planToLayerSwapPlan(p: LayeredPrintPlanRecord, swapMode: LayerSwapPlan['swapMode']): LayerSwapPlan {
+  return {
+    filamentColors: p.blocks.map((b) => b.hex),
+    filamentNames: p.blocks.map((b) => b.name),
+    changes: planSwaps(p).map((s, i) => ({ z: s.z, filament: i + 2 })),
+    layerHeight: p.layerHeight,
+    firstLayerHeight: p.firstLayerHeight,
+    swapMode,
+    infillDensity: '100%',
+  };
 }

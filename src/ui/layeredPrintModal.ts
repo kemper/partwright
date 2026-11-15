@@ -14,36 +14,12 @@ import type { LayeredPrintSwapMode } from '../relief/layeredPrint/export3mf';
 export interface LayeredPrintModalOptions {
   /** Image URL (data: / blob: / http) to preload. */
   initialSrc?: string;
+  /** Decode + downscale a photo; `dataUrl` is what gets attached to the session. */
+  decode: (src: Blob | string) => Promise<{ image: ImageData; dataUrl: string }>;
   solve: (image: RgbaImage, options: Partial<LayeredPrintOptions>, signal: AbortSignal) => Promise<LayeredPrintResult>;
-  onCreate: (result: LayeredPrintResult, name: string) => Promise<void>;
+  /** Open the solved print as a new code session with the photo attached. */
+  onCreate: (result: LayeredPrintResult, name: string, photoDataUrl: string) => Promise<void>;
   onDownload: (result: LayeredPrintResult, swapMode: LayeredPrintSwapMode, printer: string) => void;
-}
-
-/** Longest side the photo is decoded at — the solver's grid is far coarser. */
-const MAX_DECODE_PX = 1600;
-
-async function decodeToImageData(src: Blob | string): Promise<{ image: ImageData; name: string }> {
-  let bitmap: ImageBitmap;
-  let name = 'layered-print';
-  if (typeof src === 'string') {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.src = src;
-    await img.decode();
-    bitmap = await createImageBitmap(img);
-  } else {
-    bitmap = await createImageBitmap(src);
-    if (src instanceof File) name = src.name.replace(/\.[^.]+$/, '') || name;
-  }
-  const scale = Math.min(1, MAX_DECODE_PX / Math.max(bitmap.width, bitmap.height));
-  const w = Math.max(2, Math.round(bitmap.width * scale)), h = Math.max(2, Math.round(bitmap.height * scale));
-  const canvas = document.createElement('canvas');
-  canvas.width = w; canvas.height = h;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('Canvas unavailable');
-  ctx.drawImage(bitmap, 0, 0, w, h);
-  bitmap.close();
-  return { image: ctx.getImageData(0, 0, w, h), name };
 }
 
 function numberField(label: string, value: number, min: number, max: number, step: number, hint: string): { row: HTMLElement; input: HTMLInputElement } {
@@ -152,6 +128,7 @@ export function openLayeredPrintModal(opts: LayeredPrintModalOptions): void {
   shell.footer.append(cancelBtn, solveBtn, downloadBtn, createBtn);
 
   let image: ImageData | null = null;
+  let photoDataUrl = '';
   let name = 'layered-print';
   let result: LayeredPrintResult | null = null;
 
@@ -226,9 +203,10 @@ export function openLayeredPrintModal(opts: LayeredPrintModalOptions): void {
   async function load(src: Blob | string): Promise<void> {
     try {
       status.textContent = 'Loading photo…';
-      const d = await decodeToImageData(src);
+      const d = await opts.decode(src);
       image = d.image;
-      name = d.name;
+      photoDataUrl = d.dataUrl;
+      if (src instanceof File) name = src.name.replace(/\.[^.]+$/, '') || name;
       fileName.textContent = src instanceof File ? src.name : 'Attached image';
       await runSolve();
     } catch (e) {
@@ -244,7 +222,7 @@ export function openLayeredPrintModal(opts: LayeredPrintModalOptions): void {
     syncButtons(true);
     status.textContent = 'Building the model…';
     try {
-      await opts.onCreate(result, name);
+      await opts.onCreate(result, name, photoDataUrl);
       shell.close();
     } catch (e) {
       status.textContent = `Could not create the model: ${e instanceof Error ? e.message : String(e)}`;

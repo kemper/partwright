@@ -48,8 +48,25 @@ test.describe('Layered print from photo', () => {
       const bad = await pw.createLayeredPrint({ src, colors: 99 });
       const created = await pw.createLayeredPrint({ src, colors: 5, widthMm: 60, pixelSizeMm: 0.5, maxHeightMm: 2, effort: 0.3, name: 'hf spec' });
       const plan = pw.getLayeredPrintPlan();
-      return { bad, created, plan };
+      const code: string = pw.getCode();
+      const images = pw.getImages();
+      // Edit the pinned schedule in code: move the top filament up one layer.
+      const last = plan.schedule[plan.schedule.length - 1];
+      const edited = code.replace(`layer: ${last.layer} }`, `layer: ${last.layer + 1} }`);
+      const ran = await pw.run(edited);
+      const replanned = pw.getLayeredPrintPlan();
+      // Compose: a frame around the print still runs and keeps one plan.
+      const framed = await pw.run(edited.replace('return print;', 'return print.add(api.Manifold.cube([64, 4, 1]).translate([-32, -26, 0]));'));
+      return { bad, created, plan, code, images, ran, replanned, framed, framedPlan: pw.getLayeredPrintPlan() };
     }, src);
+
+    expect(res.code).toMatch(/api\.layeredPrint\(api\.image\('/);
+    expect(res.code).toMatch(/schedule: \[/);
+    expect(res.images).toHaveLength(1);
+    expect(res.ran.error ?? null).toBeNull();
+    expect(res.replanned.schedule.at(-1).layer).toBe(res.plan.schedule.at(-1).layer + 1);
+    expect(res.framed.error ?? null).toBeNull();
+    expect(res.framedPlan.blocks.length).toBe(res.plan.blocks.length);
 
     expect(res.bad.error).toMatch(/colors/);
     expect(res.created.error).toBeUndefined();
@@ -64,7 +81,7 @@ test.describe('Layered print from photo', () => {
     expect(exp.error).toBeUndefined();
     const dl = await download;
     expect(dl.suggestedFilename()).toMatch(/\.3mf$/);
-    expect(exp.swaps).toBe(res.created.swaps.length);
+    expect(exp.swaps).toBe(res.framedPlan.blocks.length - 1);
   });
 
   test('dialog previews the predicted print and opens it in the editor', async ({ page }) => {

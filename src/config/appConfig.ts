@@ -432,6 +432,8 @@ export interface AppConfig {
     layeredPrintMaxCells: number;
     /** Max print layers a layered photo print may use (maxHeight ÷ layer height). */
     layeredPrintMaxLayers: number;
+    /** Longest side (px) a layered-print photo is stored and solved at. */
+    layeredPrintMaxImagePx: number;
     /** Max objects one import may be split into (a multi-object 3MF imported
      *  one object per 3MF object / plate, or an STL split into one object per
      *  piece). Each becomes its own object with a version, so this bounds the
@@ -924,6 +926,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     threeMfMaxColors: 256,
     layeredPrintMaxCells: 1_000_000,
     layeredPrintMaxLayers: 160,
+    layeredPrintMaxImagePx: 1600,
     maxSplitObjects: 100,
     maxImportFiles: 50,
     multiImportGridGap: 0.2,

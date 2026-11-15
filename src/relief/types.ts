@@ -314,9 +314,6 @@ export interface ReliefSettings {
   baseThickness: number;
   previewMode: PreviewMode;
   options?: ReliefOptions;
-  /** Set for HueForge-style filament-layering reliefs (createLayeredPrint): the
-   *  solved swap schedule, which the layer-swap 3MF export needs. */
-  layeredPrint?: LayeredPrintPlanRecord;
   // The source image is NOT kept here — photos can exceed the localStorage
   // quota, so it lives in IndexedDB (the `reliefSources` store, see
   // src/relief/reliefSource.ts), keyed by session id like these settings.

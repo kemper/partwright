@@ -2522,7 +2522,7 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: 'createLayeredPrint',
-    description: "Turn a photo into a HueForge-style FILAMENT-LAYERING print (thin translucent layers, filament swapped at chosen heights, so a few filaments blend into many shades) in a NEW session. REQUIRES USER CONFIRMATION — only call when the user asked for a HueForge / filament-swap / layered colour print from an image. The solver picks the filaments (from the built-in list, or `filaments` = the user's own spools with TD values), their order, the swap layers, and every pixel's height; `colors` is the MAXIMUM filament count (swaps that barely help are dropped). Image: `imageRef` (1-based, from getReferenceImages) OR `src`. Returns { sessionId, blocks, totalLayers, totalHeightMm, meanDeltaE, swaps } — meanDeltaE under ~10 is a good match. The new session is painted with the predicted look, so renderView shows the expected print. Then exportLayeredPrint3MF to give the user a 3MF with the swaps built in. Raise maxHeightMm (e.g. 3.2) for more shades; colourful photos need 8–10 colours.",
+    description: "Turn a photo into a HueForge-style FILAMENT-LAYERING print (thin translucent layers, filament swapped at chosen heights, so a few filaments blend into many shades) in a NEW session. REQUIRES USER CONFIRMATION — only call when the user asked for a HueForge-style / filament-swap / layered colour print from an image. The solver picks the filaments (built-in list, or `filaments` = the user's own spools with TD values), their order, the swap layers, and every pixel's height; `colors` is the MAXIMUM filament count. Image: `imageRef` (1-based, from getReferenceImages) OR `src`. The result is CODE: the photo becomes a session attachment and the model is `api.layeredPrint(api.image('<id>'), {..., schedule: [{name, hex, td, layer}]})` with the solved schedule pinned — edit it with runCode/runAndSave to change a filament or move a swap (layer = 1-based slicer layer it starts on), compose it (frame, hanging hole, text), or delete `schedule` to re-solve. Returns { sessionId, blocks, totalLayers, totalHeightMm, meanDeltaE, swaps } — meanDeltaE under ~10 is a good match. The model is coloured by height as it will print, so renderView shows the expected result. Then exportLayeredPrint3MF. Raise maxHeightMm (e.g. 3.2) for more shades; colourful photos need 8–10 colours.",
     input_schema: {
       type: 'object',
       properties: {
@@ -2546,7 +2546,7 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: 'getLayeredPrintPlan',
-    description: 'The current layered print: filaments bottom→top with TD, swap layers + heights, size, predicted ΔE, and a printable instructions text. Errors when the session is not a layered print.',
+    description: "The current model's layered print (from api.layeredPrint in its code, as of the last run): filaments bottom→top with TD, swap layers + heights, size, predicted ΔE, a printable instructions text, and `schedule` — the exact array to paste into api.layeredPrint's `schedule` option to pin or edit the plan. Errors when the model has no layered print.",
     input_schema: { type: 'object', properties: {} },
   },
   {

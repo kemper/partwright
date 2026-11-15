@@ -58,6 +58,11 @@ export interface LayeredPrintOptions {
   /** A filament swap is dropped when removing it raises the mean colour error
    *  by less than this (ΔE). 0 drops only swaps whose removal doesn't hurt. */
   pruneDeltaE: number;
+  /** Pinned swap schedule: use exactly these filaments from these layers
+   *  (`startLayer` 0-based; the first block starts at 0) and solve only the
+   *  per-pixel heights. Skips the filament/swap search, so it's fast and
+   *  makes the plan editable ("move black up 3 layers"). */
+  schedule?: ReadonlyArray<{ filament: LayeredPrintFilament; startLayer: number }>;
   /** Refuse grids larger than this many cells (memory / mesh-size guard). */
   maxCells: number;
   /** Refuse plans with more print layers than this. */
@@ -585,6 +590,7 @@ export function resolveLayeredPrintOptions(o: Partial<LayeredPrintOptions> = {})
     maxHeightMm,
     baseHeightMm: num(o.baseHeightMm, d.baseHeightMm, firstLayerHeight, maxHeightMm),
     filaments: o.filaments,
+    schedule: o.schedule,
     baseFilament: o.baseFilament,
     chromaWeight: num(o.chromaWeight, d.chromaWeight, 0, 4),
     smoothing: num(o.smoothing, d.smoothing, 0, 20),
@@ -626,7 +632,19 @@ export function solveLayeredPrint(img: RgbaImage, partial: Partial<LayeredPrintO
 
   let blocks: ScheduleBlock[];
   let cost: number;
-  {
+  if (opts.schedule && opts.schedule.length > 0) {
+    const sorted = opts.schedule
+      .map((b) => ({ filament: b.filament, startLayer: Math.round(b.startLayer) }))
+      .sort((a, b) => a.startLayer - b.startLayer);
+    for (let k = 1; k < sorted.length; k++) {
+      if (sorted[k].startLayer <= sorted[k - 1].startLayer) throw new Error(`schedule: two filaments start on the same layer (${sorted[k].startLayer + 1})`);
+    }
+    if (sorted[sorted.length - 1].startLayer > L - 1) throw new Error(`schedule: a swap at layer ${sorted[sorted.length - 1].startLayer + 1} is above the top layer (${L}) — raise maxHeightMm`);
+    sorted[0] = { ...sorted[0], startLayer: 0 };
+    blocks = sorted;
+    const fixedScorer = new ScheduleScorer(bins, blocks.map((b) => b.filament), L, minLayer, spec, opts.chromaWeight);
+    cost = fixedScorer.cost({ f: blocks.map((_, k) => k), s: blocks.map((b) => b.startLayer) });
+  } else {
     // Need at least one layer per filament.
     const N = Math.max(1, Math.min(opts.numColors, pool.length, L));
     let baseIdx = -1;

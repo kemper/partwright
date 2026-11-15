@@ -1299,6 +1299,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={10} max={1000} integer
           onChange={v => set('import', 'layeredPrintMaxLayers', v)}
         />
+        <Field cfgKey="import.layeredPrintMaxImagePx"
+          label="Layered print photo size"
+          unit="px"
+          hint="Longest side a layered-print photo is stored and solved at."
+          tooltip="The photo is downscaled to this before it's attached to the session and solved. The heightmap grid is much coarser (one cell per pixel size in mm), so larger values mostly cost storage and transfer time."
+          defaultValue={APP_CONFIG_DEFAULTS.import.layeredPrintMaxImagePx}
+          value={c.import.layeredPrintMaxImagePx}
+          min={256} max={8192} integer
+          onChange={v => set('import', 'layeredPrintMaxImagePx', v)}
+        />
         <Field cfgKey="import.threeMfMaxEntryMB"
           label="3MF max part size"
           unit="MB"

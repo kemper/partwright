@@ -118,40 +118,60 @@ slabs). Then preview + read the swap guide as above.
 
 ## Layered photo prints
 
-A HueForge-style print (filament layering) is a heightmap printed in thin
-layers, with the filament swapped at chosen layers. Thin plastic is
-translucent, so the colour at each point depends on how much of each filament
-lies under the surface there: a handful of filaments gives many shades.
+A layered (HueForge-style) print is a heightmap printed in thin layers, with
+the filament swapped at chosen layers. Thin plastic is translucent, so the
+colour at each point depends on how much of each filament lies under the
+surface there: a handful of filaments gives many shades.
 
-`createLayeredPrint` solves the whole thing from a photo:
+**It is model code.** The photo is a session attachment, and the model reads it:
 
-1. picks the filaments (from the built-in list, or the user's own spools), their
-   order bottom→top, and the layer each one starts at;
-2. gives every pixel the height whose stacked colour best matches the photo,
-   smoothing the surface without blurring real edges;
-3. opens the result as a new session, painted with the **predicted** look, so
-   `renderView` / `renderViews` show what the print should look like.
+```js
+const print = api.layeredPrint(api.image('<attachment id>'), {
+  widthMm: 150,        // depth follows the photo
+  maxHeightMm: 3.2,    // taller = more shades per filament
+  // baseHeightMm: 0.48, layerHeight: 0.08, firstLayerHeight: 0.16, pixelSizeMm: 0.3,
+  // chromaWeight: 1 (0 = lightness only, classic monochrome), smoothing: 1.2,
+  schedule: [          // the filament stack, bottom → top
+    { name: 'White', hex: '#f8f8f6', td: 3.2, layer: 1 },   // layer = 1-based slicer layer it starts on
+    { name: 'Orange', hex: '#f26a1b', td: 3, layer: 8 },
+    { name: 'Black', hex: '#161616', td: 0.6, layer: 33 },
+  ],
+});
+return print;   // a Manifold — compose freely: print.add(frame), .subtract(hole), …
+```
+
+- **With `schedule`** the filaments and swap layers are fixed and only the
+  per-pixel heights are solved (a couple of seconds). Edit it to change a
+  colour or move a swap. **Without it** the solver also picks the filaments
+  (from `filaments: [{name, hex, td}]` or the built-in list) and the swap
+  layers, up to `colors` (default 8) — slower (5–15 s). Solves are memoized on
+  the photo + options, so unrelated edits re-run instantly.
+- **One layered print per model** (a print has one swap schedule). Everything
+  in the model is coloured by height the way the swaps will print it — a frame
+  or text you add takes the filament loaded at its height.
+- `api.image(id)` only works with a literal attachment id; list them with
+  `getImages()`. Runs in the browser engine (not the headless `model:preview`).
+
+**Start from a photo** (solves, attaches the photo, writes the code above with
+the solved schedule pinned, opens it as a new session):
 
 ```js
 await partwright.createLayeredPrint({
   src: 'data:image/jpeg;base64,...',   // or an http(s) URL; AI tool: imageRef
   colors: 8,          // MAXIMUM filaments; swaps that barely help are dropped
-  widthMm: 120,       // depth follows the photo
-  maxHeightMm: 2.4,   // taller = more shades per filament (3.2 for colourful photos)
-  // baseHeightMm: 0.48, layerHeight: 0.08, firstLayerHeight: 0.16, pixelSizeMm: 0.3,
+  widthMm: 120, maxHeightMm: 2.4,
   // filaments: [{ name: 'Black', hex: '#161616', td: 0.6 }, ...],  // the user's spools
-  // baseFilament: 'Black',   // force the bottom filament
-  // chromaWeight: 0,         // lightness only: classic monochrome HueForge
+  // baseFilament: 'Black', chromaWeight, smoothing, pixelSizeMm, effort, seed
 })
 // -> { sessionId, blocks: [{name, hex, td, startLayer}], swaps: [{layer, z, name, hex, td}],
 //      totalLayers, totalHeightMm, widthMm, depthMm, meanDeltaE }
 
-partwright.getLayeredPrintPlan()        // same plan + `instructions` text for the user
+partwright.getLayeredPrintPlan()        // last run's plan + `instructions` + `schedule` (paste-ready)
 partwright.listLayeredPrintFilaments()  // the built-in candidate list
 
 partwright.exportLayeredPrint3MF({ swapMode: 'ams', printer: 'p1s' })
-// Bambu Studio / Orca 3MF: one object, layer height + first layer + 100% infill
-// set to match, and a filament change at each swap layer.
+// Bambu Studio / Orca 3MF: layer height + first layer + 100% infill set to
+// match, and a filament change at each swap layer.
 //   'ams'   — automatic filament changes (one AMS slot per filament)
 //   'pause' — one filament; the printer pauses at each swap for a manual change
 ```
@@ -160,20 +180,14 @@ partwright.exportLayeredPrint3MF({ swapMode: 'ams', printer: 'p1s' })
   thickness (mm) at which a filament stops letting the colour below show
   through. A layer of thickness `t` covers what's beneath with opacity
   `min(1, t / TD)`. The built-in TDs are typical values for common PLA colours;
-  if the user knows their spools' TDs, pass them as `filaments`.
+  if the user knows their spools' TDs, use them.
 - **Judging the result:** `meanDeltaE` under ~10 is a good match; above ~15
   means the photo needs more colours, more height, or filaments closer to its
-  palette. Render the session and compare it with the photo.
+  palette. Render the model and compare it with the photo.
 - **Colourful photos** are the hard case: every pixel shares one stack of
   filaments, so two saturated hues that each need to sit directly on a light
   base compete. More `maxHeightMm` and 8–10 `colors` help most.
-- **The plan lives in this browser** (localStorage, keyed by session), not in the
-  session file: a session exported/imported or opened from a share link has
-  the painted mesh but no plan, so `exportLayeredPrint3MF` asks you to
-  re-create it. The export also refuses if the open model no longer matches
-  the plan's size (edited, scaled, or another object open).
-- Size guards (App Config → Import): at most `layeredPrintMaxCells` heightmap
-  cells and `layeredPrintMaxLayers` layers; past them `createLayeredPrint`
-  returns `{error}` — raise `pixelSizeMm` or lower `maxHeightMm`.
+- Size guards (App Config → Import): `layeredPrintMaxCells` heightmap cells,
+  `layeredPrintMaxLayers` layers, `layeredPrintMaxImagePx` photo size.
 - Headless (CLI agents in the repo): `npm run layered-print -- photo.jpg --colors 8
   --swap both` writes the 3MF(s), a photo-vs-prediction PNG, and the swap list.

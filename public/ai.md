@@ -137,6 +137,7 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Bump / dent / flatten one spot (sculpt nudge) | `api.sculpt.grab/inflate/flatten(m, {at, radius, …})` -> `/ai/deform.md` | (not available) | (mesh-only) |
 | Scale / move / rotate / twist ONE part ("bigger head", also on imports' detected parts) | `api.editPart(m, 'head', {scale: 1.3})` (rigid, cut at the seam; a function swaps/deletes the part); `api.sculpt.transform(m, {select: {label}, scale, blend})` (soft warp); `select:` on twist/taper/bend/scatter -> `/ai/deform.md#selecting-part-of-a-shape` | (not available) | (mesh-only) |
 | Brass / glass / chrome viewport look | `api.material('brass')` -> `/ai/deform.md` | (manifold-js only) | (manifold-js only) |
+| Layered (HueForge-style) filament print from a photo | `api.layeredPrint(api.image('<attachment id>'), {schedule})` -> `/ai/relief.md#layered-photo-prints` | (manifold-js only) | (manifold-js only) |
 
 **Rule of thumb:** if you find yourself writing a `for` loop to manually compute curve points, stop and check whether `Curves` (manifold-js) or BOSL2 (SCAD) already has the verb. AI-generated point-sampling math is brittle; the helpers are deterministic.
 
@@ -369,7 +370,7 @@ await partwright.importStepData(base64, filename, {mode?: 'brep'|'mesh', session
 await partwright.importFromUrl(url, {target?, sessionName?, stepMode?, geometryOnly?})  // Share link (decoded locally) or http(s) .partwright.json/.stl/.step/.vox/.js/.scad -> {kind, source?, sessionId, target?, object?}; geometryOnly:true refuses code-bearing sources
 // Image / SVG -> colour tile or stepped relief (new session). See /ai/relief.md.
 await partwright.importImageAsRelief({src, mode?: 'luminance'|'quantized'|'ai', options?, quantized?, preprocess?, crop?}) // -> {sessionId} or {error}
-// Photo -> HueForge-style filament-layering print (solver picks filaments, swap layers, heights). See /ai/relief.md#layered-photo-prints.
+// Photo -> HueForge-style filament-layering print: model code api.layeredPrint(api.image(id), {schedule}); createLayeredPrint solves + writes it. See /ai/relief.md#layered-photo-prints.
 await partwright.createLayeredPrint({src, colors?: 8, widthMm?, maxHeightMm?, filaments?: [{name, hex, td}], ...}) // -> {sessionId, blocks, swaps, meanDeltaE} or {error}
 partwright.getLayeredPrintPlan()                       // filaments, swap layers, instructions text
 partwright.exportLayeredPrint3MF({swapMode?: 'ams'|'pause', printer?}) // Bambu/Orca 3MF with the filament changes built in
@@ -1026,6 +1027,7 @@ api.sculpt.grab(m, {at, radius, offset})               // drag the surface near 
 api.sculpt.inflate(m, {at, radius, amount})            // bump out (negative = dent)
 api.sculpt.flatten(m, {at, radius, normal?, strength?})// press a region toward a plane
 api.material('brass')                                  // viewport shading preset (see /ai/deform.md)
+api.layeredPrint(api.image(id), {schedule?, colors?, widthMm?, maxHeightMm?}) // photo → layer-swap filament print (Manifold); see /ai/relief.md#layered-photo-prints
 ```
 
 **Robust booleans + heal — catch silent failures.** `expectUnion` is the one to reach for when an agent has hit "I expected one piece, got three" — it tells you *immediately* instead of after the next render, and the error message includes a bbox/volume dump of each component so you can see which piece floated free.

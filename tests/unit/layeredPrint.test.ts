@@ -3,7 +3,9 @@ import { computeLadder, layerTop, layerBottom, layerCountFor, rgb01ToLab } from 
 import { solveLayeredPrint, resolveLayeredPrintOptions, layeredPrintSummary } from '../../src/relief/layeredPrint/solver';
 import { buildHeightfieldMesh } from '../../src/relief/layeredPrint/mesh';
 import { layeredPrintLayerPlan, layeredPrintMeshData } from '../../src/relief/layeredPrint/export3mf';
-import { layeredPrintRecord, planMeshMismatch, planSwapText } from '../../src/relief/layeredPrint/plan';
+import { layeredPrintRecord, layeredPrintZRegions, planSwapText } from '../../src/relief/layeredPrint/plan';
+import { parseLayeredPrintOptions, layeredPrintCode, planToScheduleOption } from '../../src/relief/layeredPrint/sandboxApi';
+import { sourceImageRefs, hashImagePixels } from '../../src/geometry/modelImages';
 import { buildCustomGcodePerLayerXml } from '../../src/export/threemfProject';
 
 const spec = { firstLayerHeight: 0.16, layerHeight: 0.08 };
@@ -148,12 +150,58 @@ describe('layered print guards', () => {
     expect(() => solveLayeredPrint(img, { maxHeightMm: 10, layerHeight: 0.04, maxLayers: 50, pixelSizeMm: 1, widthMm: 20 })).toThrow(/layers/);
   });
 
-  it('detects a mesh that no longer matches the plan', () => {
+});
+
+describe('code-native layered print', () => {
+  const img = rgba(40, 10, (x) => { const v = Math.round((x / 39) * 255); return [v, v, v]; });
+
+  it('a pinned schedule skips the search and keeps the given swaps', () => {
+    const r = solveLayeredPrint(img, { widthMm: 20, pixelSizeMm: 1, maxHeightMm: 3.6, schedule: [{ filament: BLACK, startLayer: 0 }, { filament: WHITE, startLayer: 6 }] });
+    expect(r.blocks.map((b) => [b.filament.name, b.startLayer])).toEqual([['Black', 0], ['White', 6]]);
+    expect(r.swaps[0].layer).toBe(7);
+    expect(() => solveLayeredPrint(img, { widthMm: 20, pixelSizeMm: 1, schedule: [{ filament: BLACK, startLayer: 0 }, { filament: WHITE, startLayer: 0 }] })).toThrow(/same layer/);
+    expect(() => solveLayeredPrint(img, { widthMm: 20, pixelSizeMm: 1, maxHeightMm: 1, schedule: [{ filament: BLACK, startLayer: 0 }, { filament: WHITE, startLayer: 90 }] })).toThrow(/above the top layer/);
+  });
+
+  it('finds literal api.image ids and hashes pixels', () => {
+    expect(sourceImageRefs("const a = api.image('abc'); api.image( \"d-2\" ); api.image(id)")).toEqual(['abc', 'd-2']);
+    const d = new Uint8ClampedArray(16).fill(9);
+    expect(hashImagePixels(2, 2, d)).toBe(hashImagePixels(2, 2, new Uint8ClampedArray(16).fill(9)));
+    expect(hashImagePixels(2, 2, d)).not.toBe(hashImagePixels(2, 2, new Uint8ClampedArray(16).fill(8)));
+  });
+
+  it('validates sandbox options', () => {
+    expect(parseLayeredPrintOptions({ colors: 6, widthMm: 100 })).toEqual({ numColors: 6, widthMm: 100 });
+    expect(() => parseLayeredPrintOptions({ colour: 6 })).toThrow(/unknown option "colour"/);
+    expect(() => parseLayeredPrintOptions({ widthMm: 5 })).toThrow(/widthMm/);
+    expect(() => parseLayeredPrintOptions({ schedule: [{ name: 'W', hex: '#ffffff', td: 3, layer: 0 }] })).toThrow(/1-based/);
+    const sched = parseLayeredPrintOptions({ schedule: [{ name: 'W', hex: 'FFFFFF', td: 3, layer: 1 }] }).schedule!;
+    expect(sched[0]).toEqual({ filament: { name: 'W', hex: '#ffffff', td: 3 }, startLayer: 0 });
+  });
+
+  it('generates runnable code that pins the solved schedule', () => {
     const r = solveLayeredPrint(img, { numColors: 2, widthMm: 20, pixelSizeMm: 1, filaments: [BLACK, WHITE], iterations: 500 });
     const plan = layeredPrintRecord(r);
+    const code = layeredPrintCode('att1', r.options, plan);
+    expect(code).toMatch(/api\.layeredPrint\(api\.image\('att1'\)/);
+    expect(code).toMatch(/pixelSizeMm: 1,/);
+    // The generated object literal parses and round-trips the schedule.
+    const body = code.slice(code.indexOf('{', code.indexOf('api.image')), code.lastIndexOf('});') + 1);
+    const opts = new Function(`return (${body});`)();
+    expect(opts.schedule).toEqual(planToScheduleOption(plan));
+    // Re-solving with the pinned schedule gives the same heights.
+    const again = solveLayeredPrint(img, parseLayeredPrintOptions(opts));
+    expect(Array.from(again.heightsMm)).toEqual(Array.from(r.heightsMm));
+  });
+
+  it('colours a mesh by height from its own bottom', () => {
+    const r = solveLayeredPrint(img, { numColors: 2, widthMm: 20, pixelSizeMm: 1, filaments: [BLACK, WHITE], iterations: 500 });
     const mesh = layeredPrintMeshData(r);
-    expect(planMeshMismatch(plan, mesh)).toBeNull();
-    const scaled = { ...mesh, vertProperties: mesh.vertProperties.map((v, i) => (i % 3 === 2 ? v * 2 : v)) };
-    expect(planMeshMismatch(plan, scaled)).toMatch(/no longer matches/);
+    const regions = layeredPrintZRegions(mesh, layeredPrintRecord(r));
+    const total = regions.reduce((n, g) => n + g.triangles.size, 0);
+    expect(total).toBe(mesh.numTri);
+    // Lifting the mesh doesn't change the colouring (measured from its bottom).
+    const lifted = { ...mesh, vertProperties: mesh.vertProperties.map((v, i) => (i % 3 === 2 ? v + 5 : v)) };
+    expect(layeredPrintZRegions(lifted, layeredPrintRecord(r)).map((g) => g.name).sort()).toEqual(regions.map((g) => g.name).sort());
   });
 });

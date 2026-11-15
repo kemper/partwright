@@ -325,6 +325,25 @@ function checkMaterialSpec(m: unknown): void {
   for (const k of MATERIAL_UNIT_FIELDS) if (m[k] !== undefined && !inUnit(m[k])) fail(`materialSpec.${k} must be a number in 0..1`);
 }
 
+/** `api.layeredPrint(...)` plan record: 1..16 filament blocks + finite sizes. */
+function checkLayeredPrint(p: unknown): void {
+  if (!isPlainObject(p)) fail('layeredPrint must be a plain object');
+  onlyKeys(p, ['blocks', 'layerHeight', 'firstLayerHeight', 'totalLayers', 'totalHeightMm', 'widthMm', 'depthMm', 'meanDeltaE'], 'layeredPrint');
+  if (!Array.isArray(p.blocks) || p.blocks.length < 1 || p.blocks.length > 16) fail('layeredPrint.blocks must hold 1..16 filaments');
+  for (const b of p.blocks as unknown[]) {
+    if (!isPlainObject(b)) fail('layeredPrint.blocks entries must be objects');
+    onlyKeys(b, ['name', 'hex', 'td', 'startLayer'], 'layeredPrint block');
+    if (typeof b.name !== 'string' || b.name.length > 80) fail('layeredPrint block name must be a short string');
+    if (typeof b.hex !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(b.hex)) fail('layeredPrint block hex must be "#rrggbb"');
+    if (!isFiniteNum(b.td) || b.td <= 0) fail('layeredPrint block td must be a positive number');
+    if (!isNonNegInt(b.startLayer)) fail('layeredPrint block startLayer must be a non-negative integer');
+  }
+  for (const k of ['layerHeight', 'firstLayerHeight', 'totalHeightMm', 'widthMm', 'depthMm', 'meanDeltaE'] as const) {
+    if (!isFiniteNum(p[k]) || (p[k] as number) < 0) fail(`layeredPrint.${k} must be a non-negative number`);
+  }
+  if (!isNonNegInt(p.totalLayers)) fail('layeredPrint.totalLayers must be a non-negative integer');
+}
+
 /**
  * Validate a MeshData from the Worker: typed-array classes, counts that match
  * the array lengths, and every triangle index inside the vertex range.
@@ -421,6 +440,10 @@ function checkModelPayload(msg: Record<string, unknown>, numTri: number | null):
   if (msg.materialSpec !== undefined && msg.materialSpec !== null) {
     if (!isPlainData(msg.materialSpec)) fail('materialSpec must be plain data');
     checkMaterialSpec(msg.materialSpec);
+  }
+  if (msg.layeredPrint !== undefined && msg.layeredPrint !== null) {
+    if (!isPlainData(msg.layeredPrint)) fail('layeredPrint must be plain data');
+    checkLayeredPrint(msg.layeredPrint);
   }
   const schema = optPlainArray(msg.paramsSchema, 'paramsSchema');
   const normalizedSchema = schema ? checkParamsSchema(schema) : undefined;
