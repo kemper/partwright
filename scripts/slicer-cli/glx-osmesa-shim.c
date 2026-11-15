@@ -7,15 +7,26 @@
 
 typedef void (*proc)(void);
 extern proc OSMesaGetProcAddress(const char *name);
+extern void *OSMesaGetCurrentContext(void);
 
-void *glXGetCurrentDisplay(void) { return (void *)1; }
-void *glXGetCurrentContext(void) { return (void *)1; }
-int glXQueryVersion(void *dpy, int *major, int *minor) { (void)dpy; *major = 1; *minor = 4; return 1; }
+// Report a GLX display/context only while an OSMesa context really is current,
+// so the shim can never claim a context that does not exist.
+static void *current(void) { return OSMesaGetCurrentContext() ? (void *)1 : NULL; }
+
+void *glXGetCurrentDisplay(void) { return current(); }
+void *glXGetCurrentContext(void) { return current(); }
+int glXQueryVersion(void *dpy, int *major, int *minor) {
+  (void)dpy;
+  if (major) *major = 1;
+  if (minor) *minor = 4;
+  return 1;
+}
 const char *glXGetClientString(void *dpy, int name) { (void)dpy; (void)name; return ""; }
 const char *glXQueryExtensionsString(void *dpy, int screen) { (void)dpy; (void)screen; return ""; }
 
 proc glXGetProcAddressARB(const unsigned char *name) {
   const char *n = (const char *)name;
+  if (!n) return NULL;
   if (strncmp(n, "glX", 3) == 0) return (proc)dlsym(RTLD_DEFAULT, n);
   return OSMesaGetProcAddress(n);
 }
