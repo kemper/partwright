@@ -470,6 +470,7 @@ import { buildGeometryHeuristicWarnings } from './geometry/geometryHeuristics';
 import { getConfig, saveAppConfig } from './config/appConfig';
 import { hexToRgb as layerHexToRgb, layerCount, layerTopZ, parseLayerColorsSpec, resolveLayerBands, splitBaseColor, type LayerBand, type LayerColorsSpec, type LayerProfile } from './print/layerColors';
 import { buildLayerPreviewMesh, type LayerPreviewResult } from './print/layerPreviewMesh';
+import { initPrintPreviewUI, type PrintPreviewHandlers } from './ui/printPreviewPanel';
 import { removeLayerColorsCall, upsertLayerColorsCall } from './print/layerColorsCodegen';
 import { photoMatch as scorePhotoMatch, buildTriangleRegions, photoMatchTuningFromConfig, photoMatchOverlay, combinePhotoMatches, type CropRect, type PhotoMatchResult } from './tools/photoMatch';
 import { nextStarter, isStarterCode, BLANK_OBJECT_CODE } from './editor/starters';
@@ -650,6 +651,9 @@ let currentMeshData: MeshData | null = null;
 // ── Print preview (colour by layer height) ───────────────────────────────
 /** `api.print.layerColors(...)` from the last successful run, or null when the code declares none. */
 let currentLayerColors: LayerColorsSpec | null = null;
+/** Unsaved edits from the Print preview panel: previewed instead of the code's
+ *  own colours until they are applied or discarded. */
+let printPreviewDraft: LayerColorsSpec | null = null;
 /** Print preview: draw the model as the layer-colour bands that will print.
  *  Per tab and never persisted: it is a way of looking, not model state. */
 const printPreviewState: { enabled: boolean; cutZ: number | null; blend: boolean } = { enabled: false, cutZ: null, blend: false };
@@ -679,8 +683,9 @@ function currentPrintBands(): { bands: LayerBand[]; profile: LayerProfile; heigh
   }
   const height = hi - lo;
   if (!(height > 0)) return null;
-  const profile = printLayerProfile(currentLayerColors);
-  const { base, changes } = currentLayerColors ? splitBaseColor(currentLayerColors, profile, PRINT_BASE_COLOR) : { base: PRINT_BASE_COLOR, changes: [] };
+  const spec = printPreviewDraft ?? currentLayerColors;
+  const profile = printLayerProfile(spec);
+  const { base, changes } = spec ? splitBaseColor(spec, profile, PRINT_BASE_COLOR) : { base: PRINT_BASE_COLOR, changes: [] };
   return { bands: resolveLayerBands(base, changes, height, profile), profile, height };
 }
 
@@ -688,7 +693,7 @@ function currentPrintBands(): { bands: LayerBand[]; profile: LayerProfile; heigh
  *  declares no layer colours (there is nothing to preview then). */
 function buildPrintPreview(): LayerPreviewResult | null {
   const mesh = currentMeshData;
-  const spec = currentLayerColors;
+  const spec = printPreviewDraft ?? currentLayerColors;
   const info = currentPrintBands();
   if (!mesh || !spec || !info) return null;
   const r = getConfig().renderer;
@@ -24766,6 +24771,37 @@ async function main() {
     check: (overrides) => partwrightAPI.checkPrintability(overrides),
   };
   initPrintToolsUI(clipControls, printToolsHandlers);
+
+  // Print preview panel: thin wrappers over the same window.partwright methods agents call.
+  const printPreviewHandlers: PrintPreviewHandlers = {
+    hasModel: () => currentMeshData !== null && currentMeshData.numTri > 0,
+    canEdit: () => {
+      if (isReadOnlyViewer()) return { ok: false, reason: 'This tab is a read-only viewer of the session, so the colours can\'t be edited here.' };
+      if (isSharedPreview()) return { ok: false, reason: 'Fork this shared design to edit its layer colours.' };
+      if (getActiveLanguage() !== 'manifold-js') return { ok: false, reason: 'Layer colours can be edited in JavaScript models only for now. This session uses another language.' };
+      return { ok: true };
+    },
+    getLayerColors: () => describeLayerColors(),
+    getView: () => describePrintPreview(),
+    setView: (opts) => partwrightAPI.setPrintPreview(opts),
+    setDraft: (changes) => {
+      printPreviewDraft = changes
+        ? { changes: changes.map(c => ({ z: c.z, color: c.color })), ...(currentLayerColors?.layerHeight !== undefined ? { layerHeight: currentLayerColors.layerHeight } : {}), ...(currentLayerColors?.firstLayerHeight !== undefined ? { firstLayerHeight: currentLayerColors.firstLayerHeight } : {}) }
+        : null;
+      paintedColorRefresh();
+    },
+    apply: async (changes) => {
+      const heights = { ...(currentLayerColors?.layerHeight !== undefined ? { layerHeight: currentLayerColors.layerHeight } : {}), ...(currentLayerColors?.firstLayerHeight !== undefined ? { firstLayerHeight: currentLayerColors.firstLayerHeight } : {}) };
+      const r = await partwrightAPI.setLayerColors(changes, Object.keys(heights).length > 0 ? heights : undefined);
+      return 'error' in r && typeof r.error === 'string' ? { error: r.error } : { ok: true };
+    },
+    clear: async () => {
+      const r = await partwrightAPI.clearLayerColors();
+      return 'error' in r && typeof r.error === 'string' ? { error: r.error } : { ok: true };
+    },
+    onChange: (cb) => { onPrintPreviewChange = cb; },
+  };
+  initPrintPreviewUI(clipControls, printPreviewHandlers);
 
   // Log API availability for AI agents
   console.info('Partwright: AI agents should use window.partwright -- start with partwright.help(). window.mainifold remains as a legacy alias. See /llms.txt');
