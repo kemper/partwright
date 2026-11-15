@@ -111,6 +111,7 @@ import { showExportColorsModal } from './ui/exportColorsModal';
 import { buildZip, type ZipEntry } from './export/zip';
 import { build3MFProject, BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER, BAMBU_FILAMENT_TYPES, DEFAULT_BAMBU_FILAMENT, BAMBU_NOZZLES, DEFAULT_BAMBU_NOZZLE, BAMBU_PLATE_LAYOUTS, PACK_STRATEGIES, isBambuPrinter, isBambuNozzle, isBambuFilament, isBambuPlateLayout, isPackStrategy, type BambuPlateLayout, type PackStrategy, type PartExport } from './export/threemfProject';
 import { showExportPartsModal, WHOLE_ITEM_KEY, type ExportPartChoice, type ExportObjectSplitInfo } from './ui/exportPartsModal';
+import type { ExportPrintPreviewFrame } from './ui/exportPrintPreview';
 import { analyzeObjectSplit, availableSplitModes, extractItemMesh, isExportSplitMode, splitItemName, splitItems, EXPORT_SPLIT_MODES, type ExportSplitMode, type ObjectSplitAnalysis } from './export/exportSplit';
 import { exportVOX, buildVOX } from './export/vox';
 import { assertFiniteMesh } from './export/meshClean';
@@ -479,6 +480,11 @@ import {
 } from './geometry/statsComputation';
 import { buildGeometryHeuristicWarnings } from './geometry/geometryHeuristics';
 import { getConfig, saveAppConfig } from './config/appConfig';
+import { DEFAULT_LAYER_BASE_COLOR, hexToRgb as layerHexToRgb, layerCount, layerTopZ, parseLayerColorsSpec, resolveLayerBands, splitBaseColor, type LayerBand, type LayerColorsSpec, type LayerProfile } from './print/layerColors';
+import { bandMeshFromColoredMesh, cutBandMesh, splitMeshByBands, type LayerBandMesh, type LayerBandOptions, type LayerPreviewResult } from './print/layerPreviewMesh';
+import { layeredPlanPreview, type LayeredPlanPreview } from './print/layeredPlanBands';
+import { initPrintPreviewUI, openPrintPreviewPanel, closePrintPreviewPanel, type PrintPreviewHandlers } from './ui/printPreviewPanel';
+import { removeLayerColorsCall, upsertLayerColorsCall } from './print/layerColorsCodegen';
 import { photoMatch as scorePhotoMatch, buildTriangleRegions, photoMatchTuningFromConfig, photoMatchOverlay, combinePhotoMatches, type CropRect, type PhotoMatchResult } from './tools/photoMatch';
 import { nextStarter, isStarterCode, BLANK_OBJECT_CODE } from './editor/starters';
 import { insertRemovalLine, removePartCall, removePieceCall, removePieceComment, findRemovalLines, removeRemovalLine, pieceAnchorPoint, type RemovalLine } from './editor/removalCode';
@@ -734,6 +740,179 @@ function refreshParamsPanelUI(silentReveal: boolean): void {
 }
 
 let currentMeshData: MeshData | null = null;
+
+// ── Print preview (colour by layer height) ───────────────────────────────
+/** `api.print.layerColors(...)` from the last successful run, or null when the code declares none. */
+let currentLayerColors: LayerColorsSpec | null = null;
+/** Unsaved edits from the Print preview panel: previewed instead of the code's
+ *  own colours until they are applied or discarded. */
+let printPreviewDraft: LayerColorsSpec | null = null;
+/** The session + object the draft was made for. A draft is dropped as soon as
+ *  another object or session is on screen, so it can never be previewed on,
+ *  or applied to, a model it was not written for. */
+let printPreviewDraftScope: string | null = null;
+/** Print preview: draw the model as the layer-colour bands that will print.
+ *  Per tab and never persisted: it is a way of looking, not model state. */
+const printPreviewState: { enabled: boolean; cutZ: number | null; blend: boolean } = { enabled: false, cutZ: null, blend: false };
+/** Called after the preview's inputs or state change, so an open panel can redraw. */
+let onPrintPreviewChange: (() => void) | null = null;
+/** The band split of the current model (kept while the layer slider moves) and the last cut of it. */
+let printSplitMemo: { mesh: MeshData; source: object; key: string; split: LayerBandMesh } | null = null;
+let printPreviewMemo: { split: LayerBandMesh; cutZ: number | null; result: LayerPreviewResult } | null = null;
+/** The preview mesh currently in the viewport, or null when the model itself is drawn. */
+let shownPrintPreviewMesh: MeshData | null = null;
+
+function printPreviewScope(): string {
+  const state = getState();
+  return `${state.session?.id ?? ''}/${state.currentPart?.id ?? ''}`;
+}
+
+/** A spec that declares nothing (`layerColors([])`) is the same as no call at all. */
+function declaresLayerColors(spec: LayerColorsSpec | null): spec is LayerColorsSpec {
+  return spec !== null && spec.changes.length > 0;
+}
+
+/** The layer colours to preview: the panel's unsaved draft for THIS object, else the code's own. */
+function activeLayerColors(): LayerColorsSpec | null {
+  if (printPreviewDraft && printPreviewDraftScope !== printPreviewScope()) {
+    printPreviewDraft = null;
+    printPreviewDraftScope = null;
+  }
+  return printPreviewDraft ?? currentLayerColors;
+}
+
+function printLayerProfile(spec: LayerColorsSpec | null): LayerProfile {
+  const r = getConfig().renderer;
+  return { layerHeight: spec?.layerHeight ?? r.printLayerHeightMm, firstLayerHeight: spec?.firstLayerHeight ?? r.printFirstLayerHeightMm };
+}
+
+/** What the print preview draws from: the object's own layer colours
+ *  (`api.print.layerColors`, or the panel's draft of them), else the swap plan
+ *  of a layered photo print (`api.layeredPrint`). Null when it has neither. */
+type PrintSource =
+  | { kind: 'layerColors'; spec: LayerColorsSpec }
+  | { kind: 'layeredPrint'; plan: LayeredPrintPlanRecord };
+
+function activePrintSource(): PrintSource | null {
+  const spec = activeLayerColors();
+  if (declaresLayerColors(spec)) return { kind: 'layerColors', spec };
+  if (currentLayeredPlan) return { kind: 'layeredPrint', plan: currentLayeredPlan };
+  return null;
+}
+
+/** A length in mm, rounded to the micron, for API results. */
+const mm3 = (n: number) => Math.round(n * 1000) / 1000;
+
+/** Height of a mesh above its lowest point, or 0. */
+function meshHeight(mesh: MeshData): number {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (let i = 0; i < mesh.numVert; i++) {
+    const z = mesh.vertProperties[i * mesh.numProp + 2];
+    if (z < lo) lo = z;
+    if (z > hi) hi = z;
+  }
+  return hi > lo ? hi - lo : 0;
+}
+
+/** The bands the current model prints in (one band when it has neither layer
+ *  colours nor a layered-print plan), or null when there is no model. */
+function currentPrintBands(): { bands: LayerBand[]; profile: LayerProfile; height: number; source: PrintSource | null; plan: LayeredPlanPreview | null } | null {
+  const mesh = currentMeshData;
+  if (!mesh || mesh.numTri === 0) return null;
+  const height = meshHeight(mesh);
+  if (!(height > 0)) return null;
+  const source = activePrintSource();
+  if (source?.kind === 'layeredPrint') {
+    const plan = layeredPlanPreview(source.plan, height);
+    return { bands: plan.bands, profile: plan.profile, height, source, plan };
+  }
+  const spec = source?.spec ?? null;
+  const profile = printLayerProfile(spec);
+  const { base, changes } = spec ? splitBaseColor(spec, profile, DEFAULT_LAYER_BASE_COLOR) : { base: DEFAULT_LAYER_BASE_COLOR, changes: [] };
+  return { bands: resolveLayerBands(base, changes, height, profile), profile, height, source, plan: null };
+}
+
+/** The preview's blend settings: the app's generic estimate, or for a layered
+ *  photo print the colours its own solver predicted. */
+function printBlendOptions(plan: LayeredPlanPreview | null): NonNullable<LayerBandOptions['blend']> {
+  const r = getConfig().renderer;
+  const transmissionOf = (color: string): number => {
+    const [red, green, blue] = layerHexToRgb(color);
+    const brightness = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255;
+    return r.printBlendTransmissionDarkMm + (r.printBlendTransmissionLightMm - r.printBlendTransmissionDarkMm) * brightness;
+  };
+  return plan
+    ? { transmissionOf, maxLayers: plan.layers, minUpNormal: r.printBlendMinUpNormal, colorOnTopOf: plan.colorOnTopOf }
+    : { transmissionOf, maxLayers: r.printBlendMaxLayers, minUpNormal: r.printBlendMinUpNormal };
+}
+
+/** The print-preview mesh for the current model, or null when it has neither
+ *  layer colours nor a layered-print plan (there is nothing to preview then). */
+function buildPrintPreview(): LayerPreviewResult | null {
+  const mesh = currentMeshData;
+  const info = currentPrintBands();
+  if (!mesh || !info || !info.source) return null;
+  const identity: object = info.source.kind === 'layerColors' ? info.source.spec : info.source.plan;
+  const r = getConfig().renderer;
+  const { cutZ, blend } = printPreviewState;
+  const key = JSON.stringify([blend, info.profile, r.printBlendMaxLayers, r.printBlendTransmissionDarkMm, r.printBlendTransmissionLightMm, r.printBlendMinUpNormal]);
+  if (!printSplitMemo || printSplitMemo.mesh !== mesh || printSplitMemo.source !== identity || printSplitMemo.key !== key) {
+    const split = splitMeshByBands(mesh, {
+      bands: info.bands,
+      profile: info.profile,
+      ...(blend ? { blend: printBlendOptions(info.plan) } : {}),
+    });
+    printSplitMemo = { mesh, source: identity, key, split };
+    printPreviewMemo = null;
+  }
+  // Moving the layer slider only re-cuts the split: the expensive part is kept.
+  const split = printSplitMemo.split;
+  if (printPreviewMemo && printPreviewMemo.split === split && printPreviewMemo.cutZ === cutZ) return printPreviewMemo.result;
+  const result = cutBandMesh(split, cutZ ?? undefined);
+  printPreviewMemo = { split, cutZ, result };
+  return result;
+}
+
+/** Forget the built preview (it can be as big as the model). */
+function dropPrintPreviewMemo(): void {
+  printSplitMemo = null;
+  printPreviewMemo = null;
+}
+
+/** Shown when a plain (single-mesh) 3MF is written for an object that declares layer colours. */
+const PLAIN_3MF_LAYER_NOTE = 'Layer colours are not written to a plain 3MF. Use the 3MF project export (Bambu/Orca) to keep them.';
+
+/** Options every 3MF project export passes so layer colours use the same layer
+ *  heights the preview does; the exporter's warnings are collected in `sink`. */
+function printExportOptions(sink: string[]): { layerProfile: LayerProfile; onWarning: (message: string) => void } {
+  return { layerProfile: printLayerProfile(null), onWarning: (message) => { sink.push(message); } };
+}
+
+/** The mesh to draw instead of the model while the print preview is on, or null. */
+function printPreviewDisplayMesh(): MeshData | null {
+  if (!printPreviewState.enabled) return null;
+  const p = buildPrintPreview();
+  return p && p.mesh.numTri > 0 ? p.mesh : null;
+}
+
+/** Show the print preview in the viewport when it is on and the model
+ *  declares layer colours. Returns true when it replaced the displayed mesh. */
+function showPrintPreviewIfActive(): boolean {
+  const mesh = printPreviewDisplayMesh();
+  if (!mesh) { shownPrintPreviewMesh = null; return false; }
+  shownPrintPreviewMesh = mesh;
+  updateMesh(mesh, { skipAutoFrame: true });
+  return true;
+}
+
+/** Draw the current model. Every path that puts the model (not a tool's own
+ *  temporary preview) back on screen goes through here, so the print preview
+ *  stays up while it is on and the viewport agrees with renderView. */
+function showModel(mesh: MeshData, opts?: Parameters<typeof updateMesh>[1]): void {
+  if (showPrintPreviewIfActive()) return;
+  updateMesh(mesh, opts);
+}
 
 /** An annotation view without its (large) image — the API / AI shape. */
 function summarizeAnnotationView(v: AnnotationView) {
@@ -1151,6 +1330,9 @@ type PartMeshCacheEntry = {
   /** What the run that made this mesh printed, so a cache hit restores the
    *  console (and getGeometryData().logs) along with the geometry. */
   logs: string[] | undefined;
+  /** `api.print.layerColors` from the run that made this mesh, so a cache hit
+   *  restores the object's own layer colours (not the previous object's). */
+  layerColors: LayerColorsSpec | null;
   /** The api.layeredPrint plan of the run that made this mesh (or null), so a
    *  cache hit restores — or clears — the plan the export and colouring use. */
   layeredPlan: LayeredPrintPlanRecord | null;
@@ -2959,7 +3141,7 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
 
   // Re-render with colors if any region layer is present (user paint and/or the
   // model-declared underlay — applyTriColorsIfVisible stamps both).
-  if ((hasColorRegions() || hasModelColorRegions()) && currentMeshData) {
+  if (currentMeshData && !showPrintPreviewIfActive() && (hasColorRegions() || hasModelColorRegions())) {
     const colored = applyTriColorsIfVisible(currentMeshData);
     updateMesh(colored, { skipAutoFrame: true });
   }
@@ -3004,7 +3186,7 @@ function stageUnresolvedColorRegions(geometryData: Record<string, unknown> | nul
  *  regions exist), so it's always safe to call. User paint is layered on top by
  *  rehydrateColorRegions' main path. */
 function renderModelColorUnderlay(): void {
-  if (!currentMeshData) return;
+  if (!currentMeshData || showPrintPreviewIfActive()) return;
   if (hasModelColorRegions()) {
     updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
   }
@@ -3012,6 +3194,8 @@ function renderModelColorUnderlay(): void {
 
 function paintedColorRefresh(): void {
   if (!currentMeshData) return;
+  // The print preview replaces the model's own colours while it is on.
+  if (showPrintPreviewIfActive()) return;
   // Relief sessions in a non-flat preview mode show the optical (translucent /
   // glossy) composite instead of raw region colors. This is the one chokepoint
   // every paint path funnels through, so the preview tracks strokes, undo/redo,
@@ -3757,6 +3941,7 @@ async function saveCurrentVersion(label?: string, opts: { importedMeshes?: Impor
         manifoldFacts: manifoldFactsFor(meshToCache),
         engineRun: lastEngineRun?.shown === meshToCache ? lastEngineRun : null,
         logs: lastRunLogs,
+        layerColors: currentLayerColors,
         layeredPlan: currentLayeredPlan,
       };
       partMeshCache.delete(version.id);
@@ -4374,7 +4559,7 @@ async function main() {
     for (const seed of seedRegions) {
       addRegion(seed.name, seed.color, 'subtree', { kind: 'triangles', ids: seed.triangleIds }, new Set(seed.triangleIds), true, seed.slotId);
     }
-    if (currentMeshData) updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
+    if (currentMeshData) showModel(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
   }
 
   // Import a parsed mesh (STL today) as a new session.
@@ -6868,7 +7053,7 @@ async function main() {
     partId: string,
     name: string,
     opts: { onStart?: () => void } = {},
-  ): Promise<{ name: string; mesh: MeshData; labels: Map<string, Set<number>> | null } | null> {
+  ): Promise<{ name: string; mesh: MeshData; labels: Map<string, Set<number>> | null; layerColors?: LayerColorsSpec } | null> {
     if (partId === getState().currentPart?.id && currentMeshData) {
       // The label map indexes the run's mesh; a texture / paint subdivision /
       // simplify pass may have swapped the displayed mesh since, so carry the
@@ -6876,7 +7061,7 @@ async function main() {
       const labels = currentLabelMap && currentLabelMesh && currentLabelMesh !== currentMeshData
         ? remapTriangleSets(currentLabelMap, currentLabelMesh, currentMeshData)
         : currentLabelMap;
-      return { name, mesh: coloredMeshForExport(currentMeshData), labels };
+      return { name, mesh: coloredMeshForExport(currentMeshData), labels, ...(currentLayerColors ? { layerColors: currentLayerColors } : {}) };
     }
     const domain = getEngineTrustDomain(); // this session's code (#1090)
     const version = await getLatestVersion(partId);
@@ -6961,13 +7146,13 @@ async function main() {
     }
 
     const triColors = composeTriColors(mesh.numTri, [modelLayer, manualLayer]);
-    return { name, mesh: triColors ? { ...mesh, triColors } : mesh, labels: result.labelMap ?? null };
+    return { name, mesh: triColors ? { ...mesh, triColors } : mesh, labels: result.labelMap ?? null, ...(result.layerColors ? { layerColors: result.layerColors } : {}) };
   }
 
   /** One part slated for a multi-part export bake. */
   interface ExportBakePart { id: string; name: string; group?: string }
   /** One object's baked, coloured mesh (plus its part labels, for splitting). */
-  interface BakedExportObject { id: string; name: string; mesh: MeshData; labels: Map<string, Set<number>> | null; group?: string }
+  interface BakedExportObject { id: string; name: string; mesh: MeshData; labels: Map<string, Set<number>> | null; group?: string; layerColors?: LayerColorsSpec }
 
   // Serializes overlapping export bakes. The geometry pool (`enginePool`) is a
   // process-wide singleton and each batch sizes + disposes it, so two concurrent
@@ -7123,7 +7308,55 @@ async function main() {
         ortho: STANDARD_VIEWS.iso.ortho, size: 64, thumbnail: true, annotations: false,
       });
     };
-    return { bake, analyze, thumbnail, analysisOf, cancel, isReady: (id: string) => ready.has(id) };
+    // ── Print preview (the picker's optional "how will this print" look) ──
+    // The split of each object is kept, so dragging the layer slider only re-cuts it.
+    const previewSplits = new Map<string, { key: string; kind: 'layerColors' | 'paint'; split: LayerBandMesh; frame: { min: [number, number, number]; max: [number, number, number] } }>();
+    /** Draw one object as this export will colour it. `layerColours` is false
+     *  for a generic 3MF, which carries no colours by layer height. */
+    const printPreview = async (id: string, view: { layer: number | null; blend: boolean; size: number }, layerColours: boolean): Promise<ExportPrintPreviewFrame | null> => {
+      const b = await bake(id);
+      if (!b || b.mesh.numTri === 0) return null;
+      const declared = declaresLayerColors(b.layerColors ?? null) ? b.layerColors! : null;
+      const spec = layerColours ? declared : null;
+      const blend = view.blend && spec !== null;
+      const profile = printLayerProfile(spec);
+      const key = `${spec ? 'layers' : 'paint'}:${blend}:${profile.layerHeight}:${profile.firstLayerHeight}`;
+      let memo = previewSplits.get(id);
+      if (!memo || memo.key !== key) {
+        const vp = b.mesh.vertProperties, np = b.mesh.numProp;
+        const min: [number, number, number] = [Infinity, Infinity, Infinity];
+        const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+        for (let v = 0; v < b.mesh.numVert; v++) for (let a = 0; a < 3; a++) { const c = vp[v * np + a]; if (c < min[a]) min[a] = c; if (c > max[a]) max[a] = c; }
+        let split: LayerBandMesh;
+        if (spec) {
+          const { base, changes } = splitBaseColor(spec, profile, DEFAULT_LAYER_BASE_COLOR);
+          const bands = resolveLayerBands(base, changes, meshHeight(b.mesh), profile);
+          split = splitMeshByBands(b.mesh, { bands, profile, ...(blend ? { blend: printBlendOptions(null) } : {}) });
+        } else {
+          split = bandMeshFromColoredMesh(b.mesh, profile);
+        }
+        memo = { key, kind: spec ? 'layerColors' : 'paint', split, frame: { min, max } };
+        previewSplits.set(id, memo);
+      }
+      const { split } = memo;
+      // The middle of the requested layer: a cut snaps to the top of the layer it falls in.
+      const cut = cutBandMesh(split, view.layer === null ? undefined : layerTopZ(view.layer - 1, split.profile) - split.profile.layerHeight / 2);
+      if (cut.mesh.numTri === 0) return null;
+      const canvas = renderSingleViewCanvas(cut.mesh, {
+        elevation: STANDARD_VIEWS.iso.elevation, azimuth: STANDARD_VIEWS.iso.azimuth,
+        ortho: STANDARD_VIEWS.iso.ortho, size: view.size, annotations: false,
+        // A small picture of what may be a very large object: draw big ones
+        // from the simplified proxy, so dragging the slider stays responsive.
+        thumbnail: true,
+        // Framed on the whole object, so scrubbing the layers doesn't move the camera.
+        frame: memo.frame,
+      });
+      const note = declared && !layerColours ? 'A generic 3MF does not carry its colours by layer height; the Bambu/Orca project export does.'
+        : !cut.capped ? 'The object is not a closed solid at this height, so part of the cut is open.'
+          : undefined;
+      return { canvas, kind: memo.kind, totalLayers: cut.totalLayers, layer: cut.shownLayers, z: cut.cutZ === null ? null : mm3(cut.cutZ), height: mm3(split.height), ...(note ? { note } : {}) };
+    };
+    return { bake, analyze, thumbnail, analysisOf, cancel, printPreview, isReady: (id: string) => ready.has(id) };
   }
   type ExportSplitSession = ReturnType<typeof createExportSplitSession>;
 
@@ -7137,7 +7370,7 @@ async function main() {
   /** Turn baked objects + a split choice into the items one file holds: a
    *  whole object stays one item; a split object becomes one item per piece
    *  or part (named "<object> · <item>"), minus the excluded ones. */
-  function buildExportItems(baked: BakedExportObject[], session: ExportSplitSession, choice: ExportItemChoice): PartExport[] {
+  function buildExportItems(baked: BakedExportObject[], session: ExportSplitSession, choice: ExportItemChoice, warn?: (message: string) => void): PartExport[] {
     const out: PartExport[] = [];
     for (const b of baked) {
       const mode = choice.splits?.[b.id] ?? 'whole';
@@ -7145,9 +7378,11 @@ async function main() {
       const plates = choice.plates?.[b.id];
       if (!items) {
         const plate = plates?.[WHOLE_ITEM_KEY];
-        out.push({ name: b.name, mesh: b.mesh, ...(b.group ? { group: b.group } : {}), ...(plate !== undefined ? { plate } : {}) });
+        // Layer colours are heights above the bed, so they only carry over to a whole object: a split piece sits on its own bed floor.
+        out.push({ name: b.name, mesh: b.mesh, ...(b.group ? { group: b.group } : {}), ...(plate !== undefined ? { plate } : {}), ...(b.layerColors ? { layerColors: b.layerColors } : {}) });
         continue;
       }
+      if (declaresLayerColors(b.layerColors ?? null)) warn?.(`"${b.name}" is exported as separate ${mode === 'pieces' ? 'pieces' : 'parts'}, so its layer colours were left out: they are heights above the bed of the whole object.`);
       const skip = new Set(choice.excluded?.[b.id] ?? []);
       for (const it of items) {
         if (skip.has(it.key)) continue;
@@ -8211,6 +8446,7 @@ async function main() {
       // the two-pane layout so the arrangement control is always visible.
       ...(bambu ? {} : { packing: true }),
       split: splitPickerOptions(session),
+      printPreview: { render: (id, view) => session.printPreview(id, view, bambu) },
     });
     if (!selected || selected.partIds.length === 0) { session.cancel(); return; }
     // A single object kept whole exports exactly as before the picker existed
@@ -8237,7 +8473,8 @@ async function main() {
       const baked = await bakeSelectionForExport(bakeParts, session, progress, cancel);
       if (cancel.cancelled) { showToast('3MF export cancelled.', { variant: 'neutral' }); return; }
       if (baked.length === 0) { showToast('None of the selected objects produced geometry to export.', { variant: 'warn' }); return; }
-      const items = buildExportItems(baked, session, selected);
+      const exportWarnings: string[] = [];
+      const items = buildExportItems(baked, session, selected, (w) => { exportWarnings.push(w); });
       if (items.length === 0) { showToast('Nothing left to export — every piece was left out.', { variant: 'warn' }); return; }
       // Filament colours: merge near-identical shades before writing (export-only).
       progress.end();
@@ -8251,7 +8488,9 @@ async function main() {
         bambu, bedSize: [bed[0], bed[1]],
         printer: selected.printer, nozzle: selected.nozzle, filament: selected.filament,
         plateLayout: selected.plateLayout, packStrategy: selected.packStrategy,
+        ...printExportOptions(exportWarnings),
       });
+      for (const w of exportWarnings) showToast(w, { variant: 'warn', source: 'export' });
       downloadBlob(built.blob, built.filename, '3MF');
       showToast(`Exported ${built.filename} — ${exportedSummary(bakeParts.length, baked.length, items)}`, { variant: 'success' });
     } catch (e) {
@@ -8426,7 +8665,7 @@ async function main() {
   /** Console/AI core for the multi-object exports: validate the object ids
    *  (default: all), bake each object's coloured mesh off-editor, and turn
    *  them into the file's items per the split options. */
-  async function bakeItemsForExport(fn: string, partIds: string[] | undefined, opts: ApiExportSplitOpts | undefined): Promise<{ items: PartExport[]; baked: BakedExportObject[]; split: boolean } | { error: string }> {
+  async function bakeItemsForExport(fn: string, partIds: string[] | undefined, opts: ApiExportSplitOpts | undefined): Promise<{ items: PartExport[]; baked: BakedExportObject[]; split: boolean; layerWarnings: string[] } | { error: string }> {
     const allParts = getState().parts;
     if (allParts.length === 0) return { error: 'No objects in this session.' };
     let ids = partIds;
@@ -8445,9 +8684,10 @@ async function main() {
     if (baked.length === 0) return { error: 'None of the selected objects produced geometry to export.' };
     const r = resolveApiSplit(fn, baked, session, opts);
     if ('error' in r) return r;
-    const items = buildExportItems(baked, session, r.choice);
+    const layerWarnings: string[] = [];
+    const items = buildExportItems(baked, session, r.choice, (w) => { layerWarnings.push(w); });
     if (items.length === 0) return { error: `${fn}: nothing left to export — every item was excluded.` };
-    return { items, baked, split: !!r.choice.splits && Object.keys(r.choice.splits).length > 0 };
+    return { items, baked, split: !!r.choice.splits && Object.keys(r.choice.splits).length > 0, layerWarnings };
   }
 
   /** The result fields every multi-object export reports: `objects` counts
@@ -8553,7 +8793,7 @@ async function main() {
    *  BuiltExport (no download, no base64) so callers can either trigger a
    *  download or return the bytes. `opts.bambu` (default true) → one part per
    *  build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
-  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: ApiExportOpts): Promise<{ built: import('./export/gltf').BuiltExport; items: PartExport[]; baked: BakedExportObject[]; split: boolean } | { error: string }> {
+  async function build3MFPartsExport(partIds?: string[], filename?: string, opts?: ApiExportOpts): Promise<{ built: import('./export/gltf').BuiltExport; items: PartExport[]; baked: BakedExportObject[]; split: boolean; warnings: string[] } | { error: string }> {
     const bambu = opts?.bambu ?? true;
     // Validate the Bambu profile selectors at the boundary so a console/AI/MCP
     // caller gets the same constraints the export modal's dropdowns enforce. An
@@ -8587,13 +8827,15 @@ async function main() {
     const { remap } = merge;
     try {
       const bed = loadPrinterSettings().bed;
+      const warnings: string[] = [...r.layerWarnings];
       const built = build3MFProject(r.items.map(b => ({ ...b, mesh: applyColorRemap(b.mesh, remap) })), {
         customName: filename, bambu, bedSize: [bed[0], bed[1]],
         printer: opts?.printer, nozzle: opts?.nozzle, filament: opts?.filament,
         plateLayout: opts?.plateLayout as BambuPlateLayout | undefined,
         packStrategy: opts?.packStrategy as PackStrategy | undefined,
+        ...printExportOptions(warnings),
       });
-      return { built, items: r.items, baked: r.baked, split: r.split };
+      return { built, items: r.items, baked: r.baked, split: r.split, warnings };
     } catch (e) {
       return { error: e instanceof Error ? e.message : String(e) };
     }
@@ -8602,19 +8844,19 @@ async function main() {
   /** Console/AI twin of the multi-part 3MF export — bakes the requested parts
    *  (default: all) and DOWNLOADS one 3MF. `opts.bambu` (default true) → one part
    *  per build plate (Bambu/Orca project); false → a generic multi-object 3MF. */
-  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: ApiExportOpts): Promise<{ ok: true; filename: string; objects: number; parts: number; items?: string[] } | { error: string }> {
+  async function export3MFPartsApi(partIds?: string[], filename?: string, opts?: ApiExportOpts): Promise<{ ok: true; filename: string; objects: number; parts: number; items?: string[]; warnings?: string[] } | { error: string }> {
     const bad = argError(() => assertString(filename, 'export3MFObjects(objectIds, filename)', { optional: true }));
     if (bad) return bad;
     const r = await build3MFPartsExport(partIds, filename, opts);
     if ('error' in r) return r;
     downloadBlob(r.built.blob, r.built.filename, '3MF');
-    return { ok: true as const, filename: r.built.filename, ...exportCounts(r) };
+    return { ok: true as const, filename: r.built.filename, ...exportCounts(r), ...(r.warnings.length > 0 ? { warnings: r.warnings } : {}) };
   }
 
   /** Like {@link export3MFPartsApi} but RETURNS the bytes (base64) instead of
    *  downloading — the agent/test-friendly twin. Lets a caller read the exported
    *  3MF back without the browser download path. */
-  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: ApiExportOpts): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; objects: number; parts: number; items?: string[] } | { error: string }> {
+  async function export3MFPartsDataApi(partIds?: string[], filename?: string, opts?: ApiExportOpts): Promise<{ filename: string; mimeType: string; sizeBytes: number; base64: string; objects: number; parts: number; items?: string[]; warnings?: string[] } | { error: string }> {
     const bad = argError(() => assertString(filename, 'export3MFObjectsData(objectIds, filename)', { optional: true }));
     if (bad) return bad;
     const r = await build3MFPartsExport(partIds, filename, opts);
@@ -8625,6 +8867,7 @@ async function main() {
       sizeBytes: r.built.blob.size,
       base64: await blobToBase64(r.built.blob),
       ...exportCounts(r),
+      ...(r.warnings.length > 0 ? { warnings: r.warnings } : {}),
     };
   }
 
@@ -8879,14 +9122,18 @@ async function main() {
       const mesh = fileExportMesh(true);
       if (!mesh) return null;
       const bed = loadPrinterSettings().bed;
-      const built = build3MFProject([{ name: getState().session?.name ?? 'model', mesh }], {
+      const publishWarnings: string[] = [];
+      const built = build3MFProject([{ name: getState().session?.name ?? 'model', mesh, ...(currentLayerColors ? { layerColors: currentLayerColors } : {}) }], {
         bambu: true, bedSize: [bed[0], bed[1]],
         printer: DEFAULT_BAMBU_PRINTER, nozzle: '0.4', filament: DEFAULT_BAMBU_FILAMENT,
+        ...printExportOptions(publishWarnings),
       });
+      for (const w of publishWarnings) showToast(w, { variant: 'warn', source: 'export' });
       return { blob: built.blob, filename: built.filename };
     }
     const mesh = fileExportMesh(format !== 'stl');
     if (!mesh) return null;
+    if (format === '3mf' && currentLayerColors) showToast(PLAIN_3MF_LAYER_NOTE, { variant: 'neutral', source: 'export' });
     const built = format === '3mf' ? build3MF(mesh)
       : format === 'obj' ? buildOBJ(mesh)
       : buildSTL(mesh);
@@ -10987,6 +11234,10 @@ async function main() {
       lastVoxelRun = cachedEntry.voxelRun;
       lastRunLogs = cachedEntry.logs;
       modelConsolePanel?.setLogs(cachedEntry.logs);
+      // This object's own layer colours. (rehydrateColorRegions below puts the
+      // print preview back on screen when it is on.)
+      currentLayerColors = cachedEntry.layerColors;
+      onPrintPreviewChange?.();
       // Show the geometry; colours (model underlay + any user paint) are applied
       // by the single rehydrateColorRegions pass below, which both load branches
       // share — so this branch no longer hand-rolls its own colour stamp (the
@@ -11105,6 +11356,7 @@ async function main() {
           // runCodeSync assigned it since.)
           engineRun: (lastEngineRun as EngineRunRecord | null)?.shown === currentMeshData ? lastEngineRun : null,
           logs: lastRunLogs,
+          layerColors: currentLayerColors,
           layeredPlan: currentLayeredPlan,
         };
         partMeshCache.delete(version.id);
@@ -12148,7 +12400,9 @@ async function main() {
 
   // Keep the live triangle-count readout (and high-complexity warning) in sync
   // with every displayed mesh — runs, paint strokes, simplify, clear.
-  setOnMeshUpdate((mesh) => { refreshTriangleCount(mesh.numTri); syncPartSelectionAfterMeshUpdate(mesh); reapplyHiddenObjectParts(); refreshObjectParts(); refreshRecoverable(); });
+  setOnMeshUpdate((mesh) => {
+    // The print preview re-splits the model for display; the count is the model's own.
+    refreshTriangleCount(mesh === shownPrintPreviewMesh && currentMeshData ? currentMeshData.numTri : mesh.numTri); syncPartSelectionAfterMeshUpdate(mesh); reapplyHiddenObjectParts(); refreshObjectParts(); refreshRecoverable(); });
   // Surface WebGL context loss / recovery as a toast (three.js auto-restores
   // the GL programs; the viewport just pauses + resumes its render loop).
   setOnContextLost(() => {
@@ -12664,9 +12918,11 @@ async function main() {
       }
     }
     updateMesh(mesh);
+    showPrintPreviewIfActive();
     updatePaintMesh(mesh);
     updateGeometryData();
     syncClipSliderBounds();
+    onPrintPreviewChange?.();
   }
 
   function showNonManifoldResultToast(): void {
@@ -14106,7 +14362,7 @@ async function main() {
   function clearSurfacePreview(): void {
     if (!currentMeshData) return;
     const restored = modelHasColor() ? applyTriColorsIfVisible(currentMeshData) : currentMeshData;
-    updateMesh(restored, { skipAutoFrame: true });
+    showModel(restored, { skipAutoFrame: true });
   }
 
   // Carry paint from the pre-modifier mesh onto a re-tessellated manifold result
@@ -14903,13 +15159,99 @@ async function main() {
     const result = applyRegionEdit(currentMeshData, opts, baseTriangleIds);
     if ('error' in result) return result;
     if (result.added > 0 || result.removed > 0) {
-      updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
+      showModel(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
       syncLockState();
     }
     if (paintBaseMesh && currentMeshData !== paintBaseMesh) {
       return { ...result, note: 'The mesh is subdivided by smooth paint: this edit is exact now, but it is stored as whole base triangles, so a later rebuild or reload snaps its edge out to them. Make region edits before adding smooth regions.' };
     }
     return result;
+  }
+
+  // ── Print colours by layer height (api.print.layerColors) ───────────────
+
+  /** What `getLayerColors()` returns. Layer numbers are 1-based, as a slicer shows them. */
+  function describeLayerColors() {
+    const spec = declaresLayerColors(currentLayerColors) ? currentLayerColors : null;
+    const info = currentPrintBands();
+    // A layered photo print has no api.print.layerColors call: its bands come from its swap plan.
+    const plan = !spec && info?.source?.kind === 'layeredPrint' ? info.plan : null;
+    const profile = plan ? plan.profile : printLayerProfile(spec);
+    const warnings: string[] = [];
+    if (spec && currentLayeredPlan) {
+      warnings.push('This object is a layered photo print that also declares layer colours. The preview and the 3MF project export use the declared layer colours; exportLayeredPrint3MF uses the print\'s own swap plan.');
+    } else if (spec && modelHasColor()) {
+      warnings.push('This object also has painted or label colours. A slicer ignores layer colour changes on an object that carries per-triangle paint, so a 3MF project export writes the layer colours and leaves that paint out.');
+    }
+    return {
+      /** True when the code declares api.print.layerColors. */
+      declared: spec !== null,
+      /** Where the bands come from: the code's layer colours, a layered photo print's swap plan, or nothing. */
+      source: spec ? 'layerColors' as const : plan ? 'layeredPrint' as const : null,
+      changes: spec ? spec.changes.map(c => ({ z: c.z, color: c.color }))
+        : plan ? plan.changes.map((c, i) => ({ z: mm3(c.z), color: c.color, name: plan.names[i] }))
+          : [],
+      layerHeight: profile.layerHeight,
+      firstLayerHeight: profile.firstLayerHeight,
+      modelHeight: info ? mm3(info.height) : 0,
+      totalLayers: info ? layerCount(info.height, info.profile) : 0,
+      bands: (spec || plan) && info ? info.bands.map(b => ({ color: b.color, fromZ: mm3(b.fromZ), toZ: mm3(b.toZ), firstLayer: b.firstLayer + 1, lastLayer: b.lastLayer + 1 })) : [],
+      ...(warnings.length > 0 ? { warnings } : {}),
+    };
+  }
+
+  /** What `getPrintPreview()` / `setPrintPreview()` return. */
+  function describePrintPreview() {
+    const shown = printPreviewState.enabled ? buildPrintPreview() : null;
+    const info = currentPrintBands();
+    const totalLayers = info ? layerCount(info.height, info.profile) : 0;
+    const notes: string[] = [];
+    if (printPreviewState.enabled && !info?.source) notes.push('The preview is on, but this object declares no layer colours and is not a layered photo print, so the model is shown as usual. Declare them with setLayerColors([{ z, color }, …]) or api.print.layerColors in the code.');
+    if (shown && !shown.capped) notes.push('The model is not a closed solid at this height, so the cut could not be capped.');
+    return {
+      enabled: printPreviewState.enabled,
+      /** True when the viewport is actually drawing the layer-colour preview. */
+      showing: shown !== null && shown.mesh.numTri > 0,
+      /** Layers printed at the current cut (equals totalLayers when shown whole). */
+      layer: shown ? shown.shownLayers : totalLayers,
+      totalLayers,
+      /** Height of the cut in mm above the bed, or null when shown whole. */
+      z: shown && shown.cutZ !== null ? mm3(shown.cutZ) : null,
+      blend: printPreviewState.blend,
+      ...(notes.length > 0 ? { notes } : {}),
+    };
+  }
+
+  /** Apply a text edit of the layer-colours call to the open object's code,
+   *  run it and save a version. Restores the code when the edit doesn't run. */
+  async function commitLayerColorsCode(edit: (code: string) => { code: string; call: string; replaced: boolean } | null, label: string) {
+    if (isReadOnlyViewer()) return { error: 'This tab is a read-only viewer of the session.' };
+    if (isSharedPreview()) return { error: SHARED_PREVIEW_REFUSAL };
+    if (getActiveLanguage() !== 'manifold-js') {
+      return { error: `Layer colours are declared in manifold-js code (api.print.layerColors); this session is ${getActiveLanguage()}. They are not supported for SCAD, BREP or voxel sessions yet.` };
+    }
+    const previousCode = getValue();
+    const up = edit(previousCode);
+    if (!up) return { error: 'Could not find a `return` in the code to put the api.print.layerColors call before. Add the call by hand.' };
+    if (up.code === previousCode) return { ok: true as const, call: up.call, replaced: up.replaced, unchanged: true, layerColors: describeLayerColors() };
+    setValue(up.code);
+    const restore = async (why: string) => {
+      setValue(previousCode);
+      await runCodeSync(previousCode);
+      return { error: `${why} The code was restored.` };
+    };
+    if (!(await runCodeSync(up.code))) return restore(runFailedMessage());
+    const geo = getGeometryDataObj() as { status?: string; error?: string } | null;
+    if (geo?.status === 'error') return restore(`That didn't work: ${geo.error ?? 'run error'}.`);
+    const saved = await saveCurrentVersion(label);
+    return {
+      ok: true as const,
+      call: up.call,
+      replaced: up.replaced,
+      ...('id' in saved ? { version: { id: saved.id, index: saved.index, label: saved.label } } : {}),
+      ...('error' in saved ? { saveWarning: saved.error } : {}),
+      layerColors: describeLayerColors(),
+    };
   }
 
   const partwrightAPI = {
@@ -15839,7 +16181,7 @@ async function main() {
         return { error: msg };
       } finally {
         // Restore the live mesh (the recording swapped exploded frames in).
-        updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
+        if (currentMeshData) showModel(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
       }
     },
 
@@ -15889,7 +16231,7 @@ async function main() {
       } catch (e) {
         return { error: e instanceof Error ? e.message : 'Parameter-sweep recording failed' };
       } finally {
-        updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
+        showModel(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
       }
     },
 
@@ -16168,6 +16510,7 @@ async function main() {
         mimeType: built.mimeType,
         sizeBytes: built.blob.size,
         base64: await blobToBase64(built.blob),
+        ...(currentLayerColors ? { layerColorsNote: PLAIN_3MF_LAYER_NOTE } : {}),
         ...(warning ? { warning } : {}),
       };
     },
@@ -17051,7 +17394,8 @@ async function main() {
       // The setReferenceGeometry ghost shows by default — it was set to check a fit.
       const reference = options?.reference ?? hasPhantom();
       const { focus: _f, padding: _p, clip: _c, ...view } = options ?? {};
-      return renderSingleView(applyTriColorsIfVisible(currentMeshData), { ...view, size, reference, ...focus });
+      // With the print preview on, renders show what the viewport shows.
+      return renderSingleView(printPreviewDisplayMesh() ?? applyTriColorsIfVisible(currentMeshData), { ...view, size, reference, ...focus });
     },
 
     /** Text-only likeness score: how close the CURRENT model is to a reference
@@ -17411,7 +17755,8 @@ async function main() {
       const budget = getRenderBudget();
       const which = options?.views ?? budget.angles;
       const tileSize = options?.size ?? budget.defaultPx;
-      const colored = applyTriColorsIfVisible(currentMeshData);
+      // With the print preview on, renders show what the viewport shows.
+      const colored = printPreviewDisplayMesh() ?? applyTriColorsIfVisible(currentMeshData);
       // The setReferenceGeometry ghost shows by default — it was set to check a fit.
       const reference = options?.reference ?? hasPhantom();
       const explicit = options?.angles;
@@ -21192,6 +21537,83 @@ async function main() {
       return _getUnits();
     },
 
+    // === Print colours by layer height + print preview ===
+
+    /** The layer colours the open object's code declares and the bands they print as. */
+    getLayerColors() {
+      return describeLayerColors();
+    },
+
+    /** Declare the open object's print colours by layer height: writes (or
+     *  rewrites) the `api.print.layerColors([...])` call in its code, runs it
+     *  and saves a version. `changes` is `[{ z, color }]`: from height `z`
+     *  (mm above the bed) up, print in `color`. An entry at z 0 sets the
+     *  colour of the first layers. */
+    async setLayerColors(changes: unknown, options?: unknown) {
+      const check = guard(() => {
+        try {
+          return parseLayerColorsSpec(changes, options);
+        } catch (e) {
+          throw new ValidationError(`setLayerColors: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      // No changes = no layer colours: the same as clearLayerColors().
+      if (check.changes.length === 0) return partwrightAPI.clearLayerColors();
+      return commitLayerColorsCode((code) => upsertLayerColorsCall(code, check.changes, { layerHeight: check.layerHeight, firstLayerHeight: check.firstLayerHeight }), 'api.print.layerColors');
+    },
+
+    /** Remove the open object's layer colours (deletes the call from its code). */
+    async clearLayerColors() {
+      if (currentLayerColors === null && !/layerColors/.test(getValue())) return { ok: true as const, removed: false, layerColors: describeLayerColors() };
+      return commitLayerColorsCode((code) => removeLayerColorsCall(code), 'Remove layer colours');
+    },
+
+    /** Turn the print preview on or off and set what it shows. `layer` (how
+     *  many layers are printed, like a slicer's layer slider) or `z` (mm above
+     *  the bed) cuts the model there; null shows it whole. `blend` estimates
+     *  how thin translucent top layers mix. Returns the new state. */
+    setPrintPreview(opts?: { enabled?: boolean; layer?: number | null; z?: number | null; blend?: boolean }) {
+      const bad = argError(() => {
+        if (opts === undefined) return;
+        const o = assertObject(opts, 'setPrintPreview(opts)')!;
+        assertNoUnknownKeys(o, ['enabled', 'layer', 'z', 'blend'], 'setPrintPreview(opts)');
+        assertBoolean(o.enabled, 'setPrintPreview(opts.enabled)', { optional: true });
+        assertBoolean(o.blend, 'setPrintPreview(opts.blend)', { optional: true });
+        if (o.layer !== undefined && o.layer !== null) assertNumber(o.layer, 'setPrintPreview(opts.layer)', { integer: true, min: 1 });
+        if (o.z !== undefined && o.z !== null) assertNumber(o.z, 'setPrintPreview(opts.z)', { min: 0 });
+        if (o.layer !== undefined && o.layer !== null && o.z !== undefined && o.z !== null) throw new ValidationError('setPrintPreview(opts): pass layer or z, not both.');
+      });
+      if (bad) return bad;
+      if (opts?.enabled === true && !(currentMeshData && currentMeshData.numTri > 0)) return { error: 'setPrintPreview: there is no model yet. Run a model first, then turn the preview on.' };
+      if (opts?.enabled !== undefined) printPreviewState.enabled = opts.enabled;
+      // The preview and its panel go together, however it was turned on: the
+      // panel shows that the viewport is in preview and lets the user leave it,
+      // and opening another tool (Paint, Parts…) closes it, so no tool ever
+      // picks triangles off the preview's re-split mesh.
+      if (opts?.enabled === true) openPrintPreviewPanel();
+      if (opts?.enabled === false) {
+        closePrintPreviewPanel();
+        dropPrintPreviewMemo();
+      }
+      if (opts?.blend !== undefined) printPreviewState.blend = opts.blend;
+      if (opts?.z !== undefined) printPreviewState.cutZ = opts.z;
+      if (opts?.layer !== undefined) {
+        const info = currentPrintBands();
+        // The middle of the requested layer: the preview snaps a cut to the top of the layer it falls in.
+        printPreviewState.cutZ = opts.layer === null || !info ? null : layerTopZ(opts.layer - 1, info.profile) - info.profile.layerHeight / 2;
+      }
+      // Redraw: the preview when it applies, otherwise the model's own colours.
+      paintedColorRefresh();
+      onPrintPreviewChange?.();
+      return describePrintPreview();
+    },
+
+    /** The print preview's current state. */
+    getPrintPreview() {
+      return describePrintPreview();
+    },
+
     // === Phase 5: Measuring Tool ===
 
     /** Toggle interactive measure mode — click two points to measure distance.
@@ -21337,8 +21759,7 @@ async function main() {
         triangles,
       );
 
-      const colored = applyTriColorsIfVisible(currentMeshData);
-      updateMesh(colored, { skipAutoFrame: true });
+      showModel(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
       syncLockState();
 
       const emptyErr = emptyScopeError(region, opts.withinPart, 'paintNearestRegion');
@@ -21392,8 +21813,7 @@ async function main() {
         triangles,
       );
 
-      const colored = applyTriColorsIfVisible(currentMeshData);
-      updateMesh(colored, { skipAutoFrame: true });
+      showModel(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
       syncLockState();
 
       return { id: region.id, name: region.name, triangles: triangles.size };
@@ -24542,6 +24962,11 @@ async function main() {
         'measureBetween': { signature: 'measureBetween([x,y,z], [x,y,z]) -- Alias of measurePoints -> number or {error}. Check typeof r === "number" before comparing', docs: '/ai.md#console-api--windowpartwright' },
         'measureMode': { signature: 'measureMode(enabled?) -- Turn the interactive two-click measure tool on/off (omit to toggle); locks orbit while on. Throws on a non-boolean', docs: '/ai.md#console-api--windowpartwright' },
         'getMeasurement': { signature: 'getMeasurement() -- Interactive measure state -> {active, point1, point2, distance} (points/distance null until clicked)', docs: '/ai.md#console-api--windowpartwright' },
+        'getLayerColors': { signature: "getLayerColors() -- Print colours by layer height the open object's code declares, or a layered photo print's swap plan: {declared, source: 'layerColors'|'layeredPrint'|null, changes:[{z,color,name?}], layerHeight, firstLayerHeight, modelHeight, totalLayers, bands:[{color,fromZ,toZ,firstLayer,lastLayer}], warnings?}", docs: '/ai/printing.md#colours-by-layer-height' },
+        'setLayerColors': { signature: "setLayerColors([{z, color}], {layerHeight?, firstLayerHeight?}?) -- Declare print colours by layer height (from z mm above the bed up, print in color; z:0 sets the first layers). Writes api.print.layerColors(...) into the code, runs and saves. An empty list removes them. manifold-js only. Returns {ok, call, replaced, version?, layerColors} or {error}", docs: '/ai/printing.md#colours-by-layer-height' },
+        'clearLayerColors': { signature: "clearLayerColors() -- Remove the api.print.layerColors call from the open object's code, run and save", docs: '/ai/printing.md#colours-by-layer-height' },
+        'setPrintPreview': { signature: "setPrintPreview({enabled?, layer?, z?, blend?}) -- Print preview: draw the model as the layer-colour bands that will print. layer (layers printed, 1-based) or z (mm above the bed) cuts it like a slicer's layer slider; null shows it whole. blend estimates how thin translucent top layers mix. renderView/renderViews show the preview while it is on. Turning it on opens the Print preview panel (off closes it); opening another tool turns it off. Returns the state or {error}", docs: '/ai/printing.md#print-preview' },
+        'getPrintPreview': { signature: "getPrintPreview() -- {enabled, showing, layer, totalLayers, z, blend, notes?}", docs: '/ai/printing.md#print-preview' },
         'setUnits': { signature: "setUnits('mm'|'cm'|'in'|'unitless') -- Declare the unit system (export metadata only; no scaling). Throws on a bad unit", docs: '/ai.md#console-api--windowpartwright' },
         'getUnits': { signature: "getUnits() -- Declared unit system -> 'mm' | 'cm' | 'in' | 'unitless'", docs: '/ai.md#console-api--windowpartwright' },
         'probePixel':      { signature: 'probePixel({pixel: [x,y], view}) -- Translate a pixel in a rendered view back to a surface hit: {point, normal, distance, triangleId, nextStep}. The view spec must match the renderView call (incl. focus/padding/clip). On a background pixel returns {hit:false, modelPixelBounds, reason, hint} telling you where the model projects so you can re-aim.', docs: '/ai.md#console-api--windowpartwright' },
@@ -24943,6 +25368,47 @@ async function main() {
     check: (overrides) => partwrightAPI.checkPrintability(overrides),
   };
   initPrintToolsUI(clipControls, printToolsHandlers);
+
+  // Print preview panel: thin wrappers over the same window.partwright methods agents call.
+  const printPreviewHandlers: PrintPreviewHandlers = {
+    hasModel: () => currentMeshData !== null && currentMeshData.numTri > 0,
+    canEdit: () => {
+      if (isReadOnlyViewer()) return { ok: false, reason: 'This tab is a read-only viewer of the session, so the colours can\'t be edited here.' };
+      if (isSharedPreview()) return { ok: false, reason: 'Fork this shared design to edit its layer colours.' };
+      if (getActiveLanguage() !== 'manifold-js') return { ok: false, reason: 'Layer colours can be edited in JavaScript models only for now. This session uses another language.' };
+      if (activePrintSource()?.kind === 'layeredPrint') return { ok: false, reason: 'This is a layered photo print. Its filament swaps come from api.layeredPrint in the code, so they are shown here and changed there (or by making the print again).' };
+      return { ok: true };
+    },
+    getLayerColors: () => describeLayerColors(),
+    getView: () => describePrintPreview(),
+    setView: (opts) => partwrightAPI.setPrintPreview(opts),
+    hasDraft: () => { activeLayerColors(); return printPreviewDraft !== null; },
+    setDraft: (changes) => {
+      printPreviewDraftScope = changes ? printPreviewScope() : null;
+      printPreviewDraft = changes
+        ? { changes: changes.map(c => ({ z: c.z, color: c.color })), ...(currentLayerColors?.layerHeight !== undefined ? { layerHeight: currentLayerColors.layerHeight } : {}), ...(currentLayerColors?.firstLayerHeight !== undefined ? { firstLayerHeight: currentLayerColors.firstLayerHeight } : {}) }
+        : null;
+      paintedColorRefresh();
+    },
+    apply: async (changes) => {
+      const heights = { ...(currentLayerColors?.layerHeight !== undefined ? { layerHeight: currentLayerColors.layerHeight } : {}), ...(currentLayerColors?.firstLayerHeight !== undefined ? { firstLayerHeight: currentLayerColors.firstLayerHeight } : {}) };
+      const r = await partwrightAPI.setLayerColors(changes, Object.keys(heights).length > 0 ? heights : undefined);
+      return 'error' in r && typeof r.error === 'string' ? { error: r.error } : { ok: true };
+    },
+    clear: async () => {
+      const r = await partwrightAPI.clearLayerColors();
+      return 'error' in r && typeof r.error === 'string' ? { error: r.error } : { ok: true };
+    },
+    onChange: (cb) => { onPrintPreviewChange = cb; },
+  };
+  initPrintPreviewUI(clipControls, printPreviewHandlers);
+  // Another object or session came on screen: unsaved panel edits belong to the one that left.
+  onStateChange(() => {
+    if (printPreviewDraft && printPreviewDraftScope !== printPreviewScope()) {
+      activeLayerColors();
+      onPrintPreviewChange?.();
+    }
+  });
 
   // Log API availability for AI agents
   console.info('Partwright: AI agents should use window.partwright -- start with partwright.help(). window.mainifold remains as a legacy alias. See /llms.txt');
@@ -26338,6 +26804,9 @@ async function main() {
       // or clear back to the studio default when this run declared none.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       setMaterialOverride((result.materialSpec as any) ?? null);
+      // Print colours by layer height declared in code (api.print.layerColors),
+      // or none: the print preview and the 3MF project export read this.
+      currentLayerColors = declaresLayerColors(result.layerColors ?? null) ? result.layerColors! : null;
 
       // Apply any existing color regions to the mesh. Refining regions —
       // smooth brush strokes AND smooth slab/box regions — subdivide the mesh:
@@ -26395,6 +26864,17 @@ async function main() {
 
       updateGeometryData(elapsed, src);
       syncClipSliderBounds();
+      // The run just redrew the model in its own colours; put the print
+      // preview back on top when it is on, and let an open panel refresh.
+      // A panel draft is an edit of api.print.layerColors. If this run turned
+      // the object into a layered photo print (whose swaps are read-only here),
+      // the draft no longer has anything to edit.
+      if (currentLayeredPlan && !currentLayerColors && printPreviewDraft) {
+        printPreviewDraft = null;
+        printPreviewDraftScope = null;
+      }
+      showPrintPreviewIfActive();
+      onPrintPreviewChange?.();
       // A fresh run replaces the geometry, so any simplify baseline is stale.
       // Drop it and let an open panel re-snapshot the new mesh.
       simplifyBaselineMesh = null;
