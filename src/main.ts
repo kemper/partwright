@@ -51,7 +51,7 @@ import { createLayout, type TabName } from './ui/layout';
 import { bindSliderEntry, type SliderEntry } from './ui/sliderEntry';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState, setRunState } from './ui/toolbar';
 import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
-import { registerCommands, listCommands, runCommandById, isCommandPaletteOpen } from './ui/commandPalette';
+import { registerCommands, listCommands, runCommandById, isCommandPaletteOpen, setCommandPaletteFallback } from './ui/commandPalette';
 import { listTools, getTool, getOpenTool, registerTool, openTool as openRegisteredTool, notifyToolApplied, type ToolSpec } from './ui/toolRegistry';
 import { registerHostTools } from './ui/hostTools';
 import { getActiveMode } from './ui/modeExclusion';
@@ -10950,23 +10950,23 @@ async function main() {
     // the same opener the Tools button and partwright.openTool use; the rest
     // still fire their overlay button by id (click() works inside a collapsed
     // popover).
-    { id: 'tool-measure', title: 'Measure distance', hint: 'Inspect', keywords: 'distance ruler dimension length point', run: () => toggleRegisteredTool('tool-measure'), enabled: viewportToolEnabled },
-    { id: 'tool-cross-section', title: 'Cross section', hint: 'Inspect', keywords: 'clip plane slice cut section interior', run: () => toggleRegisteredTool('tool-cross-section'), enabled: viewportToolEnabled },
-    { id: 'tool-paint', title: 'Paint colors', hint: 'Tools', keywords: 'color region brush bucket filament multicolor airbrush', run: () => toggleRegisteredTool('tool-paint'), enabled: viewportToolEnabled },
-    { id: 'tool-palette', title: 'Manage filament palette', hint: 'Tools', keywords: 'palette filament slots colours capacity', run: () => toggleRegisteredTool('tool-palette'), enabled: viewportToolEnabled },
-    { id: 'tool-image-paint', title: 'Stamp image onto model', hint: 'Tools', keywords: 'image stamp decal texture paint photo logo', run: () => toggleRegisteredTool('tool-image-paint'), enabled: viewportToolEnabled },
-    { id: 'tool-annotate', title: 'Annotate (draw / text)', hint: 'Tools', keywords: 'draw pen text label note markup sketch arrow', run: () => toggleRegisteredTool('tool-annotate'), enabled: viewportToolEnabled },
-    { id: 'tool-quality', title: 'Quality: simplify / enhance', hint: 'Tools', keywords: 'simplify enhance decimate reduce triangles quality curvature smoothness', run: () => toggleRegisteredTool('tool-quality'), enabled: viewportToolEnabled },
-    { id: 'tool-customize', title: 'Customize parameters', hint: 'Tools', keywords: 'parameters params sliders tweak knobs', run: () => toggleRegisteredTool('tool-customize'), enabled: () => isEditorActive() && !document.getElementById('customize-toggle')?.classList.contains('hidden') },
+    { id: 'tool-measure', title: 'Measure distance', hint: 'Inspect', description: 'Click two points on the model to read the distance between them.', keywords: 'distance ruler dimension length point', run: () => toggleRegisteredTool('tool-measure'), enabled: viewportToolEnabled },
+    { id: 'tool-cross-section', title: 'Cross section', hint: 'Inspect', description: 'Slice the model with a moving plane to see inside it.', keywords: 'clip plane slice cut section interior', run: () => toggleRegisteredTool('tool-cross-section'), enabled: viewportToolEnabled },
+    { id: 'tool-paint', title: 'Paint colors', hint: 'Tools', description: 'Colour regions of the model for multi-filament prints.', keywords: 'color region brush bucket filament multicolor airbrush', run: () => toggleRegisteredTool('tool-paint'), enabled: viewportToolEnabled },
+    { id: 'tool-palette', title: 'Manage filament palette', hint: 'Tools', description: 'Choose the filament colours your printer has loaded.', keywords: 'palette filament slots colours capacity', run: () => toggleRegisteredTool('tool-palette'), enabled: viewportToolEnabled },
+    { id: 'tool-image-paint', title: 'Stamp image onto model', hint: 'Tools', description: 'Project a picture or logo onto the model’s surface.', keywords: 'image stamp decal texture paint photo logo', run: () => toggleRegisteredTool('tool-image-paint'), enabled: viewportToolEnabled },
+    { id: 'tool-annotate', title: 'Annotate (draw / text)', hint: 'Tools', description: 'Draw and write notes on top of the 3D view.', keywords: 'draw pen text label note markup sketch arrow', run: () => toggleRegisteredTool('tool-annotate'), enabled: viewportToolEnabled },
+    { id: 'tool-quality', title: 'Quality: simplify / enhance', hint: 'Tools', description: 'Reduce the triangle count, or add detail where it curves.', keywords: 'simplify enhance decimate reduce triangles quality curvature smoothness', run: () => toggleRegisteredTool('tool-quality'), enabled: viewportToolEnabled },
+    { id: 'tool-customize', title: 'Customize parameters', hint: 'Tools', description: 'Adjust the model’s parameters with sliders.', keywords: 'parameters params sliders tweak knobs', run: () => toggleRegisteredTool('tool-customize'), enabled: () => isEditorActive() && !document.getElementById('customize-toggle')?.classList.contains('hidden') },
     // These tools moved behind the Tools/Inspect popovers after the view-menu
     // refactor, so the palette is their only keyboard/search entry point.
     // Registered tools open through the tool registry (as above); Voxel Studio
     // still fires its overlay toggle by id (click() works even collapsed).
-    { id: 'tool-surface', title: 'Surface textures', hint: 'Tools', keywords: 'fuzzy knit cable waffle fur woven voronoi smooth voxelize texture modifier displace', run: () => { void openRegisteredTool('tool-surface'); }, enabled: viewportToolEnabled },
-    { id: 'tool-resize', title: 'Resize / scale model', hint: 'Tools', keywords: 'scale resize size dimensions grow shrink mm', run: () => { void openRegisteredTool('tool-resize'); }, enabled: viewportToolEnabled },
-    { id: 'tool-place', title: 'Place / orient on bed', hint: 'Tools', keywords: 'place orient rotate move position lay flat drop floor center bed', run: () => { void openRegisteredTool('tool-place'); }, enabled: viewportToolEnabled },
-    { id: 'tool-print', title: 'Print tools / check printability', hint: 'Inspect', keywords: 'print printability fdm overhang support wall thickness bed fit slicer 3d', run: () => toggleRegisteredTool('tool-print'), enabled: viewportToolEnabled },
-    { id: 'tool-voxel-paint', title: 'Voxel Studio (edit voxels)', hint: 'Tools', keywords: 'voxel studio paint edit cube blocky pixel sculpt', run: () => toggleRegisteredTool('tool-voxel-paint'), enabled: () => isEditorActive() && getActiveLanguage() === 'voxel' },
+    { id: 'tool-surface', title: 'Surface textures', hint: 'Tools', description: 'Add a texture: fuzzy skin, knit, fur, knurling, Voronoi and more.', keywords: 'fuzzy knit cable waffle fur woven voronoi smooth voxelize texture modifier displace', run: () => { void openRegisteredTool('tool-surface'); }, enabled: viewportToolEnabled },
+    { id: 'tool-resize', title: 'Resize / scale model', hint: 'Tools', description: 'Scale the model to an exact size.', keywords: 'scale resize size dimensions grow shrink mm', run: () => { void openRegisteredTool('tool-resize'); }, enabled: viewportToolEnabled },
+    { id: 'tool-place', title: 'Place / orient on bed', hint: 'Tools', description: 'Rotate, lay flat, and centre the model on the print bed.', keywords: 'place orient rotate move position lay flat drop floor center bed', run: () => { void openRegisteredTool('tool-place'); }, enabled: viewportToolEnabled },
+    { id: 'tool-print', title: 'Print tools / check printability', hint: 'Inspect', description: 'Check overhangs, wall thickness and bed fit before printing.', keywords: 'print printability fdm overhang support wall thickness bed fit slicer 3d', run: () => toggleRegisteredTool('tool-print'), enabled: viewportToolEnabled },
+    { id: 'tool-voxel-paint', title: 'Voxel Studio (edit voxels)', hint: 'Tools', description: 'Paint and sculpt the voxel grid block by block.', keywords: 'voxel studio paint edit cube blocky pixel sculpt', run: () => toggleRegisteredTool('tool-voxel-paint'), enabled: () => isEditorActive() && getActiveLanguage() === 'voxel' },
     { id: 'toggle-ai', title: 'Toggle AI panel', hint: 'View', keywords: 'chat assistant drawer', run: () => toggleAiPanel() },
     { id: 'code-view-full', title: 'Open full code editor', hint: 'View', keywords: 'code editor source expand show edit javascript scad', run: () => setCodeView('full', { persist: true }), enabled: () => isEditorActive() && isDesktopLayout() && getCodeView() !== 'full' },
     { id: 'code-view-mini', title: 'Show compact code map', hint: 'View', keywords: 'code minimap mini map overview collapse shrink minimize', run: () => setCodeView('mini', { persist: true }), enabled: () => isEditorActive() && isDesktopLayout() && getCodeView() !== 'mini' },
@@ -10981,6 +10981,14 @@ async function main() {
     { id: 'retake-tour', title: 'Take the guided tour', hint: 'Help', keywords: 'onboarding walkthrough intro tutorial', run: () => { resetTour(); startTour(); }, enabled: isEditorActive },
     { id: 'toggle-hints', title: 'Toggle "Did you know?" hints', hint: 'View', keywords: 'did you know tips ticker discovery hints banner strip', run: () => toggleEditorHints() },
   ]);
+
+  // When the search doesn't find (or isn't) what the user wants, its last row
+  // drops the query into the AI chat input — populated, not sent, matching the
+  // ideas page's prefill behaviour.
+  setCommandPaletteFallback({
+    label: (q) => `Ask the AI: “${q}”`,
+    run: (q) => prefillAiInput(q),
+  });
 
   // Init gallery — `loadVersion` (in gallery.ts) has already updated state to
   // point at the clicked version by the time this fires, so route through

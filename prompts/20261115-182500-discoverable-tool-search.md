@@ -1,0 +1,38 @@
+---
+session: "01qnzgnp"
+timestamp: "2026-11-15T18:25:00Z"
+---
+
+## Human
+
+The tools menus aren't very discoverable; I think I added a fuzzy search at
+some point but never use it. What do you recommend? — then: build it, and
+attach visual proof to the PR.
+
+## Assistant
+
+## Key decisions
+
+**Diagnosis**: the ⌘K command palette existed but was reachable only by the
+shortcut and one rotating hint (impossible on touch devices), matched only
+exact substrings, and showed a flat unsorted list when empty.
+
+**Visible entry point**: a "Search tools… ⌘K" pill in the toolbar (icon-only
+below md so the wrapped mobile toolbar gains no row), plus a "Search all…"
+entry pinned (`order-last`, since tool modules append later) at the end of the
+Tools and Inspect popovers, whose tooltips now mention ⌘K.
+
+**Browse view**: an empty query shows Recent (localStorage, capped by the new
+`ui.commandPaletteRecentMax` setting) then every action grouped by category;
+tool commands gained one-line descriptions.
+
+**Forgiving search**: pure, unit-tested ranking in `src/ui/commandSearch.ts`
+— exact word > prefix > substring > typo (optimal-string-alignment, also
+against word prefixes) > compact subsequence, weighted title > keywords >
+category > description. A full word shorter than the query scores a bit
+lower so "textr" prefers "textures" over "text".
+
+**Ask the AI only on a miss**: an always-present row echoing the query would
+compete with real results (and broke specs that find rows by text), so the
+"Ask the AI" row appears only when nothing matches; it prefills the chat
+input without sending, like the ideas page.

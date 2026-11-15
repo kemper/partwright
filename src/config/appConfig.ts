@@ -696,6 +696,9 @@ export interface AppConfig {
     /** How long each "Did you know?" hint stays before the strip rotates to the
      *  next one (ms). */
     hintRotationMs: number;
+    /** How many recently used actions the command palette (⌘K / "Search
+     *  tools…") lists at the top of its browse view. 0 hides the section. */
+    commandPaletteRecentMax: number;
     /** Slide duration (ms) for the docked side panes (the AI panel and the code
      *  editor pane) opening/closing. Each pane animates its layout footprint so
      *  the viewport grows/shrinks smoothly instead of snapping. Set to 0 for an
@@ -1031,6 +1034,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     diagnosticLogApiLimit: 30,
     editorHintsEnabled: true,
     hintRotationMs: 12_000,
+    commandPaletteRecentMax: 5,
     paneSlideMs: 280,
     codeMinimapWidthPx: 132,
     editorFontSizeDefault: 13,

@@ -42,6 +42,49 @@ test.describe('command palette', () => {
     await expect(input).toHaveCount(0);
   });
 
+  test('the toolbar Search tools button opens a categorised browse view', async ({ page }) => {
+    await openEditor(page);
+    await page.locator('#btn-command-palette').click();
+    const input = page.locator('input[aria-label="Search commands"]');
+    await expect(input).toBeVisible();
+    // Empty query browses by category, tool rows carry a one-line description.
+    const list = page.locator('#cmd-palette-list');
+    await expect(list.locator('[role="presentation"]').filter({ hasText: /^Tools$/ })).toBeVisible();
+    await expect(list.getByText('Add a texture: fuzzy skin', { exact: false })).toBeVisible();
+  });
+
+  test('tolerates typos and remembers recently used actions', async ({ page }) => {
+    await openEditor(page);
+    await page.keyboard.press('ControlOrMeta+k');
+    const input = page.locator('input[aria-label="Search commands"]');
+    await input.fill('notse');
+    await expect(page.locator('[role="option"]').first()).toContainText('Go to Notes');
+    await page.keyboard.press('Enter');
+    await expect.poll(() => new URL(page.url()).searchParams.has('notes')).toBe(true);
+
+    await page.keyboard.press('ControlOrMeta+k');
+    const list = page.locator('#cmd-palette-list');
+    await expect(list.locator('[role="presentation"]').filter({ hasText: /^Recent$/ })).toBeVisible();
+    await expect(page.locator('[role="option"]').first()).toContainText('Go to Notes');
+  });
+
+  test('a query can be handed to the AI chat', async ({ page }) => {
+    await openEditor(page);
+    await page.keyboard.press('ControlOrMeta+k');
+    await page.locator('input[aria-label="Search commands"]').fill('make it twice as tall');
+    const ask = page.locator('[role="option"][data-fallback="true"]');
+    await expect(ask).toContainText('Ask the AI');
+    await ask.click();
+    await expect(page.locator('#ai-panel textarea')).toHaveValue('make it twice as tall');
+  });
+
+  test('the Tools menu ends with a Search all entry that opens the palette', async ({ page }) => {
+    await openEditor(page);
+    await page.locator('#viewport-tools-group-btn').dispatchEvent('click');
+    await page.locator('#viewport-tools-search').click();
+    await expect(page.locator('input[aria-label="Search commands"]')).toBeVisible();
+  });
+
   test('the ? key opens the keyboard cheat sheet', async ({ page }) => {
     await openEditor(page);
     // Move focus out of the code editor so `?` isn't typed as a literal.

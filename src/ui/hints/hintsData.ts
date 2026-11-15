@@ -61,7 +61,7 @@ export const DEFAULT_CTA_LABEL = 'Check it out →';
 export const HINTS: Hint[] = [
   {
     id: 'command-palette',
-    text: 'Press ⌘K (Ctrl+K) to open the command palette and run any action by name.',
+    text: 'Can’t find a tool? Click “Search tools…” in the toolbar (or press ⌘K / Ctrl+K) — typos are fine.',
     ctaLabel: 'Open it →',
     cta: { kind: 'open', what: 'commandPalette' },
   },
