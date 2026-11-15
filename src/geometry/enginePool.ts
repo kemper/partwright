@@ -60,6 +60,9 @@ export interface PoolBuildResult {
   /** Code-declared `api.paint.*` ops (the model-colour underlay), passed through
    *  so a pool-baked export can paint the same colours the single-worker path does. */
   paintOps: import('./types').MeshResult['paintOps'];
+  /** Code-declared `api.print.layerColors(...)`, so a pool-baked 3MF export
+   *  carries the same layer colours the open object's does. */
+  layerColors: import('./types').MeshResult['layerColors'];
   /** Validated api.layeredPrint plan, so a pool bake can colour it by height. */
   layeredPrint: import('./types').MeshResult['layeredPrint'];
   renderOnly: boolean;
@@ -240,6 +243,7 @@ function handleMessage(pw: PoolWorker, data: unknown): void {
     labelMap: labelMapEntries ? new Map(labelMapEntries.map(([k, v]) => [k, new Set(v)])) : undefined,
     labelColors: labelColorEntries && labelColorEntries.length > 0 ? new Map(labelColorEntries) : undefined,
     paintOps: (msg.paintOps as PoolBuildResult['paintOps']) ?? undefined,
+    layerColors: (msg.layerColors as PoolBuildResult['layerColors']) ?? undefined,
     layeredPrint: msg.layeredPrint ?? undefined,
     renderOnly: !!msg.renderOnly,
   });

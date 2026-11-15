@@ -53,6 +53,11 @@ file:line-cited list of findings the primary agent or a human will act on.
 **Back-compat (hard requirement)**
 - Backwards-incompatible schema changes: old IndexedDB sessions and previously
   exported files (STL / 3MF / OBJ / GLB / session payloads) MUST still load.
+- 3MF export path changes (`src/export/threemf*.ts`, `paintColor3mf.ts`, the
+  project templates, plate layout/packing) or changes to how paint maps to
+  filaments: expect a `node scripts/slicer-cli.mjs check` result in the PR body
+  (real slicer loads + slices, filaments match). Flag its absence. It does not
+  cover the desktop GUI's loader, so "check passed" is not "opens in the app".
 - IndexedDB transaction correctness: never `await` between a `get` and the
   dependent `put`/`delete` in one readwrite txn; `txn.oncomplete` is awaited
   before returning. (See `recordUsage`, `updateSession`, `putAttachment`.)
