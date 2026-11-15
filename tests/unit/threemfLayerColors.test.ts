@@ -121,4 +121,23 @@ describe('3MF project export — colours by layer height', () => {
     // Nor does it count as layer colours for the generic export's notice.
     expect((await exportAndRead([{ name: 'block', mesh: painted, layerColors: { changes: [] } }], { bambu: false })).warnings).toEqual([]);
   });
+
+  it('widens the printer profile to an unusual layer height, so the slicer keeps the grid', async () => {
+    const thin = { changes: [{ z: 0, color: '#f0f0f0' }, { z: 4, color: '#dc1e1e' }], layerHeight: 0.04, firstLayerHeight: 0.3 };
+    const { settings } = await exportAndRead([{ name: 'block', mesh: boxMesh(12), layerColors: thin }]);
+    expect(settings.layer_height).toBe('0.04');
+    expect(settings.initial_layer_print_height).toBe('0.3');
+    for (const v of settings.min_layer_height as string[]) expect(parseFloat(v)).toBeLessThanOrEqual(0.04);
+    for (const v of settings.max_layer_height as string[]) expect(parseFloat(v)).toBeGreaterThanOrEqual(0.3);
+  });
+
+  it('a whole-project layered-print plan wins over the objects\' own layer colours, with a notice', async () => {
+    const layerPlan = { filamentColors: ['#000000', '#ffffff'], changes: [{ z: 1.08, filament: 2 }], layerHeight: 0.08, firstLayerHeight: 0.2, swapMode: 'ams' as const };
+    const { xml, warnings, parsed, settings } = await exportAndRead([{ name: 'block', mesh: boxMesh(12), layerColors: LAYERS }], { layerPlan });
+    expect(warnings).toEqual([expect.stringContaining('layered-print swap plan')]);
+    expect(parsed.palette.map(p => p.hex)).toEqual(['#000000', '#ffffff']);
+    expect(xml!.match(/<layer /g)).toHaveLength(1);
+    expect(xml).toContain('top_z="1.08"');
+    expect(settings.layer_height).toBe('0.08');
+  });
 });

@@ -292,6 +292,19 @@ export interface SwapGuide {
 /** Optical preview mode. */
 export type PreviewMode = 'flat' | 'ams' | 'single-nozzle';
 
+/** A solved layered-print (HueForge-style) schedule, small enough for localStorage. */
+export interface LayeredPrintPlanRecord {
+  /** Filament blocks bottom → top; `startLayer` is 0-based. */
+  blocks: Array<{ name: string; hex: string; td: number; startLayer: number }>;
+  layerHeight: number;
+  firstLayerHeight: number;
+  totalLayers: number;
+  totalHeightMm: number;
+  widthMm: number;
+  depthMm: number;
+  meanDeltaE: number;
+}
+
 /** Per-session relief settings, persisted in localStorage (keyed by session).
  *  Kept out of the IndexedDB schema to avoid a migration; the relief mesh
  *  itself persists via the existing `importedMeshes` channel. */

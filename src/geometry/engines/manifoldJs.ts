@@ -27,6 +27,9 @@ import { COLOR_PATTERN_KINDS, type ColorPatternKind, type PatternScope } from '.
 import { SURFACE_OP_FIELDS, isSurfaceOpId, parseSurfaceOpts, type SurfaceOp, type SurfaceOpId } from '../../surface/surfaceOpSpec';
 import { isMaterialPresetName, MATERIAL_PRESET_NAMES, type MaterialSpec } from '../../renderer/materialSpec';
 import { parseLayerColorsSpec, type LayerColorsSpec } from '../../print/layerColors';
+import { modelImageHandle, runLayeredPrint } from '../../relief/layeredPrint/sandboxApi';
+import type { LayeredPrintPlanRecord } from '../../relief/types';
+import { getConfig } from '../../config/appConfig';
 import { wasmFaultHint } from '../workerFaults';
 import { assertModelCodeRealm } from '../workerLockdown';
 import { MAX_PAINT_PATTERN_ANCHORS, MAX_PAINT_PATTERN_COLORS, type ApiPaintDescriptorKind } from '../apiPaintSpec';
@@ -852,6 +855,23 @@ export const manifoldJsEngine: Engine = {
       },
     };
 
+    // Layered (HueForge-style) filament print from an attached photo:
+    // `api.layeredPrint(api.image('<attachment id>'), opts)` returns the
+    // heightmap as a Manifold and records its swap plan, which the main thread
+    // uses to colour the model by height and to export the layer-swap 3MF.
+    // One plan per model (a print has one swap schedule). Cleared every run.
+    let layeredPlan: LayeredPrintPlanRecord | null = null;
+    const image = (id: unknown) => modelImageHandle(id);
+    const layeredPrint = (img: unknown, opts?: unknown) => {
+      const c = getConfig().import;
+      const run = runLayeredPrint(img, opts, { maxCells: c.layeredPrintMaxCells, maxLayers: c.layeredPrintMaxLayers });
+      if (layeredPlan && JSON.stringify(layeredPlan.blocks) !== JSON.stringify(run.plan.blocks)) {
+        throw new Error('api.layeredPrint: a model can hold only one layered print (one swap schedule). Reuse the first result, or give both calls the same options.');
+      }
+      layeredPlan = run.plan;
+      return Manifold.ofMesh(run.mesh as Parameters<typeof Manifold.ofMesh>[0]);
+    };
+
     // Imported meshes (STL etc.) attached to the active version are exposed as
     // `api.imports[i]` — each entry is shaped to pass straight into
     // `Manifold.ofMesh()`. Metadata (filename/format) is kept off this object
@@ -1034,6 +1054,8 @@ export const manifoldJsEngine: Engine = {
       surface,
       material,
       print,
+      image,
+      layeredPrint,
       imports,
       importWithParts,
       renderMesh,
@@ -1242,6 +1264,7 @@ export const manifoldJsEngine: Engine = {
         surfaceOps: surfaceOps.length > 0 ? surfaceOps : undefined,
         materialSpec: materialSpec ?? undefined,
         layerColors: layerColors ?? undefined,
+        layeredPrint: layeredPlan ?? undefined,
         paramsSchema: paramCapture.collectSchema(),
         renderOnly,
       };

@@ -138,6 +138,7 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Scale / move / rotate / twist ONE part ("bigger head", also on imports' detected parts) | `api.editPart(m, 'head', {scale: 1.3})` (rigid, cut at the seam; a function swaps/deletes the part); `api.sculpt.transform(m, {select: {label}, scale, blend})` (soft warp); `select:` on twist/taper/bend/scatter -> `/ai/deform.md#selecting-part-of-a-shape` | (not available) | (mesh-only) |
 | Brass / glass / chrome viewport look | `api.material('brass')` -> `/ai/deform.md` | (manifold-js only) | (manifold-js only) |
 | Print in different colours at different heights | `api.print.layerColors([{z, color}])` -> `/ai/printing.md` | (manifold-js only) | (manifold-js only) |
+| Layered (HueForge-style) filament print from a photo | `api.layeredPrint(api.image('<attachment id>'), {schedule})` -> `/ai/relief.md#layered-photo-prints` | (manifold-js only) | (manifold-js only) |
 
 **Rule of thumb:** if you find yourself writing a `for` loop to manually compute curve points, stop and check whether `Curves` (manifold-js) or BOSL2 (SCAD) already has the verb. AI-generated point-sampling math is brittle; the helpers are deterministic.
 
@@ -183,7 +184,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `reference-images` | When the user attaches a photo or asks you to model from one — `setImages` shape, label conventions, the five-step photo-to-model loop. |
 | `file-io` | Before exporting or importing programmatically — `*Data()` byte-returning methods, Recent Exports inbox, session payload shape. |
 | `annotations` | When the user has marked up the model with the Annotate tool (or sent an annotation view, or you need to write annotations programmatically). |
-| `relief` | When making an image-derived part (keychain / tile / silhouette / stepped relief) via `importImageAsRelief`, or reading the single-nozzle swap guide (`getReliefSwapGuide`) / optical preview (`setReliefPreviewMode`). |
+| `relief` | When making an image-derived part (keychain / tile / silhouette / stepped relief) via `importImageAsRelief`, a HueForge-style filament-layering print from a photo (`createLayeredPrint` / `exportLayeredPrint3MF`), or reading the single-nozzle swap guide (`getReliefSwapGuide`) / optical preview (`setReliefPreviewMode`). |
 | `textures` | Before adding fuzzy-skin / fabric / knit surface detail — the `applySurfaceTexture(id, opts?, mode?)` tool or `api.surface.<id>({…})` in manifold-js code (ids: `fuzzy`, `knit`, `cable`, `waffle`, `fur`, `woven`, `knurl`, `voronoi`, `smooth`) — normal-displaced textures, their parameters, scoping a texture to one labelled region, and the paint-ordering rules. Also covers `applyVoronoiLamp` — a true perforated Voronoi shell (see-through lamp/planter; smooth-mesh output by default, optional voxel) — and `engraveModel`, which stamps text (or, from the UI, an image) onto the model as recessed channels, holes cut clean through (stencil), or an embossed raised relief (`raised: true`), with optional letter `color` for multicolor prints. |
 | `deform` | Before shaping meshes with the Blender-parity verbs — `api.wrapAround` (text on a mug), `api.bend`/`api.twist`/`api.taper`, `api.alongCurve` (strip along a path), `api.scatter` (spikes/studs/rivets across a surface), `api.round` (fillet EVERY edge of any solid), `api.shell` (hollow any solid to a uniform wall — masks, helmets) and `api.offset` (grow/shrink any solid uniformly), `api.smoothWeld` (smoothUnion for plain meshes), `api.sculpt.grab/inflate/flatten/transform` (declarative brush nudges + soft-selection transforms), `select:` selectors (`{label}` / `{region}` / `{where: {facing}}`) that confine any of these to one part, `api.material` (viewport shading presets: brass/glass/…), and the `exportTurntable`/`exportExplode`/`exportParamSweep` video tools. |
 | `iteration-workflow` | Before calling `runAndSave`, `forkVersion`, `modifyAndTest`, `createSessionWithVersions`, or managing session notes — the full versioning and iteration workflow. |
@@ -370,6 +371,10 @@ await partwright.importStepData(base64, filename, {mode?: 'brep'|'mesh', session
 await partwright.importFromUrl(url, {target?, sessionName?, stepMode?, geometryOnly?})  // Share link (decoded locally) or http(s) .partwright.json/.stl/.step/.vox/.js/.scad -> {kind, source?, sessionId, target?, object?}; geometryOnly:true refuses code-bearing sources
 // Image / SVG -> colour tile or stepped relief (new session). See /ai/relief.md.
 await partwright.importImageAsRelief({src, mode?: 'luminance'|'quantized'|'ai', options?, quantized?, preprocess?, crop?}) // -> {sessionId} or {error}
+// Photo -> HueForge-style filament-layering print: model code api.layeredPrint(api.image(id), {schedule}); createLayeredPrint solves + writes it. See /ai/relief.md#layered-photo-prints.
+await partwright.createLayeredPrint({src, colors?: 8, widthMm?, maxHeightMm?, filaments?: [{name, hex, td}], ...}) // -> {sessionId, blocks, swaps, meanDeltaE} or {error}
+partwright.getLayeredPrintPlan()                       // filaments, swap layers, instructions text
+partwright.exportLayeredPrint3MF({swapMode?: 'ams'|'pause', printer?}) // Bambu/Orca 3MF with the filament changes built in
 await partwright.importSvgAsRelief({svgText, options?, quantized?, preprocess?})  // each <path fill> = one crisp colour region -> {sessionId} or {error}
 partwright.getReliefSwapGuide()                         // single-nozzle filament-swap guide for the current relief, or {error}
 partwright.setReliefPreviewMode('flat'|'ams'|'single-nozzle') // relief optical preview (relief sessions only) -> {ok} or {error}
@@ -1026,6 +1031,7 @@ api.sculpt.inflate(m, {at, radius, amount})            // bump out (negative = d
 api.sculpt.flatten(m, {at, radius, normal?, strength?})// press a region toward a plane
 api.material('brass')                                  // viewport shading preset (see /ai/deform.md)
 api.print.layerColors([{ z: 0, color: '#ffffff' }, { z: 8, color: '#d01e1e' }]) // print colours by layer height (see /ai/printing.md)
+api.layeredPrint(api.image(id), {schedule?, colors?, widthMm?, maxHeightMm?}) // photo → layer-swap filament print (Manifold); see /ai/relief.md#layered-photo-prints
 ```
 
 **Robust booleans + heal — catch silent failures.** `expectUnion` is the one to reach for when an agent has hit "I expected one piece, got three" — it tells you *immediately* instead of after the next render, and the error message includes a bbox/volume dump of each component so you can see which piece floated free.

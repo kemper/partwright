@@ -80,6 +80,10 @@ export interface MeshResult {
    *  preview and the 3MF project export; geometry is untouched. Absent when
    *  the code declares none. */
   layerColors?: LayerColorsSpec;
+  /** Layered-print swap plan recorded by `api.layeredPrint(...)` this run
+   *  (`LayeredPrintPlanRecord` from relief/types, kept `unknown` so the
+   *  geometry layer doesn't depend on relief types). Absent when unused. */
+  layeredPrint?: unknown;
   /** True when the user code returned an `api.renderMesh(...)` proxy — the
    *  mesh isn't manifold (or wasn't validated as one) and the main thread
    *  must skip its Manifold.ofMesh fallback to avoid a "Not manifold" throw. */

@@ -1338,6 +1338,36 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={10_000} max={200_000_000} integer
           onChange={v => set('import', 'threeMfMaxTriangles', v)}
         />
+        <Field cfgKey="import.layeredPrintMaxCells"
+          label="Layered print max cells"
+          unit="cells"
+          hint="Largest heightmap (width × depth cells) a layered photo print may solve."
+          tooltip="A layered photo print scores every heightmap cell against every print layer, so memory grows with cells × layers and the mesh grows with cells. Larger prints or finer pixel sizes past this limit are refused with an error instead of freezing the tab. The default fits a 300 × 300 mm print at 0.3 mm pixels."
+          defaultValue={APP_CONFIG_DEFAULTS.import.layeredPrintMaxCells}
+          value={c.import.layeredPrintMaxCells}
+          min={10_000} max={10_000_000} integer
+          onChange={v => set('import', 'layeredPrintMaxCells', v)}
+        />
+        <Field cfgKey="import.layeredPrintMaxLayers"
+          label="Layered print max layers"
+          unit="layers"
+          hint="Most print layers a layered photo print may use."
+          tooltip="Max height divided by layer height. More layers means more shades but a slower solve and longer print."
+          defaultValue={APP_CONFIG_DEFAULTS.import.layeredPrintMaxLayers}
+          value={c.import.layeredPrintMaxLayers}
+          min={10} max={1000} integer
+          onChange={v => set('import', 'layeredPrintMaxLayers', v)}
+        />
+        <Field cfgKey="import.layeredPrintMaxImagePx"
+          label="Layered print photo size"
+          unit="px"
+          hint="Longest side a layered-print photo is stored and solved at."
+          tooltip="The photo is downscaled to this before it's attached to the session and solved. The heightmap grid is much coarser (one cell per pixel size in mm), so larger values mostly cost storage and transfer time."
+          defaultValue={APP_CONFIG_DEFAULTS.import.layeredPrintMaxImagePx}
+          value={c.import.layeredPrintMaxImagePx}
+          min={256} max={8192} integer
+          onChange={v => set('import', 'layeredPrintMaxImagePx', v)}
+        />
         <Field cfgKey="import.threeMfMaxEntryMB"
           label="3MF max part size"
           unit="MB"

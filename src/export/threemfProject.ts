@@ -460,6 +460,61 @@ export interface Build3MFProjectOptions {
    *  arranged. Default `'grid'` (a compact cluster centred on the bed). See
    *  {@link PackStrategy}. */
   packStrategy?: PackStrategy;
+  /** HueForge-style layer swap plan. Bambu mode only: the project's filaments
+   *  become the plan's colours, every object prints with filament 1, per-triangle
+   *  paint is ignored, and `Metadata/custom_gcode_per_layer.xml` carries one
+   *  filament change per swap height. See {@link LayerSwapPlan}. */
+  layerPlan?: LayerSwapPlan;
+}
+
+/** Filament changes at layer heights (HueForge-style prints). */
+export interface LayerSwapPlan {
+  /** "#rrggbb" per filament, bottom → top. Filament 1 is the base. Max 16. */
+  filamentColors: string[];
+  /** Display names per filament (pause messages). Optional. */
+  filamentNames?: string[];
+  /** One change per swap: at print_z `z` (top of the first layer printed with
+   *  the new filament), switch to 1-based `filament`. */
+  changes: Array<{ z: number; filament: number }>;
+  layerHeight: number;
+  firstLayerHeight: number;
+  /** `'ams'` — automatic filament change (ToolChange) at each swap; needs one AMS
+   *  slot per filament. `'pause'` — the model prints with filament 1 and the
+   *  printer pauses at each swap so you change filament by hand (Bambu Studio's
+   *  "Add pause"); every filament is still listed, as documentation. */
+  swapMode: 'ams' | 'pause';
+  /** Sparse infill density, e.g. "100%" (HueForge prints want solid layers). */
+  infillDensity?: string;
+}
+
+/** Bambu `CustomGCode::Type` values (libslic3r/CustomGCode.hpp). */
+const CUSTOM_GCODE_PAUSE_PRINT = 1;
+const CUSTOM_GCODE_TOOL_CHANGE = 2;
+
+/** `Metadata/custom_gcode_per_layer.xml` for a one-plate layer plan — the
+ *  format Bambu Studio's own 3MF exporter writes and its importer reads. */
+export function buildCustomGcodePerLayerXml(plan: LayerSwapPlan): string {
+  const fmtZ = (z: number) => String(Math.round(z * 1000) / 1000);
+  const layers = [...plan.changes].sort((a, b) => a.z - b.z).map((c) => {
+    if (plan.swapMode === 'ams') {
+      const hex = toBambuHex(plan.filamentColors[c.filament - 1] ?? '#808080');
+      return `<layer top_z="${fmtZ(c.z)}" type="${CUSTOM_GCODE_TOOL_CHANGE}" extruder="${c.filament}" color="${hex}" extra="" gcode="tool_change"/>`;
+    }
+    const name = plan.filamentNames?.[c.filament - 1] ?? `filament ${c.filament}`;
+    const hex = plan.filamentColors[c.filament - 1] ?? '';
+    const msg = escXml(`Load ${name} ${hex}`.trim());
+    return `<layer top_z="${fmtZ(c.z)}" type="${CUSTOM_GCODE_PAUSE_PRINT}" extruder="1" color="" extra="${msg}" gcode="M400 U1"/>`;
+  });
+  const mode = plan.swapMode === 'ams' ? 'MultiAsSingle' : 'SingleExtruder';
+  return `<?xml version="1.0" encoding="utf-8"?>
+<custom_gcodes_per_layer>
+<plate>
+<plate_info id="1"/>
+${layers.join('\n')}
+<mode value="${mode}"/>
+</plate>
+</custom_gcodes_per_layer>
+`;
 }
 
 const CORE_NS = 'http://schemas.microsoft.com/3dmanufacturing/core/2015/02';
@@ -563,6 +618,14 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
   if (parts.length === 0) throw new Error('Cannot export: no parts selected.');
   const bambu = opts.bambu ?? true;
   const gridGap = opts.gridGapMm ?? DEFAULT_GRID_GAP_MM;
+  const plan = bambu ? opts.layerPlan : undefined;
+  if (plan) {
+    if (plan.filamentColors.length < 1 || plan.filamentColors.length > MAX_BAMBU_FILAMENTS) throw new Error(`Layer plan needs 1..${MAX_BAMBU_FILAMENTS} filaments.`);
+    if (plan.filamentColors.some((h) => !/^#?[0-9a-fA-F]{6}$/.test(h))) throw new Error('Layer plan: filament colours must be "#rrggbb".');
+    for (const c of plan.changes) {
+      if (!(c.filament >= 1 && c.filament <= plan.filamentColors.length) || !(c.z > 0)) throw new Error('Layer plan: each change needs z > 0 and a filament index within the plan.');
+    }
+  }
 
   // ── Shared filament/material list across ALL parts ──────────────────────
   const cleaned = parts.map(p => {
@@ -579,7 +642,7 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
   // object exports as ONE filament plus layer switches: a slicer ignores layer
   // switches on an object with per-triangle paint, so its paint is not written.
   const layerPlans = new Map<number, { bands: LayerBand[]; profile: LayerProfile }>();
-  if (bambu) {
+  if (bambu && !plan) {
     const fallback = opts.layerProfile ?? templateLayerProfile(resolvePrinter(opts.printer));
     parts.forEach((p, i) => {
       // `layerColors([])` declares nothing: the object exports as usual, paint included.
@@ -595,10 +658,15 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
       if (isPainted(i)) warn(`"${p.name}" has both paint and layer colours. A slicer ignores layer colour changes on a painted object, so its paint was left out of this export.`);
     });
   } else if (parts.some(p => p.layerColors && p.layerColors.changes.length > 0)) {
-    warn('Layer colours are only written to the Bambu/Orca project export. This generic 3MF does not carry them.');
+    // A whole-project layer plan (a layered print) already sets every swap.
+    warn(plan
+      ? 'This project prints from a layered-print swap plan, so the objects\' own layer colours were left out.'
+      : 'Layer colours are only written to the Bambu/Orca project export. This generic 3MF does not carry them.');
   }
 
-  const anyColour = parts.some((_p, i) => !layerPlans.has(i) && isPainted(i));
+  // A layer plan colours by height, not by triangle — per-triangle paint would
+  // fight the swaps, so it is ignored.
+  const anyColour = !plan && parts.some((_p, i) => !layerPlans.has(i) && isPainted(i));
   const colorMap = new Map<string, number>();
   const materialColors: string[] = [];
   const pushMaterial = (hex: string) => { if (!colorMap.has(hex)) { colorMap.set(hex, materialColors.length); materialColors.push(hex); } };
@@ -639,7 +707,7 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
     // layer-coloured still prints in the default filament: keep slot 1 for it.
     if (!anyColour && parts.some((_p, i) => !layerPlans.has(i))) palette.push(DEFAULT_LAYER_BASE_COLOR);
     // Then one slot per layer colour not already in the list.
-    const bandColors = [...layerPlans.values()].flatMap(plan => plan.bands.map(b => b.color));
+    const bandColors = [...layerPlans.values()].flatMap(lp => lp.bands.map(b => b.color));
     let dropped = false;
     for (const h of bandColors) {
       if (palette.includes(h)) continue;
@@ -651,13 +719,18 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
     for (const h of [...ranked, ...bandColors]) if (!bambuSlotOf.has(h)) bambuSlotOf.set(h, nearestSlotIndex(h, palette));
     bambuFilamentColors = palette.map(toBambuHex);
   }
+  if (plan) {
+    // Pause mode lists every filament too: only filament 1 prints (the swaps
+    // are manual), but the project's filament list then documents the plan.
+    bambuFilamentColors = plan.filamentColors.map(toBambuHex);
+  }
 
   // ── Per-part geometry + colour ──────────────────────────────────────────
   const prepared: PreparedPart[] = parts.map((part, i) => {
     const { mesh } = part;
     const { remap, uniquePositions, validTris } = cleaned[i];
-    const plan = layerPlans.get(i);
-    const tc = anyColour && !plan ? mesh.triColors ?? null : null;
+    const objectLayers = layerPlans.get(i);
+    const tc = anyColour && !objectLayers ? mesh.triColors ?? null : null;
 
     const numV = uniquePositions.length / 3;
     let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
@@ -687,8 +760,8 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
     }
     // A layer-coloured object prints in its first band's filament; the later
     // bands are layer switches written per plate (see buildBambuPackage).
-    if (plan) {
-      extruder = (bambuSlotOf.get(plan.bands[0].color) ?? 0) + 1;
+    if (objectLayers) {
+      extruder = (bambuSlotOf.get(objectLayers.bands[0].color) ?? 0) + 1;
       dominantHex = bambuFilamentColors[extruder - 1] ?? dominantHex;
     }
 
@@ -731,13 +804,13 @@ export function build3MFProject(parts: PartExport[], opts: Build3MFProjectOption
 
   const packStrategy = opts.packStrategy ?? DEFAULT_PACK_STRATEGY;
   const layerEntries = new Map<number, SlicerLayerEntry[]>();
-  for (const [i, plan] of layerPlans) layerEntries.set(i, bandsToSlicerEntries(plan.bands, plan.profile, c => (bambuSlotOf.get(c) ?? 0) + 1));
-  const profiles = [...layerPlans.values()].map(plan => plan.profile);
+  for (const [i, lp] of layerPlans) layerEntries.set(i, bandsToSlicerEntries(lp.bands, lp.profile, c => (bambuSlotOf.get(c) ?? 0) + 1));
+  const profiles = [...layerPlans.values()].map(lp => lp.profile);
   if (profiles.some(p => p.layerHeight !== profiles[0].layerHeight || p.firstLayerHeight !== profiles[0].firstLayerHeight)) {
     warn('The layer-coloured objects declare different layer heights. A project has one print profile, so the first object\'s was used for all of them.');
   }
   const built = bambu
-    ? buildBambuPackage(prepared, bambuFilamentColors, resolvePrinter(opts.printer), opts.nozzle ?? '0.4', resolveFilament(opts.filament), parts, opts.plateLayout ?? 'separate', gridGap, packStrategy, { entries: layerEntries, profile: profiles[0] ?? null, warn })
+    ? buildBambuPackage(prepared, bambuFilamentColors, resolvePrinter(opts.printer), opts.nozzle ?? '0.4', resolveFilament(opts.filament), parts, opts.plateLayout ?? 'separate', gridGap, packStrategy, { entries: layerEntries, profile: profiles[0] ?? null, warn }, plan)
     : buildGenericPackage(prepared, colorgroupXml, anyColour, colorGroupId, gridGap, packStrategy);
 
   const mimeType = 'application/vnd.ms-package.3dmanufacturing';
@@ -832,7 +905,7 @@ ${buildItems}
 //   - identify_id in each <model_instance>
 //   - filament_map_mode / filament_maps / filament_volume_maps / thumbnail* in <plate>
 //   - <assemble> block at the end
-function buildBambuPackage(prepared: PreparedPart[], filamentColors: string[], printer: BambuPrinterSpec, nozzle: string, filament: BambuFilamentType, parts: PartExport[], plateLayout: BambuPlateLayout, gap: number, packStrategy: PackStrategy = DEFAULT_PACK_STRATEGY, layer: { entries: Map<number, SlicerLayerEntry[]>; profile: LayerProfile | null; warn: (message: string) => void } = { entries: new Map(), profile: null, warn: () => {} }): Uint8Array {
+function buildBambuPackage(prepared: PreparedPart[], filamentColors: string[], printer: BambuPrinterSpec, nozzle: string, filament: BambuFilamentType, parts: PartExport[], plateLayout: BambuPlateLayout, gap: number, packStrategy: PackStrategy = DEFAULT_PACK_STRATEGY, layer: { entries: Map<number, SlicerLayerEntry[]>; profile: LayerProfile | null; warn: (message: string) => void } = { entries: new Map(), profile: null, warn: () => {} }, plan?: LayerSwapPlan): Uint8Array {
   const unit = get3MFUnitString();
   const [bedW, bedH] = printer.bed;                  // selected printer's bed footprint
   const filamentCount = filamentColors.length;       // AMS slots = distinct colours
@@ -1042,7 +1115,7 @@ ${assembleItems.join('\n')}
 
   // project_settings.config: the complete H2C template with filament_colour set to
   // the part palette (see buildProjectSettings).
-  const projectSettings = buildProjectSettings(filamentColors, printer, nozzle, filament, layer.profile);
+  const projectSettings = buildProjectSettings(filamentColors, printer, nozzle, filament, layer.profile, plan);
 
   // Content types: rels + model + png (for potential plate thumbnails) + gcode.
   // Matches the reference [Content_Types].xml exactly.
@@ -1094,7 +1167,9 @@ ${assembleItems.join('\n')}
     { name: '3D/_rels/3dmodel.model.rels', data: enc(objRelsXml) },
     { name: 'Metadata/model_settings.config', data: enc(modelSettings) },
     { name: 'Metadata/project_settings.config', data: enc(projectSettings) },
-    ...(layerXml ? [{ name: 'Metadata/custom_gcode_per_layer.xml', data: enc(layerXml) }] : []),
+    ...(plan && plan.changes.length > 0
+      ? [{ name: 'Metadata/custom_gcode_per_layer.xml', data: enc(buildCustomGcodePerLayerXml(plan)) }]
+      : layerXml ? [{ name: 'Metadata/custom_gcode_per_layer.xml', data: enc(layerXml) }] : []),
   ]);
 }
 
@@ -1130,16 +1205,10 @@ function isPerFilamentKey(key: string): boolean {
  * matrices) are set explicitly. The flush matrix is `nozzleCount × N×N` — nozzleCount
  * comes from the base (H2C=2, P1S=1), validated against both real references.
  */
-function buildProjectSettings(filamentColors: string[], printer: BambuPrinterSpec, nozzle: string, filament: BambuFilamentType, layerProfile: LayerProfile | null = null): string {
+function buildProjectSettings(filamentColors: string[], printer: BambuPrinterSpec, nozzle: string, filament: BambuFilamentType, layerProfile: LayerProfile | null = null, plan?: LayerSwapPlan): string {
   const baseTemplate = printer.base === 'p1s' ? BAMBU_TEMPLATE_P1S : BAMBU_TEMPLATE_H2C;
   // Deep-copy the base so we don't mutate the module-level import.
   const cfg: Record<string, unknown> = JSON.parse(JSON.stringify(baseTemplate));
-  // Layer colours are placed at layer boundaries, so the project must slice at
-  // the layer heights they were resolved with.
-  if (layerProfile) {
-    cfg.layer_height = String(layerProfile.layerHeight);
-    cfg.initial_layer_print_height = String(layerProfile.firstLayerHeight);
-  }
   const N = Math.max(1, filamentColors.length);
   // Derive the base's own filament count + physical nozzle count from the base itself
   // (H2C: 3 filaments / 2 nozzles; P1S: 17 filaments / 1 nozzle).
@@ -1216,6 +1285,29 @@ function buildProjectSettings(filamentColors: string[], printer: BambuPrinterSpe
     'eng_plate_temp', 'eng_plate_temp_initial_layer', 'supertack_plate_temp', 'supertack_plate_temp_initial_layer']) {
     fillArr(k, String(filament.bedTemp));
   }
+
+  // ── Layer heights. Filament changes are placed at layer boundaries, so the
+  // project must slice at the heights they were worked out with: a layered
+  // print's swap plan, or the objects' own colours by layer height.
+  const heights: LayerProfile | null = plan ? { layerHeight: plan.layerHeight, firstLayerHeight: plan.firstLayerHeight } : layerProfile;
+  if (heights) {
+    cfg.layer_height = String(heights.layerHeight);
+    cfg.initial_layer_print_height = String(heights.firstLayerHeight);
+    // The printer profile bounds layer height (0.08–0.28 mm for a 0.4 nozzle);
+    // widen it to these heights so the slicer neither flags the project nor
+    // slices on a different grid (which would move every change).
+    const lo = Math.min(heights.layerHeight, heights.firstLayerHeight);
+    const hi = Math.max(heights.layerHeight, heights.firstLayerHeight);
+    const widen = (key: string, pick: (cur: number) => number) => {
+      const v = cfg[key];
+      if (Array.isArray(v)) cfg[key] = v.map((x) => { const n = parseFloat(String(x)); return Number.isFinite(n) ? String(pick(n)) : x; });
+    };
+    widen('min_layer_height', (cur) => Math.min(cur, lo));
+    widen('max_layer_height', (cur) => Math.max(cur, hi));
+  }
+  // A layered (HueForge-style) print wants solid layers, so infill patterns
+  // don't show through the translucent top filaments.
+  if (plan) cfg.sparse_infill_density = plan.infillDensity ?? '100%';
 
   return JSON.stringify(cfg, null, 4);
 }

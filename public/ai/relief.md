@@ -115,3 +115,96 @@ clip-paths are ignored. Resolution caps at 256 columns.
 Import the `.stl` normally, then in the Relief Studio panel use **Detect levels**
 to seed a color region per existing Z plateau (or, programmatically, paint Z
 slabs). Then preview + read the swap guide as above.
+
+## Layered photo prints
+
+A layered (HueForge-style) print is a heightmap printed in thin layers, with
+the filament swapped at chosen layers. Thin plastic is translucent, so the
+colour at each point depends on how much of each filament lies under the
+surface there: a handful of filaments gives many shades.
+
+**It is model code.** The photo is a session attachment, and the model reads it:
+
+```js
+const print = api.layeredPrint(api.image('<attachment id>'), {
+  widthMm: 150,        // depth follows the photo
+  maxHeightMm: 3.2,    // taller = more shades per filament
+  // baseHeightMm: 0.48, layerHeight: 0.08, firstLayerHeight: 0.16, pixelSizeMm: 0.3,
+  // chromaWeight: 1 (0 = lightness only, classic monochrome), smoothing: 1.2,
+  schedule: [          // the filament stack, bottom → top
+    { name: 'White', hex: '#f8f8f6', td: 3.2, layer: 1 },   // layer = 1-based slicer layer it starts on
+    { name: 'Orange', hex: '#f26a1b', td: 3, layer: 8 },
+    { name: 'Black', hex: '#161616', td: 0.6, layer: 33 },
+  ],
+});
+return print;   // a Manifold — compose freely: print.add(frame), .subtract(hole), …
+```
+
+- **With `schedule`** the filaments and swap layers are fixed and only the
+  per-pixel heights are solved (a couple of seconds). Edit it to change a
+  colour or move a swap. **Without it** the solver also picks the filaments
+  (from `filaments: [{name, hex, td}]` or the built-in list) and the swap
+  layers, up to `colors` (default 8) — slower (5–15 s). Solves are memoized on
+  the photo + options, so unrelated edits re-run instantly.
+- **One layered print per model** (a print has one swap schedule). Everything
+  in the model is coloured by height the way the swaps will print it — a frame
+  or text you add takes the filament loaded at its height.
+- `api.image(id)` only works with a literal attachment id; list them with
+  `getImages()`. Runs in the browser engine (not the headless `model:preview`).
+  A session opened from a **share link** has its photos stripped, so its layered
+  print can't run there — share the session file instead.
+- With `schedule`, the search-only options (`colors`, `filaments`,
+  `baseFilament`, `effort`, `seed`) are refused; the first entry (the base)
+  must start on layer 1.
+
+**Start from a photo** (solves, attaches the photo, writes the code above with
+the solved schedule pinned, opens it as a new session):
+
+```js
+await partwright.createLayeredPrint({
+  src: 'data:image/jpeg;base64,...',   // or an http(s) URL; AI tool: imageRef
+  colors: 8,          // MAXIMUM filaments; swaps that barely help are dropped
+  widthMm: 120, maxHeightMm: 2.4,
+  // filaments: [{ name: 'Black', hex: '#161616', td: 0.6 }, ...],  // the user's spools
+  // baseFilament: 'Black', chromaWeight, smoothing, pixelSizeMm, effort, seed
+})
+// -> { sessionId, blocks: [{name, hex, td, startLayer}], swaps: [{layer, z, name, hex, td}],
+//      totalLayers, totalHeightMm, widthMm, depthMm, meanDeltaE }
+
+partwright.getLayeredPrintPlan()        // last run's plan + `instructions` + `schedule` (paste-ready)
+partwright.listLayeredPrintFilaments()  // the built-in candidate list
+
+partwright.exportLayeredPrint3MF({ swapMode: 'ams', printer: 'p1s' })
+// Layer-swap 3MF (the default, mode: 'layer-swap'): layer height + first layer
+// + 100% infill set to match, and a filament change at each swap layer.
+//   swapMode 'ams'   — automatic filament changes (one AMS slot per filament)
+//   swapMode 'pause' — prints with filament 1; the printer pauses at each swap
+//                      for a manual change (all filaments listed as documentation)
+
+partwright.exportLayeredPrint3MF({ mode: 'painted', slots: 8, paintFilaments: 'library' })
+// Painted 3MF: each region printed in its own filament, coloured like the
+// preview and reduced to `slots` AMS filaments — snapped to real filaments
+// ('library' = built-in list, 'palette' = your palette) or 'exact' preview
+// shades. Needs an AMS; colours are direct (no reliance on TD values), at the
+// cost of many more filament changes than layer swaps.
+```
+
+The two are different print techniques. Layer swaps use the translucency
+(few swaps, works without an AMS); painted regions print each colour
+directly (often looks closer to the preview when the TDs are only estimates).
+
+- **TD (transmission distance)** follows the HueForge convention: the
+  thickness (mm) at which a filament stops letting the colour below show
+  through. A layer of thickness `t` covers what's beneath with opacity
+  `min(1, t / TD)`. The built-in TDs are typical values for common PLA colours;
+  if the user knows their spools' TDs, use them.
+- **Judging the result:** `meanDeltaE` under ~10 is a good match; above ~15
+  means the photo needs more colours, more height, or filaments closer to its
+  palette. Render the model and compare it with the photo.
+- **Colourful photos** are the hard case: every pixel shares one stack of
+  filaments, so two saturated hues that each need to sit directly on a light
+  base compete. More `maxHeightMm` and 8–10 `colors` help most.
+- Size guards (App Config → Import): `layeredPrintMaxCells` heightmap cells,
+  `layeredPrintMaxLayers` layers, `layeredPrintMaxImagePx` photo size.
+- Headless (CLI agents in the repo): `npm run layered-print -- photo.jpg --colors 8
+  --swap both` writes the 3MF(s), a photo-vs-prediction PNG, and the swap list.

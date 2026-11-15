@@ -125,6 +125,7 @@ partwright compare <a.js> <b.js> [more.js ...] [--png out] [--size N] [--view az
 partwright photo <image> [--palette p.json] [--max N] [--mode billboard|heightmap] [--depth N] [--bg] [--crop x,y,w,h] [--out model.js] [--png out]
 partwright fetch <url> [--out file]                  # download a remote image to disk (for `photo`)
 partwright segment <mesh.stl> [--algo id] [--seeds seeds.json] [-p k=v] [--smooth r] [--png out]  # part detection → colour-coded PNG + quality JSON (see public/ai/segmentation.md; `npm run segment:bench` scores detectors)
+partwright layered-print <photo> [--colors 8] [--width 120] [--max-height 2.4] [--swap ams|pause|both] [--printer p1s] [--filaments spools.json] [--out stem]  # photo → HueForge-style filament-layering print: 3MF with layer swaps + photo-vs-prediction PNG + swap list (see public/ai/relief.md#layered-photo-prints; also `npm run layered-print -- …`)
 
 partwright daemon start [--app-port N] [--control-port N]
 partwright daemon stop

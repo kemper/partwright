@@ -49,6 +49,7 @@ import { runReplicadAsync, replicadEngine, getLastBrepShape, clearLastBrepShape 
 import { voxelEngine, runVoxelGrid } from './engines/voxel';
 import type { VoxelGridTransfer } from './voxel/grid';
 import { ensureBrepLoaded, sourceUsesBrep, parseStepBlob, pushPendingBrepImport, clearPendingBrepImports } from './brepRuntime';
+import { setActiveModelImages, type ModelImage } from './modelImages';
 import { sourceUsesManifoldText, preloadTextFonts } from './textGlyphs';
 import { sourceUsesHuman, preloadHumanAsset } from '../human/humanAsset';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
@@ -328,7 +329,7 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── execute ────────────────────────────────────────────────────────────
   if (msg.type === 'execute') {
-    const { callId, code, lang, imports, circularSegments, params, companionFiles, sdfPreviewScale, manifoldFactsMinTriangles, containmentSamples, modelLog, voxelSdfMaxSamples } = msg as unknown as {
+    const { callId, code, lang, imports, circularSegments, params, companionFiles, sdfPreviewScale, manifoldFactsMinTriangles, containmentSamples, modelLog, voxelSdfMaxSamples, images, layeredPrintMaxCells, layeredPrintMaxLayers } = msg as unknown as {
       callId: string;
       code: string;
       lang?: Language;
@@ -341,10 +342,15 @@ self.onmessage = async (event: MessageEvent) => {
       containmentSamples?: number;
       modelLog?: { maxLines?: unknown; maxChars?: unknown };
       voxelSdfMaxSamples?: number;
+      /** Attachment images the code reads via api.image('<id>'). */
+      images?: ModelImage[];
+      layeredPrintMaxCells?: number;
+      layeredPrintMaxLayers?: number;
     };
     // The Worker has no localStorage: apply the user's saved v.sdf budget
     // before model code reads getConfig().import.voxelSdfMaxSamples.
     if (typeof voxelSdfMaxSamples === 'number') applyWorkerImportConfig({ voxelSdfMaxSamples });
+    if (typeof layeredPrintMaxCells === 'number' && typeof layeredPrintMaxLayers === 'number') applyWorkerImportConfig({ layeredPrintMaxCells, layeredPrintMaxLayers });
     // This run's console capture (modelConsole.ts), with the main thread's
     // caps. Each JS engine call below runs inside log.run(...), which only
     // redirects the console for that synchronous call — model code never
@@ -442,6 +448,7 @@ self.onmessage = async (event: MessageEvent) => {
           try { await preloadHumanAsset(code as string); } catch { /* api.human reports the missing asset itself */ }
         }
         setActiveImports(runImports);
+        setActiveModelImages(images);
         // Progressive render for SDF models (figures): a throwaway coarse pass
         // first, posted as `execute_preview` so the viewport shows a rough shape
         // in ~1-2s, then the full-quality pass below. Gated on the source doing
@@ -503,6 +510,8 @@ self.onmessage = async (event: MessageEvent) => {
       const materialSpec = result.materialSpec ?? null;
       // api.print.layerColors(...) — plain serialisable LayerColorsSpec, crosses as-is.
       const layerColors = result.layerColors ?? null;
+      // api.layeredPrint(...) — plain serialisable plan record.
+      const layeredPrint = result.layeredPrint ?? null;
       const paramsSchema = result.paramsSchema ?? null;
       // console.log output from the model code (success and error alike).
       const logs = result.logs ?? null;
@@ -541,7 +550,7 @@ self.onmessage = async (event: MessageEvent) => {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage(
-          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, paintOps, surfaceOps, materialSpec, layerColors, lostLabels, paramsSchema, logs, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, ...(manifoldFacts ? { manifoldFacts } : {}), voxelCount: result.voxelCount, voxelPieceCount: result.voxelPieceCount, voxelRes: result.voxelRes, voxelResMixed: result.voxelResMixed, sdfLabelCounts: result.sdfLabelCounts, voxelGrid: result.voxelGrid },
+          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, paintOps, surfaceOps, materialSpec, layerColors, layeredPrint, lostLabels, paramsSchema, logs, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes, ...(manifoldFacts ? { manifoldFacts } : {}), voxelCount: result.voxelCount, voxelPieceCount: result.voxelPieceCount, voxelRes: result.voxelRes, voxelResMixed: result.voxelResMixed, sdfLabelCounts: result.sdfLabelCounts, voxelGrid: result.voxelGrid },
           transfer,
         );
       } else {
