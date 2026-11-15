@@ -54,3 +54,34 @@ whole import 38 s → 29 s, every stall labelled, Cancel works during matching.
 first draw. Moving the buffer build off-thread would take ~0.4 s off it here;
 the rest is GPU work I can't measure meaningfully without a real GPU, so #1260
 stays open for that.
+
+## Assistant
+
+## Review follow-ups (same session)
+
+**"Still open" means the same object, not the same text.** My first guard
+refused to save when the editor text had changed, which the reviewer traced to
+a real loss: type during the match and the import is never saved, so its mesh
+exists nowhere. The guard now checks only session + object. Edits don't count;
+the import is saved as imported. It is also checked right after the "Loading
+model…" frame, before anything is set up.
+
+**Callers learn whether the import was saved.** `applyImportWrapper` and
+`seedNewPartWithMesh` return a boolean and `importMeshPayload` adds `saved`,
+so the single-import paths skip the success toast, the multi-object loop
+stops, and `importMeshData` returns an error instead of a result.
+
+**The status line has other owners.** The match no longer shows its label or
+registers Cancel while a run is in flight or after a failed run, its timer
+stands down while a run is going, it only puts "Ready" back if it still owns
+the line, and `colourMatchCancel` is cleared only by the match that set it.
+I extended the shared inline timer (`standDown`, `keepCancel`) rather than add
+a third copy of its timings.
+
+**`afterNextPaint` can't hang.** Frames can stop without the tab being hidden,
+so it gives up after `ui.paintWaitTimeoutMs` (new setting, 250 ms).
+
+**Left alone:** switching objects during an import's *run* phase can save a
+version without its mesh. That predates this work and is filed as #1265; I
+did not change `saveVersion`'s import carry-forward because several paths set
+the active imports temporarily for off-editor bakes.

@@ -2357,6 +2357,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0} max={2_000} integer
           onChange={v => set('ui', 'progressModalShowDelayMs', v)}
         />
+        <Field cfgKey="ui.paintWaitTimeoutMs"
+          label="Status paint wait"
+          unit="ms"
+          tooltip="Before a step that freezes the page (loading, colouring or saving a very large import), the app names the step in the status line and waits for the browser to draw it. This is the longest it waits: if no frame arrives in time (a covered window, an embedded view), the step starts anyway without its label showing."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.paintWaitTimeoutMs}
+          value={c.ui.paintWaitTimeoutMs}
+          min={0} max={2_000} integer
+          onChange={v => set('ui', 'paintWaitTimeoutMs', v)}
+        />
         <Field cfgKey="ui.sessionLockHeartbeatMs"
           label="Session lock heartbeat"
           unit="ms"

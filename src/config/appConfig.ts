@@ -629,6 +629,10 @@ export interface AppConfig {
     reliefPreview3dDebounceMs: number;
     /** Delay (ms) before the progress modal appears (hides fast operations). */
     progressModalShowDelayMs: number;
+    /** Longest wait (ms) for the browser to paint a status line before
+     *  blocking work starts (a big import's phases). Frames can stop coming
+     *  without the tab being hidden; the work then proceeds unlabelled. */
+    paintWaitTimeoutMs: number;
     /** Heartbeat interval (ms) for the cross-tab session leader lock. */
     sessionLockHeartbeatMs: number;
     /** Time (ms) after which a session lock heartbeat is considered stale. */
@@ -990,6 +994,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     reliefPreviewDebounceMs: 120,
     reliefPreview3dDebounceMs: 250,
     progressModalShowDelayMs: 250,
+    paintWaitTimeoutMs: 250,
     sessionLockHeartbeatMs: 3000,
     sessionLockStaleMs: 8000,
     defaultQuality: 128,

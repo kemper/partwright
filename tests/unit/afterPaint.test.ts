@@ -43,6 +43,16 @@ describe('afterNextPaint', () => {
     expect(page.listeners.size).toBe(0);
   });
 
+  it('gives up after the configured wait when no frame ever comes', async () => {
+    const page = stubPage(false);
+    const t0 = performance.now();
+    await afterNextPaint(); // never runFrame(): only the fallback can resolve it
+    const waited = performance.now() - t0;
+    expect(waited).toBeGreaterThanOrEqual(200);
+    expect(waited).toBeLessThan(2000);
+    expect(page.listeners.size).toBe(0);
+  });
+
   it('stops waiting when the tab is hidden before the frame comes', async () => {
     const page = stubPage(false);
     const p = afterNextPaint();

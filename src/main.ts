@@ -4367,7 +4367,7 @@ async function main() {
     const isStale = () => currentMeshData !== live;
     const dropStale = (): boolean => {
       if (!isStale()) return false;
-      showToast('The model changed while the import’s colours were being matched, so they were not applied.', { variant: 'warn', source: 'import' });
+      showToast('The model changed before the import’s colours could be applied, so they were left off.', { variant: 'warn', source: 'import' });
       return true;
     };
     let seedRegions: SeedRegion[] | undefined;
@@ -4398,6 +4398,11 @@ async function main() {
     }
   }
 
+  /** Whether the last run ended in an error (its message is in the status line). */
+  function lastRunFailed(): boolean {
+    return (getGeometryDataObj() as { status?: string } | null)?.status === 'error';
+  }
+
   /** Name the phase a big import is in, in the viewport status line, and wait
    *  for it to paint — the work that follows blocks the page, so a label set
    *  without the wait would never show. Small meshes skip it (the work is
@@ -4405,26 +4410,32 @@ async function main() {
    *  pair with endImportPhase. */
   async function importPhase(label: string, numTri: number = currentMeshData?.numTri ?? 0): Promise<boolean> {
     if (numTri < getConfig().renderer.lazyManifoldMinTriangles) return false;
-    // A failed run left its error in the status line: leave it there.
-    if ((getGeometryDataObj() as { status?: string } | null)?.status === 'error') return false;
+    // A run in flight owns the status line; a failed run left its error there.
+    if (_running || lastRunFailed()) return false;
     setStatus(statusBar, 'running', label);
     await afterNextPaint();
     return true;
   }
 
   function endImportPhase(): void {
+    if (_running) return; // a run started meanwhile: the line is its own now
     setStatus(statusBar, 'ready', 'Ready');
   }
 
-  /** Whether the editor still holds the import that was started in object
-   *  `partId` with wrapper `code` (as the editor showed it — setting a value
-   *  can auto-format it). The import's later phases await (the colour
-   *  match runs with the page live), so the user may have switched object or
-   *  session, or edited the code, before the version is saved — saving then
-   *  would write the import into whatever is open now. */
-  function importStillOpen(partId: string | undefined, code: string): boolean {
-    if (getState().currentPart?.id === partId && getValue() === code) return true;
-    showToast('The editor moved on before the import finished, so it was not saved as a version.', { variant: 'warn', source: 'import' });
+  /** The object an import is being placed in (session + object id). */
+  function importOwner(): string {
+    const st = getState();
+    return `${st.session?.id ?? ''}:${st.currentPart?.id ?? ''}`;
+  }
+
+  /** Whether the editor is still on the object the import started in. The
+   *  import's later phases await with the page live (the colour match), so the
+   *  user may have switched object or session before the version is saved —
+   *  saving then would write the import into whatever is open now. Edits to
+   *  the code don't count: the import is still saved, as imported. */
+  function importStillOpen(owner: string): boolean {
+    if (importOwner() === owner) return true;
+    showToast('The editor moved to another object before the import finished, so it was not saved there.', { variant: 'warn', source: 'import' });
     return false;
   }
 
@@ -4435,25 +4446,26 @@ async function main() {
   // so the imports survive a reload and so future saveVersion calls (which
   // carry forward `importedMeshes` from the prior version) have something to
   // build on.
-  async function importMeshPayload(mesh: ImportedMesh, sessionName: string, opts: { manifold: boolean; seedRegions?: SeedRegionsInput } = { manifold: true }): Promise<{ sessionId: string }> {
+  async function importMeshPayload(mesh: ImportedMesh, sessionName: string, opts: { manifold: boolean; seedRegions?: SeedRegionsInput } = { manifold: true }): Promise<{ sessionId: string; saved: boolean }> {
     if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
     const session = await createSession(sessionName, 'manifold-js', sessionName);
+    const owner = importOwner();
+    // Uploading and first drawing a big mesh blocks the page before the run's
+    // own status can show: name it first. Nothing is set up yet, so if the
+    // editor moves on during that frame the import just stops.
+    await importPhase('Loading model...', mesh.numTri);
+    if (!importStillOpen(owner)) return { sessionId: session.id, saved: false };
     // Fresh session: drop the previous model's paint before running the import
     // wrapper (same reason as importCodePayload). seedRegions below are added
     // AFTER this clear, so an imported colored mesh's own seeds survive.
     cancelVoxelPaintIfActive();
     dropPaintState();
-    // Uploading and first drawing a big mesh blocks the page before the run's
-    // own status can show: name it first.
-    await importPhase('Loading model...', mesh.numTri);
-    const partId = getState().currentPart?.id;
     setActiveImports([mesh]);
     const code = generateImportCode([mesh], { manifold: opts.manifold });
     setValue(code);
-    const shown = getValue();
     await runCodeSync(code);
     await seedImportRegions(opts.seedRegions);
-    if (!importStillOpen(partId, shown)) return { sessionId: session.id };
+    if (!importStillOpen(owner)) return { sessionId: session.id, saved: false };
     const saving = await importPhase('Saving...');
     try {
       const thumbnail = await captureThumbnail();
@@ -4466,7 +4478,7 @@ async function main() {
     } finally {
       if (saving) endImportPhase();
     }
-    return { sessionId: session.id };
+    return { sessionId: session.id, saved: true };
   }
 
   // === Relief Studio (image → printable colour tile / stepped relief) ===
@@ -5916,9 +5928,14 @@ async function main() {
     if (Math.max(source.numTri, out.numTri) < getConfig().renderer.lazyManifoldMinTriangles) return matchImportColors(source, out, triColor);
     const abort = new AbortController();
     const label = 'Matching colours...';
-    setStatus(statusBar, 'running', label);
-    const timer = startSurfaceTimer(label);
-    colourMatchCancel = () => abort.abort();
+    // The status line and Cancel belong to a run while one is in flight, and
+    // a failed run's error stays up: match quietly then.
+    const runOwnsStatus = () => _running;
+    const shown = !runOwnsStatus() && !lastRunFailed();
+    if (shown) setStatus(statusBar, 'running', label);
+    const timer = shown ? startSurfaceTimer(label, runOwnsStatus) : null;
+    const cancel = shown ? () => abort.abort() : null;
+    if (cancel) colourMatchCancel = cancel;
     try {
       return await matchImportColorsInWorker(source, out, triColor, { signal: abort.signal });
     } catch (e) {
@@ -5934,9 +5951,11 @@ async function main() {
         return [];
       }
     } finally {
-      colourMatchCancel = null;
-      stopSurfaceTimer(timer);
-      endImportPhase();
+      // A second import's match may have taken the slot since.
+      if (cancel && colourMatchCancel === cancel) colourMatchCancel = null;
+      // Only put "Ready" back if this match still owns the line: not when a
+      // newer inline timer took over, nor while a run is in flight.
+      if (timer !== null && stopSurfaceTimer(timer, runOwnsStatus())) endImportPhase();
     }
   }
 
@@ -6661,7 +6680,8 @@ async function main() {
         const e = entries[i];
         if (progressId !== null) updateProgress(progressId, i / entries.length, `Object ${i + 1} of ${entries.length}: ${e.name}`);
         if (i === 0 && destination === 'new-session') {
-          await importMeshPayload(e.probe.mesh, sessionName, { manifold: e.probe.isManifold, seedRegions: e.seed });
+          // The editor moved on mid-import: stop rather than write the rest there.
+          if (!(await importMeshPayload(e.probe.mesh, sessionName, { manifold: e.probe.isManifold, seedRegions: e.seed })).saved) { ids.push(null); break; }
           const part = getState().currentPart;
           if (part && part.name !== e.name) await renamePart(part.id, e.name);
           ids.push(part?.id ?? null);
@@ -6670,7 +6690,7 @@ async function main() {
         const cur = getState().currentPart;
         if (i === 0 && destination === 'reuse-current' && cur) {
           await preserveCurrentEditsIfNeeded();
-          await applyImportWrapper([e.probe.mesh], e.probe.isManifold, e.seed);
+          if (!(await applyImportWrapper([e.probe.mesh], e.probe.isManifold, e.seed))) { ids.push(null); break; }
           if (cur.name !== e.name) await renamePart(cur.id, e.name);
           ids.push(cur.id);
           continue;
@@ -6678,7 +6698,7 @@ async function main() {
         if (i === 0) await preserveCurrentEditsIfNeeded();
         const part = await createPart(e.name);
         if (!part) { ids.push(null); continue; }
-        await applyImportWrapper([e.probe.mesh], e.probe.isManifold, e.seed);
+        if (!(await applyImportWrapper([e.probe.mesh], e.probe.isManifold, e.seed))) { ids.push(null); break; }
         ids.push(part.id);
       }
     } finally {
@@ -6865,7 +6885,12 @@ async function main() {
 
   /** Drop an import wrapper for `components` into the current part: set the
    *  active imports, render, and save a version that carries the mesh data. */
-  async function applyImportWrapper(components: ImportedMesh[], manifold: boolean, seedRegions?: SeedRegionsInput): Promise<void> {
+  async function applyImportWrapper(components: ImportedMesh[], manifold: boolean, seedRegions?: SeedRegionsInput): Promise<boolean> {
+    const owner = importOwner();
+    // Name the load before it blocks (see importMeshPayload). Nothing is set
+    // up yet, so if the editor moves on during that frame the import stops.
+    await importPhase('Loading model...', components.reduce((n, c) => n + c.numTri, 0));
+    if (!importStillOpen(owner)) return false;
     // Same reset as the other import chokepoints: an import wrapper replaces the
     // part's geometry, so the previous part's regions can't survive (compose
     // even rebuilds topology wholesale). Callers run preserveCurrentEditsIfNeeded
@@ -6879,17 +6904,14 @@ async function main() {
     // composing into a SCAD/BREP/voxel part would run the wrapper through the
     // wrong engine and persist the version tagged with the wrong language.
     if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
-    await importPhase('Loading model...', components.reduce((n, c) => n + c.numTri, 0));
-    const partId = getState().currentPart?.id;
     const code = generateImportCode(components, { manifold });
     setActiveImports(components);
     setValue(code);
-    const shown = getValue();
     await runCodeSync(code);
     // Seed any pre-computed colour regions (relief bands) AFTER the live-paint
     // reset above, so the import's own colours survive into the saved version.
     await seedImportRegions(seedRegions);
-    if (!importStillOpen(partId, shown)) return;
+    if (!importStillOpen(owner)) return false;
     const saving = await importPhase('Saving...');
     try {
       const thumbnail = await captureThumbnail();
@@ -6902,6 +6924,7 @@ async function main() {
     } finally {
       if (saving) endImportPhase();
     }
+    return true;
   }
 
   /** Execute a part's latest version off-editor and capture its geometry as a
@@ -7275,10 +7298,10 @@ async function main() {
 
   /** Add the imported mesh as a brand-new part (becomes current). Optional
    *  seedRegions (relief's per-colour bands) are painted onto the saved v1. */
-  async function seedNewPartWithMesh(mesh: ImportedMesh, filename: string, manifold: boolean, seedRegions?: SeedRegionsInput): Promise<void> {
+  async function seedNewPartWithMesh(mesh: ImportedMesh, filename: string, manifold: boolean, seedRegions?: SeedRegionsInput): Promise<boolean> {
     const part = await createPart(filename.replace(/\.[^.]+$/, ''));
-    if (!part) return;
-    await applyImportWrapper([mesh], manifold, seedRegions);
+    if (!part) return false;
+    return applyImportWrapper([mesh], manifold, seedRegions);
   }
 
   /** Run `code` under `language` in the current part and save it as a version.
@@ -7434,8 +7457,7 @@ async function main() {
       if (!opts.silent) showToast('Couldn’t read the current object’s geometry to combine.', { variant: 'warn' });
       return false;
     }
-    await applyImportWrapper([...baked, mesh], true, seedRegions);
-    return true;
+    return applyImportWrapper([...baked, mesh], true, seedRegions);
   }
 
   /** Add an imported model to object `objectId` (opening it) as named parts —
@@ -7466,14 +7488,17 @@ async function main() {
     const gap = base && add ? Math.max(base.max[0] - base.min[0], add.max[0] - add.min[0]) * getConfig().ui.partArrangeGapRatio : 0;
     const d = base && add ? besideOffset(base, add, gap) : [0, 0, 0] as [number, number, number];
     const placed: ImportedMesh = { ...mesh, vertProperties: translatedVerts(mesh.vertProperties, mesh.numProp, d), parts };
+    const owner = importOwner();
+    // Name the load before it blocks. Nothing is changed yet, so if the editor
+    // moves on during that frame the import stops.
     await importPhase('Loading model...', baseMesh.numTri + mesh.numTri);
+    if (!importStillOpen(owner)) return false;
     const previousCode = getValue();
     const previousImports = getActiveImports();
     const imports = [...previousImports, placed];
     const code = composeImportIntoCode(previousCode, imports.length - 1);
     setActiveImports(imports);
     setValue(code);
-    const shown = getValue();
     const ran = await runCodeSync(code);
     const geo = getGeometryDataObj() as { status?: string } | null;
     if (!ran || geo?.status === 'error' || !currentMeshData) {
@@ -7489,7 +7514,7 @@ async function main() {
       const out = currentMeshData;
       await seedImportRegions(seedRegions, { ...out, vertProperties: translatedVerts(out.vertProperties, out.numProp, [-d[0], -d[1], -d[2]]) });
     }
-    if (!importStillOpen(objectId, shown)) return false;
+    if (!importStillOpen(owner)) return false;
     const saving = await importPhase('Saving...');
     let saved: Awaited<ReturnType<typeof saveCurrentVersion>>;
     try {
@@ -7605,8 +7630,7 @@ async function main() {
     // a fresh session named after the file. The target modal only exists to
     // protect real work, and a fresh/expendable editor has none to protect.
     if (nothingToProtect()) {
-      await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold, seedRegions });
-      return true;
+      return (await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold, seedRegions })).saved;
     }
 
     // An empty open object (a new one in a session with others) is filled by
@@ -7629,19 +7653,17 @@ async function main() {
     if (!pick) return false;
     const target = pick.target;
     if (target === 'current-part' && empty) {
-      await applyImportWrapper([parsed.mesh], parsed.isManifold, seedRegions);
+      if (!(await applyImportWrapper([parsed.mesh], parsed.isManifold, seedRegions))) return false;
       await nameFilledObject(sessionName);
       return true;
     }
 
     if (target === 'new-session') {
-      await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold, seedRegions });
-      return true;
+      return (await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold, seedRegions })).saved;
     }
     if (target === 'new-part') {
       await preserveCurrentEditsIfNeeded();
-      await seedNewPartWithMesh(parsed.mesh, filename, parsed.isManifold, seedRegions);
-      return true;
+      return seedNewPartWithMesh(parsed.mesh, filename, parsed.isManifold, seedRegions);
     }
     // current-part: add it to the picked object (the open one by default) as
     // named parts, keeping that object's code where it can.
@@ -10269,7 +10291,8 @@ async function main() {
   // cancels the current engine execution (terminates the geometry Worker).
   cancelInlineBtn.addEventListener('click', () => {
     if (surfaceCarveCancel) { surfaceCarveCancel(); return; }
-    if (colourMatchCancel) { colourMatchCancel(); return; }
+    // (While a run is in flight the button is the run's: fall through to it.)
+    if (colourMatchCancel && !_running) { colourMatchCancel(); return; }
     if (cancelSurfaceCompute()) return;
     cancelCurrentExecution();
   });
@@ -16480,7 +16503,8 @@ async function main() {
         }
         const base = filename.replace(/\.[^.]+$/, '');
         const seeder = build3MFSeeder(p3, `${p3.result.title || base} (3MF)`, opts?.adoptPalette !== false);
-        const { sessionId } = await importMeshPayload(p3.probe.mesh, sessionName, { manifold: p3.probe.isManifold, seedRegions: seeder?.seed });
+        const { sessionId, saved } = await importMeshPayload(p3.probe.mesh, sessionName, { manifold: p3.probe.isManifold, seedRegions: seeder?.seed });
+        if (!saved) return { error: 'importMeshData: the editor moved to another object before the import finished, so it was not saved.' };
         return {
           sessionId,
           target: 'new-session',
@@ -25802,7 +25826,9 @@ async function main() {
   let _surfaceTimerInterval: number | null = null;
   let _surfaceProgressNote = '';
 
-  function startSurfaceTimer(label: string): number {
+  /** `standDown` (optional): while it returns true the timer writes nothing
+   *  and shows no Cancel — something else (a run) owns the status line. */
+  function startSurfaceTimer(label: string, standDown?: () => boolean): number {
     const gen = ++_surfaceTimerGen;
     if (_surfaceTimerShow !== null) { clearTimeout(_surfaceTimerShow); _surfaceTimerShow = null; }
     if (_surfaceTimerInterval !== null) { clearInterval(_surfaceTimerInterval); _surfaceTimerInterval = null; }
@@ -25810,8 +25836,9 @@ async function main() {
     const t0 = performance.now();
     _surfaceTimerShow = window.setTimeout(() => {
       _surfaceTimerShow = null;
-      cancelInlineBtn.classList.remove('hidden');
+      if (!standDown?.()) cancelInlineBtn.classList.remove('hidden');
       _surfaceTimerInterval = window.setInterval(() => {
+        if (standDown?.()) return;
         const s = ((performance.now() - t0) / 1000).toFixed(1);
         setStatus(statusBar, 'running', `${label}${_surfaceProgressNote} ${s}s`);
       }, 100);
@@ -25819,11 +25846,14 @@ async function main() {
     return gen;
   }
 
-  function stopSurfaceTimer(gen: number): void {
-    if (gen !== _surfaceTimerGen) return; // a newer compute owns the timer now
+  /** Returns whether `gen` still owned the timer. `keepCancel` leaves the
+   *  Cancel button as it is (a run in flight is showing it for itself). */
+  function stopSurfaceTimer(gen: number, keepCancel = false): boolean {
+    if (gen !== _surfaceTimerGen) return false; // a newer compute owns the timer now
     if (_surfaceTimerShow !== null) { clearTimeout(_surfaceTimerShow); _surfaceTimerShow = null; }
     if (_surfaceTimerInterval !== null) { clearInterval(_surfaceTimerInterval); _surfaceTimerInterval = null; }
-    cancelInlineBtn.classList.add('hidden');
+    if (!keepCancel) cancelInlineBtn.classList.add('hidden');
+    return true;
   }
 
   /** Resolve a run's `api.surface.*` chain. Mutates `result` in place so the
