@@ -118,12 +118,20 @@ function availableCommands(): Command[] {
   });
 }
 
-function sectionHeader(label: string): HTMLElement {
+/** A labelled `role="group"` inside the listbox (a listbox may own only
+ *  options and groups, so a bare heading div would be dropped by screen
+ *  readers). The visible heading is aria-hidden; the group carries the label. */
+function sectionGroup(label: string): HTMLElement {
+  const group = document.createElement('div');
+  group.setAttribute('role', 'group');
+  group.setAttribute('aria-label', label);
+  group.className = 'flex flex-col gap-0.5';
   const h = document.createElement('div');
-  h.setAttribute('role', 'presentation');
+  h.setAttribute('aria-hidden', 'true');
   h.className = 'px-3 pt-2 pb-0.5 text-[10px] uppercase tracking-wider text-zinc-500 font-semibold';
   h.textContent = label;
-  return h;
+  group.appendChild(h);
+  return group;
 }
 
 /** `showHint`: false in the browse view, where the section heading already
@@ -191,12 +199,13 @@ function render(): void {
 
   if (query === '') {
     for (const section of groupForBrowse(available, readRecent().slice(0, getConfig().ui.commandPaletteRecentMax))) {
-      listEl.appendChild(sectionHeader(section.label));
+      const group = sectionGroup(section.label);
       for (const cmd of section.items) {
         const entry: Entry = { kind: 'cmd', cmd };
-        listEl.appendChild(optionRow(entry, entries.length, false));
+        group.appendChild(optionRow(entry, entries.length, false));
         entries.push(entry);
       }
+      listEl.appendChild(group);
     }
   } else {
     const ranked = rankCommands(available, query);

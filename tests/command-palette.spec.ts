@@ -49,7 +49,7 @@ test.describe('command palette', () => {
     await expect(input).toBeVisible();
     // Empty query browses by category, tool rows carry a one-line description.
     const list = page.locator('#cmd-palette-list');
-    await expect(list.locator('[role="presentation"]').filter({ hasText: /^Tools$/ })).toBeVisible();
+    await expect(list.locator('[role="group"][aria-label="Tools"]')).toBeVisible();
     await expect(list.getByText('Add a texture: fuzzy skin', { exact: false })).toBeVisible();
   });
 
@@ -64,7 +64,7 @@ test.describe('command palette', () => {
 
     await page.keyboard.press('ControlOrMeta+k');
     const list = page.locator('#cmd-palette-list');
-    await expect(list.locator('[role="presentation"]').filter({ hasText: /^Recent$/ })).toBeVisible();
+    await expect(list.locator('[role="group"][aria-label="Recent"]')).toBeVisible();
     await expect(page.locator('[role="option"]').first()).toContainText('Go to Notes');
   });
 
@@ -76,6 +76,12 @@ test.describe('command palette', () => {
     await expect(ask).toContainText('Ask the AI');
     await ask.click();
     await expect(page.locator('#ai-panel textarea')).toHaveValue('make it twice as tall');
+
+    // A second hand-off keeps the draft already in the chat box.
+    await page.keyboard.press('ControlOrMeta+k');
+    await page.locator('input[aria-label="Search commands"]').fill('and add a lid');
+    await page.locator('[role="option"][data-fallback="true"]').click();
+    await expect(page.locator('#ai-panel textarea')).toHaveValue('make it twice as tall\n\nand add a lid');
   });
 
   test('the Inspect menu ends with a search entry that opens the palette', async ({ page }) => {
