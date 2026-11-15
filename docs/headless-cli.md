@@ -57,6 +57,41 @@ Both layers can produce a PNG; pick by how exact the pixels need to be:
 > **repeated** renders/iterations (warm-up amortized), not making a single heavy
 > figure cheap. The meshing dominates; the render itself is fast in both layers.
 
+### Checking an exported 3MF with the real slicer — `slicer-cli`
+
+`model:preview` and the daemon show the **model**. To see what the **print job**
+looks like to its consumer, `scripts/slicer-cli.mjs` runs Bambu Studio's own
+command line on an exported `.3mf`, as an external process:
+
+```bash
+node scripts/slicer-cli.mjs install --apt      # once per container: download (256 MB), unpack, system packages, GL shim
+node scripts/slicer-cli.mjs run -- --export-png 0 --camera-view 0 --outputdir out model.3mf
+node scripts/slicer-cli.mjs run -- --slice 0 --export-3mf sliced.gcode.3mf --outputdir out model.3mf
+```
+
+- **Plate render** (`--export-png 0`, ~1 s): writes `out/plate_<n>_<view>.png`,
+  512×512, drawn by the slicer's own renderer with painted filament colours.
+  `--camera-view`: 0 iso, 1 top-front, 2 left, 3 right, 10/11/12 other isos.
+  There is no free camera and no underside view.
+- **Real slice** (`--slice 0`, ~2 s for a small part): `out/result.json` holds
+  per-filament grams, filament-change count, predicted print time and each
+  object's bounding box; the G-code and slicer thumbnails land next to it.
+- **Always pass `--outputdir`**, or the slicer drops `result.json` in the
+  current directory.
+
+What it is and isn't:
+
+- It only runs one release, pinned by SHA-256 in the script; the
+  `.claude/settings.json` allow rule names the script, not the binary.
+- Nothing from the slicer is committed. It is AGPL-3.0, downloaded into the
+  gitignored `.partwright/slicer/` and run unmodified.
+- This build's windowing layer is Wayland-only, so `xvfb` does not help. `run`
+  starts a throwaway headless `weston` and preloads a small shim
+  (`scripts/slicer-cli/glx-osmesa-shim.c`) so the slicer's GL start-up works on
+  software rendering.
+- **The CLI is not the desktop app.** It loads projects through a different
+  path than the GUI, so a clean run here does not prove the GUI opens the file.
+
 ## CLI surface
 
 ```

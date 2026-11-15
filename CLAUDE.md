@@ -19,6 +19,7 @@ npm run snap -- /editor [--out f.png] [--wait ms]  # one-shot navigate→settle�
 npm run human:fit -- --photo p.png [--photo side.png@0,0]   # fit api.human's body sliders + arm/leg spread to a photo's silhouette → api.human code (see public/ai/human.md)
 npm run pr:screenshots -- a.png b.png  # upload screenshots; a workflow posts them as the PR's "Visual proof" comment (stored on pr-assets, never in branch history) — see Visual proof in the PR
 npm run cf:prune-previews [-- --yes]   # delete Cloudflare Pages per-branch preview deployments (dry run unless --yes; keeps main/staging, never production; needs CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID)
+node scripts/slicer-cli.mjs run -- --export-png 0 --outputdir out model.3mf   # the real slicer's own plate render (or --slice 0) of an exported 3MF; `install --apt` once per container — see docs/headless-cli.md
 ```
 
 Open `http://localhost:5173/editor` to go straight to the editor. AI agents drive the tool via the `window.partwright` console API and see geometry by calling the render tools (`renderViews`/`renderView`), so there is no special view to preselect.
