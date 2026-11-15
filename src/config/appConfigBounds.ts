@@ -158,6 +158,7 @@ export const APP_CONFIG_FIELD_BOUNDS: { [S in ConfigSection]: Partial<Record<key
     layeredPrintMaxLayers: { min: 10, max: 1000, integer: true },
     layeredPrintMaxImagePx: { min: 256, max: 8192, integer: true },
     imagePrepMaxPx: { min: 256, max: 8192, integer: true },
+    imageToolMaxImagePx: { min: 256, max: 8192, integer: true },
     maxSplitObjects: { min: 2, max: 1000, integer: true },
     maxImportFiles: { min: 2, max: 1000, integer: true },
     multiImportGridGap: { min: 0, max: 5 },

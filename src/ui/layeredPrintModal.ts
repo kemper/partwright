@@ -20,7 +20,10 @@ export interface LayeredPrintModalOptions {
   decode: (src: Blob | string) => Promise<{ image: ImageData; dataUrl: string }>;
   solve: (image: RgbaImage, options: Partial<LayeredPrintOptions>, signal: AbortSignal) => Promise<LayeredPrintResult>;
   /** Open the solved print as a new code session with the photo attached. */
-  onCreate: (result: LayeredPrintResult, name: string, photoDataUrl: string) => Promise<void>;
+  /** Commit the solved print. `fromInitial` is true while the photo is still
+   *  the one the dialog was opened with. Resolve to `false` when the user
+   *  backed out of a follow-up step: the dialog then stays open. */
+  onCreate: (result: LayeredPrintResult, name: string, photoDataUrl: string, fromInitial: boolean) => Promise<void | boolean>;
   /** Download a 3MF for the solve (the same export path as the editor's). */
   onDownload: (result: LayeredPrintResult, args: { mode: LayeredExportMode; swapMode?: 'ams' | 'pause'; slots?: number; paintFilaments?: 'library' | 'palette' | 'exact'; printer: string }) => void;
 }
@@ -149,6 +152,7 @@ export function openLayeredPrintModal(opts: LayeredPrintModalOptions): void {
 
   let image: ImageData | null = null;
   let photoDataUrl = '';
+  let fromInitial = false;
   let name = 'layered-print';
   let result: LayeredPrintResult | null = null;
 
@@ -220,12 +224,13 @@ export function openLayeredPrintModal(opts: LayeredPrintModalOptions): void {
     }
   }
 
-  async function load(src: Blob | string): Promise<void> {
+  async function load(src: Blob | string, initial = false): Promise<void> {
     try {
       status.textContent = 'Loading photo…';
       const d = await opts.decode(src);
       image = d.image;
       photoDataUrl = d.dataUrl;
+      fromInitial = initial;
       if (src instanceof File) name = src.name.replace(/\.[^.]+$/, '') || name;
       fileName.textContent = src instanceof File ? src.name : 'Attached image';
       await runSolve();
@@ -248,7 +253,12 @@ export function openLayeredPrintModal(opts: LayeredPrintModalOptions): void {
     syncButtons(true);
     status.textContent = 'Building the model…';
     try {
-      await opts.onCreate(result, name, photoDataUrl);
+      const created = await opts.onCreate(result, name, photoDataUrl, fromInitial);
+      if (created === false) {
+        status.textContent = 'Not created yet — choose where the print should go.';
+        syncButtons(false);
+        return;
+      }
       shell.close();
     } catch (e) {
       status.textContent = `Could not create the model: ${e instanceof Error ? e.message : String(e)}`;
@@ -257,6 +267,6 @@ export function openLayeredPrintModal(opts: LayeredPrintModalOptions): void {
   });
 
   syncButtons(false);
-  if (opts.initialFile) void load(opts.initialFile);
-  else if (opts.initialSrc) void load(opts.initialSrc);
+  if (opts.initialFile) void load(opts.initialFile, true);
+  else if (opts.initialSrc) void load(opts.initialSrc, true);
 }

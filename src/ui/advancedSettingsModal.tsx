@@ -1378,6 +1378,16 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={256} max={8192} integer
           onChange={v => set('import', 'imagePrepMaxPx', v)}
         />
+        <Field cfgKey="import.imageToolMaxImagePx"
+          label="Attached source image size"
+          unit="px"
+          hint="Longest side an imported image is stored at when it's attached as the object's source."
+          tooltip="Relief, voxel and layered imports attach the image they were made from to the session, so Image tools can re-open them. Larger images are downscaled to this before they're stored; it doesn't change the model you just made."
+          defaultValue={APP_CONFIG_DEFAULTS.import.imageToolMaxImagePx}
+          value={c.import.imageToolMaxImagePx}
+          min={256} max={8192} integer
+          onChange={v => set('import', 'imageToolMaxImagePx', v)}
+        />
         <Field cfgKey="import.threeMfMaxEntryMB"
           label="3MF max part size"
           unit="MB"

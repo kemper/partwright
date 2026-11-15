@@ -132,7 +132,7 @@ export function openImageToolsModal(opts: ImageToolsModalOptions): void {
     for (const im of images) {
       const b = document.createElement('button');
       const on = im.id === selected;
-      b.className = `w-20 h-20 rounded-lg overflow-hidden border-2 ${on ? 'border-blue-500' : 'border-zinc-700 hover:border-zinc-500'}`;
+      b.className = `w-20 h-20 rounded-lg overflow-hidden border-2 ${on ? 'border-blue-500' : 'border-zinc-700 [@media(hover:hover)]:hover:border-zinc-500'}`;
       b.title = im.label ?? 'Attached image';
       b.setAttribute('aria-pressed', String(on));
       b.setAttribute('aria-label', `Use image ${im.label ?? im.id}`);
