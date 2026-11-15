@@ -23,6 +23,7 @@ import { DEFAULT_PACK_STRATEGY, DEFAULT_GRID_GAP_MM, layoutBambuPlates, type Bam
 import { isExportSplitMode, type ExportSplitMode } from '../export/exportSplit';
 import { createToolNote, type ToolOpenContext, type ToolOpenResult } from './toolRegistry';
 import { armDialogConfirm } from './dialogConfirmGuard';
+import { createExportPrintPreview, type ExportPrintPreviewBlock, type ExportPrintPreviewHooks } from './exportPrintPreview';
 
 /** Pre-set values for the NEXT object picker (from `openTool('export-objects')`).
  *  The picker only opens staged — the user still clicks Export. */
@@ -37,6 +38,8 @@ export interface ExportPartsPrefill {
   /** Object name or id → how it splits. A mode the object can't use (one
    *  piece, no parts) falls back to whole once the object is measured. */
   split?: Record<string, ExportSplitMode>;
+  /** Open with the Print preview block showing (3MF exports). */
+  printPreview?: boolean;
   note?: string;
   source?: ToolOpenContext['source'];
 }
@@ -149,6 +152,9 @@ export interface ExportPartsModalOptions {
   packing?: boolean;
   /** Turns on the Split control (pieces / parts) for each object. */
   split?: ExportPartsSplitOptions;
+  /** Turns on the Print preview block: an optional look at how a ticked
+   *  object will print (3MF exports). */
+  printPreview?: ExportPrintPreviewHooks;
 }
 
 /** The key a whole (unsplit) object uses in `plates`. */
@@ -225,11 +231,15 @@ export function showExportPartsModal(
           applied.split = out;
         }
       }
+      if (p.printPreview !== undefined) {
+        if (!opts.printPreview || !twoPane) ignored.push('printPreview'); else applied.printPreview = p.printPreview;
+      }
       if (errors.length) { staged.settle({ error: errors.join('; ') }); resolve(null); return; }
       pre = { ids, applied, ignored, p, split: preSplit };
     }
 
     let result: ExportPartsResult | null = null;
+    let printBlock: ExportPrintPreviewBlock | null = null;
     let closed = false;
     let disarmConfirm: () => void = () => {};
     // Track object URLs so we can revoke them on teardown (no GPU/blob leak).
@@ -245,6 +255,7 @@ export function showExportPartsModal(
       onClose: () => {
         closed = true;
         thumbObserver?.disconnect();
+        printBlock?.dispose();
         disarmConfirm();
         for (const url of objectUrls) URL.revokeObjectURL(url);
         openPicker = null;
@@ -750,6 +761,16 @@ export function showExportPartsModal(
       optionsParent.appendChild(wrap);
     }
 
+    // ── Print preview: an optional look at how a ticked object will print ──
+    if (opts.printPreview && twoPane) {
+      printBlock = createExportPrintPreview(
+        opts.printPreview,
+        () => selectedIds().map(id => ({ id, name: parts.find(x => x.id === id)?.name ?? id })),
+        typeof pre?.applied.printPreview === 'boolean' ? { show: pre.applied.printPreview } : {},
+      );
+      optionsParent.appendChild(printBlock.el);
+    }
+
     const printerBed = (): [number, number] => {
       const p = bambu?.printers.find(x => x.id === printerSel?.value);
       return p?.bed ?? [256, 256];
@@ -956,6 +977,7 @@ export function showExportPartsModal(
       exportBtn.classList.toggle('cursor-default', off);
       toggleAll.textContent = checks.every(c => c.checked) ? 'Select none' : 'Select all';
       for (const s of groupSyncers) s();
+      printBlock?.sync();
     }
 
     /** After object checkboxes change: measure newly ticked objects and
@@ -1020,6 +1042,7 @@ export function showExportPartsModal(
           ...(showPacking ? { packStrategy } : {}),
           ...(split ? { split: splits, excluded: excludedOut, items: items.length } : {}),
           ...(bambu ? { plates: lastPlates.length } : {}),
+          ...(printBlock ? { printPreview: printBlock.state() } : {}),
           ...(analysis.size && [...analysis.values()].some(v => v === 'pending') ? { measuring: true } : {}),
         };
       },
