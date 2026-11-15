@@ -8,8 +8,13 @@
 import { createModalShell } from './modalShell';
 import { BUTTON_PRIMARY, BUTTON_SECONDARY, BUTTON_CANCEL } from './styleConstants';
 import { BAMBU_PRINTERS, DEFAULT_BAMBU_PRINTER } from '../export/threemfProject';
-import type { LayeredPrintOptions, LayeredPrintResult, RgbaImage } from '../relief/layeredPrint/solver';
+import { DEFAULT_LAYERED_PRINT_OPTIONS, type LayeredPrintOptions, type LayeredPrintResult, type RgbaImage } from '../relief/layeredPrint/solver';
 import type { LayeredExportMode } from '../relief/layeredPrint/export3mf';
+import {
+  LAYERED_PRINT_FILAMENT_LIBRARY, LAYERED_PRINT_TD_MIN, LAYERED_PRINT_TD_MAX, toLayeredPrintFilaments,
+  type LayeredPrintFilament,
+} from '../relief/layeredPrint/filamentLibrary';
+import { listFilaments, updateFilament, onPaletteChange } from '../color/palette';
 
 export interface LayeredPrintModalOptions {
   /** Image URL (data: / blob: / http) to preload. */
@@ -63,7 +68,7 @@ export function openLayeredPrintModal(opts: LayeredPrintModalOptions): void {
     title: 'Layered print from photo',
     widthClass: 'max-w-lg sm:max-w-3xl',
     scrollable: true,
-    onClose: () => { abort?.abort(); if (timer) clearInterval(timer); },
+    onClose: () => { abort?.abort(); if (timer) clearInterval(timer); unsubscribePalette(); },
   });
 
   const intro = document.createElement('p');
@@ -102,6 +107,141 @@ export function openLayeredPrintModal(opts: LayeredPrintModalOptions): void {
   const printer = selectField('Printer', BAMBU_PRINTERS.map((p) => [p.id, p.label]), DEFAULT_BAMBU_PRINTER, 'Bambu printer profile for the 3MF.');
   grid.append(colors.row, width.row, height.row, swap.row, printer.row);
   shell.body.appendChild(grid);
+
+  // Filament source: the built-in list, or the user's own spools (the palette,
+  // TD included). TD edits write back through the palette module, so they
+  // persist like any other palette edit.
+  const sourceSection = document.createElement('div');
+  sourceSection.className = 'flex flex-col gap-2';
+  const sourceGrid = document.createElement('div');
+  sourceGrid.className = 'grid grid-cols-2 sm:grid-cols-5 gap-2';
+  const source = selectField('Filaments', [['builtin', 'Built-in filaments'], ['palette', 'My palette']], 'builtin',
+    'Which filaments the solver may pick from: the built-in list of common colours, or your own spools from your filament palette.');
+  source.row.classList.add('col-span-2');
+  sourceGrid.appendChild(source.row);
+  sourceSection.appendChild(sourceGrid);
+  const paletteBox = document.createElement('div');
+  paletteBox.className = 'flex flex-col gap-1 rounded border border-zinc-700 bg-zinc-900/60 p-2 hidden';
+  paletteBox.setAttribute('data-testid', 'layered-print-palette');
+  sourceSection.appendChild(paletteBox);
+  shell.body.appendChild(sourceSection);
+
+  // Advanced solve settings, folded away. Defaults are the solver's.
+  const d = DEFAULT_LAYERED_PRINT_OPTIONS;
+  const advanced = document.createElement('details');
+  advanced.className = 'rounded border border-zinc-800 px-2 py-1.5';
+  advanced.setAttribute('data-testid', 'layered-print-advanced');
+  const advSummary = document.createElement('summary');
+  advSummary.className = 'cursor-pointer select-none text-[12px] text-zinc-300';
+  advSummary.textContent = 'Advanced';
+  advanced.appendChild(advSummary);
+  const advGrid = document.createElement('div');
+  advGrid.className = 'grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2';
+  const base = selectField('Base filament', [['auto', 'Auto (darkest)']], 'auto',
+    'The bottom filament, printed first. Auto picks the darkest one, the classic dark base.');
+  const chroma = numberField('Colour vs lightness', d.chromaWeight, 0, 4, 0.1,
+    'How much hue counts in the colour match: 1 = full colour match, 0 = lightness only (a classic monochrome print).');
+  const smooth = numberField('Smoothing', d.smoothing, 0, 20, 0.1,
+    'How smooth the height surface is. Higher values give fewer tiny steps but soften detail; 0 = none.');
+  const pixel = numberField('Pixel size (mm)', d.pixelSizeMm, 0.1, 2, 0.05,
+    'Size of one height pixel. 0.2–0.5 mm suits a 0.4 mm nozzle; larger is faster but coarser.');
+  advGrid.append(base.row, chroma.row, smooth.row, pixel.row);
+  advanced.appendChild(advGrid);
+  shell.body.appendChild(advanced);
+
+  /** The palette's spools as a solver pool (normalised; may be empty). */
+  function paletteFilaments(): LayeredPrintFilament[] {
+    return toLayeredPrintFilaments(listFilaments());
+  }
+  /** The pool the solve picks from, or undefined for the built-in list
+   *  (also when "My palette" is chosen but the palette is empty). */
+  function activePool(): LayeredPrintFilament[] | undefined {
+    if (source.select.value !== 'palette') return undefined;
+    const pool = paletteFilaments();
+    return pool.length > 0 ? pool : undefined;
+  }
+
+  function renderBaseOptions(): void {
+    const keep = base.select.value;
+    const pool = activePool() ?? LAYERED_PRINT_FILAMENT_LIBRARY;
+    const names = [...new Set(pool.map((f) => f.name))];
+    base.select.replaceChildren();
+    const auto = document.createElement('option');
+    auto.value = 'auto'; auto.textContent = 'Auto (darkest)';
+    base.select.appendChild(auto);
+    for (const n of names) { const o = document.createElement('option'); o.value = n; o.textContent = n; base.select.appendChild(o); }
+    base.select.value = names.includes(keep) ? keep : 'auto';
+  }
+
+  // Set while the dialog itself writes a TD, so its own palette-change echo
+  // doesn't rebuild the rows (and steal focus from the next field).
+  let selfEdit = false;
+  function renderPalette(): void {
+    const slots = listFilaments();
+    const paletteOpt = source.select.querySelector<HTMLOptionElement>('option[value="palette"]');
+    if (paletteOpt) paletteOpt.textContent = `My palette (${slots.length})`;
+    paletteBox.classList.toggle('hidden', source.select.value !== 'palette');
+    renderBaseOptions();
+    if (source.select.value !== 'palette') return;
+    paletteBox.replaceChildren();
+    const usable = paletteFilaments();
+    if (usable.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'text-[12px] text-amber-300';
+      empty.setAttribute('data-testid', 'layered-print-palette-empty');
+      empty.textContent = 'Your palette has no filaments yet, so the built-in filaments are used. Add your spools in the Filament palette (Paint panel → palette).';
+      paletteBox.appendChild(empty);
+      return;
+    }
+    const help = document.createElement('p');
+    help.className = 'text-[11px] text-zinc-400 leading-snug';
+    help.textContent = 'TD (transmission distance) is the thickness, in mm, at which a filament stops showing the colour beneath. Measure it with a TD meter, or use the maker\'s value.';
+    paletteBox.appendChild(help);
+    const list = document.createElement('div');
+    list.className = 'grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1';
+    for (const slot of slots) {
+      const row = document.createElement('div');
+      row.className = 'flex items-center gap-2 text-[12px] text-zinc-200 min-w-0';
+      row.setAttribute('data-testid', 'layered-print-palette-row');
+      const chip = document.createElement('span');
+      chip.className = 'inline-block w-4 h-4 rounded border border-zinc-600 shrink-0';
+      chip.style.background = slot.hex;
+      const nm = document.createElement('span');
+      nm.className = 'flex-1 truncate';
+      nm.textContent = slot.name;
+      nm.title = `${slot.name} (${slot.hex})`;
+      const tdLabel = document.createElement('span');
+      tdLabel.className = 'text-[11px] text-zinc-400';
+      tdLabel.textContent = 'TD';
+      const td = document.createElement('input');
+      td.type = 'number';
+      td.min = String(LAYERED_PRINT_TD_MIN); td.max = String(LAYERED_PRINT_TD_MAX); td.step = '0.1';
+      td.value = String(slot.td);
+      td.setAttribute('aria-label', `TD of ${slot.name} (mm)`);
+      td.className = 'w-16 rounded bg-zinc-900 border border-zinc-700 px-1.5 py-1 text-[12px] text-zinc-100 focus:outline-none focus:border-blue-500';
+      td.addEventListener('change', () => {
+        const v = Number(td.value);
+        if (!Number.isFinite(v) || v < LAYERED_PRINT_TD_MIN || v > LAYERED_PRINT_TD_MAX) {
+          td.value = String(slot.td);
+          status.textContent = `TD must be between ${LAYERED_PRINT_TD_MIN} and ${LAYERED_PRINT_TD_MAX} mm.`;
+          return;
+        }
+        selfEdit = true;
+        try { updateFilament(slot.id, { td: v }); } finally { selfEdit = false; }
+        slot.td = v;
+        renderBaseOptions();
+      });
+      const mm = document.createElement('span');
+      mm.className = 'text-[11px] text-zinc-500';
+      mm.textContent = 'mm';
+      row.append(chip, nm, tdLabel, td, mm);
+      list.appendChild(row);
+    }
+    paletteBox.appendChild(list);
+  }
+  const unsubscribePalette = onPaletteChange(() => { if (!selfEdit) renderPalette(); });
+  source.select.addEventListener('change', renderPalette);
+  renderPalette();
 
   // Painted-mode options (shown only for "Painted regions").
   const paintedRow = document.createElement('div');
@@ -203,10 +343,16 @@ export function openLayeredPrintModal(opts: LayeredPrintModalOptions): void {
     if (timer) clearInterval(timer);
     timer = setInterval(tick, 500);
     try {
+      const pool = activePool();
       const r = await opts.solve(image, {
         numColors: Math.round(readNum(colors.input, 8)),
         widthMm: readNum(width.input, 120),
         maxHeightMm: readNum(height.input, 2.4),
+        ...(pool ? { filaments: pool } : {}),
+        ...(base.select.value !== 'auto' ? { baseFilament: base.select.value } : {}),
+        chromaWeight: readNum(chroma.input, d.chromaWeight),
+        smoothing: readNum(smooth.input, d.smoothing),
+        pixelSizeMm: readNum(pixel.input, d.pixelSizeMm),
       }, mine.signal);
       if (mine.signal.aborted) return;
       result = r;

@@ -2522,7 +2522,7 @@ Returns { ok, stats, metrics, version } or { error }.`,
   },
   {
     name: 'createLayeredPrint',
-    description: "Turn a photo into a HueForge-style FILAMENT-LAYERING print (thin translucent layers, filament swapped at chosen heights, so a few filaments blend into many shades) in a NEW session. REQUIRES USER CONFIRMATION — only call when the user asked for a HueForge-style / filament-swap / layered colour print from an image. The solver picks the filaments (built-in list, or `filaments` = the user's own spools with TD values), their order, the swap layers, and every pixel's height; `colors` is the MAXIMUM filament count. Image: `imageRef` (1-based, from getReferenceImages) OR `src`. The result is CODE: the photo becomes a session attachment and the model is `api.layeredPrint(api.image('<id>'), {..., schedule: [{name, hex, td, layer}]})` with the solved schedule pinned — edit it with runCode/runAndSave to change a filament or move a swap (layer = 1-based slicer layer it starts on), compose it (frame, hanging hole, text), or delete `schedule` to re-solve. Returns { sessionId, blocks, totalLayers, totalHeightMm, meanDeltaE, swaps } — meanDeltaE under ~10 is a good match. The model is coloured by height as it will print, so renderView shows the expected result. Then exportLayeredPrint3MF. Raise maxHeightMm (e.g. 3.2) for more shades; colourful photos need 8–10 colours.",
+    description: "Turn a photo into a HueForge-style FILAMENT-LAYERING print (thin translucent layers, filament swapped at chosen heights, so a few filaments blend into many shades) in a NEW session. REQUIRES USER CONFIRMATION — only call when the user asked for a HueForge-style / filament-swap / layered colour print from an image. The solver picks the filaments (built-in list; `usePalette: true` = the user's own spools from their filament palette, TD included; or `filaments` = an explicit list), their order, the swap layers, and every pixel's height; `colors` is the MAXIMUM filament count. Image: `imageRef` (1-based, from getReferenceImages) OR `src`. The result is CODE: the photo becomes a session attachment and the model is `api.layeredPrint(api.image('<id>'), {..., schedule: [{name, hex, td, layer}]})` with the solved schedule pinned — edit it with runCode/runAndSave to change a filament or move a swap (layer = 1-based slicer layer it starts on), compose it (frame, hanging hole, text), or delete `schedule` to re-solve. Returns { sessionId, blocks, totalLayers, totalHeightMm, meanDeltaE, swaps } — meanDeltaE under ~10 is a good match. The model is coloured by height as it will print, so renderView shows the expected result. Then exportLayeredPrint3MF. Raise maxHeightMm (e.g. 3.2) for more shades; colourful photos need 8–10 colours.",
     input_schema: {
       type: 'object',
       properties: {
@@ -2536,6 +2536,7 @@ Returns { ok, stats, metrics, version } or { error }.`,
         firstLayerHeight: { type: 'number', description: 'First layer height, mm (default 0.16).' },
         pixelSizeMm: { type: 'number', description: 'Heightmap pixel size, mm (default 0.3).' },
         filaments: { type: 'array', description: "The user's own filaments to choose from (default: built-in list, see listLayeredPrintFilaments). td = transmission distance in mm (HueForge convention).", items: { type: 'object', properties: { name: { type: 'string' }, hex: { type: 'string', description: '#rrggbb' }, td: { type: 'number' } }, required: ['name', 'hex', 'td'] } },
+        usePalette: { type: 'boolean', description: "true = choose from the user's filament palette (their own spools, with TDs) instead of the built-in list. Don't combine with filaments." },
         baseFilament: { type: 'string', description: 'Force the bottom filament by name (default: chosen by the solver).' },
         chromaWeight: { type: 'number', description: 'Hue vs lightness in the match: 1 = full colour (default), 0 = lightness only (classic monochrome HueForge).' },
         smoothing: { type: 'number', description: 'Height-field smoothness (default 1.2; 0 = none).' },
@@ -4790,8 +4791,12 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     case 'createLayeredPrint': {
       const src = resolveVoxelImageSource(api, input, 'createLayeredPrint');
       if (typeof src !== 'string') return src;
-      const { imageRef: _ref, src: _src, ...rest } = input;
-      const opts = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== null));
+      const { imageRef: _ref, src: _src, usePalette, ...rest } = input;
+      const opts: Record<string, unknown> = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== null));
+      if (usePalette === true) {
+        if (opts.filaments !== undefined) return { error: 'createLayeredPrint: pass usePalette or filaments, not both.' };
+        opts.filaments = 'palette';
+      }
       return api.createLayeredPrint({ src, ...opts });
     }
     case 'getLayeredPrintPlan':

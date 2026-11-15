@@ -68,3 +68,32 @@ export const LAYERED_PRINT_FILAMENT_LIBRARY: readonly LayeredPrintFilament[] = [
   { name: 'Olive', hex: '#6f6a2e', td: 1.6 },
   { name: 'Mint', hex: '#a8dcc0', td: 4.6 },
 ];
+
+/** The TD range (mm) a layered-print filament may have — the same bounds the
+ *  API and `api.layeredPrint` validate. */
+export const LAYERED_PRINT_TD_MIN = 0.05;
+export const LAYERED_PRINT_TD_MAX = 50;
+
+/** Turn user filament slots (e.g. the palette's `{id, name, hex, td}` spools)
+ *  into a solver pool: hex normalised to lower-case `#rrggbb` (3-digit forms
+ *  expanded), TD clamped to the accepted range (a missing / non-finite TD uses
+ *  `fallbackTd`), names trimmed to 80 characters (blank → the hex). Slots whose
+ *  colour can't be read are skipped. */
+export function toLayeredPrintFilaments(
+  slots: ReadonlyArray<{ name: string; hex: string; td?: number }>,
+  fallbackTd = 1.5,
+): LayeredPrintFilament[] {
+  const out: LayeredPrintFilament[] = [];
+  for (const s of slots) {
+    const m = /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.exec(String(s.hex ?? '').trim());
+    if (!m) continue;
+    let h = m[1].toLowerCase();
+    if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+    const hex = `#${h}`;
+    const rawTd = typeof s.td === 'number' && Number.isFinite(s.td) ? s.td : fallbackTd;
+    const td = Math.min(LAYERED_PRINT_TD_MAX, Math.max(LAYERED_PRINT_TD_MIN, rawTd));
+    const name = String(s.name ?? '').trim().slice(0, 80) || hex;
+    out.push({ name, hex, td });
+  }
+  return out;
+}
