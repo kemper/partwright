@@ -81,3 +81,6 @@ the bootstrap), or (b) a real multi-angle anatomy reference. The existing
 `scripts/generate-reference-images.cjs` (Gemini CLI + nanobanana) already turns
 one photo into matched orthographic views — its output feeds straight in here.
 Pin a curated, committed corpus; don't live-scrape per run.
+
+Every committed reference photo needs its source and license recorded in
+[`refs/README.md`](refs/README.md) when it's added.
