@@ -26,6 +26,55 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'November 17, 2026',
+    headline: 'Partwright 1.15 — Print preview and layered photo prints',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.15.0',
+            body: 'A backward-compatible release — existing sessions and exported files all keep working.',
+          },
+        ],
+      },
+      {
+        label: 'Printing',
+        items: [
+          {
+            title: 'Layered photo prints',
+            body: 'Turn a photo into a multi-colour filament-layering print, by code with api.layeredPrint, and export it either as layer colour swaps or as a painted model for multi-material printers.',
+          },
+          {
+            title: 'Print preview',
+            body: 'A new Print preview panel in the Inspect menu lets you scrub a layer slider, see estimated colour blending and colours by height. It also appears in the 3MF export dialog, and works for layered photo prints.',
+          },
+          {
+            title: 'Colours by layer height',
+            body: 'Model code can declare api.print.layerColors, and the 3MF project export writes those colour changes for your slicer (and reads them back on import). The in-app AI can drive it too.',
+          },
+        ],
+      },
+      {
+        label: 'Fixes',
+        items: [
+          {
+            title: 'Coloured 3MF imports no longer lock the page',
+            body: 'Adding a coloured 3MF to an object no longer freezes the page, and small single-colour 3MFs keep their paint.',
+          },
+          {
+            title: 'Layered prints survive reloads',
+            body: 'Layered prints now persist across reloads and object switches, and layered-print sides take their region colour.',
+          },
+          {
+            title: 'Annotate panel stays on screen',
+            body: 'The annotate panel re-clamps after its history grows so its buttons never slide off-screen.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'November 10, 2026',
     headline: 'Partwright 1.14 — Realistic characters in the creator and chat',
     groups: [
