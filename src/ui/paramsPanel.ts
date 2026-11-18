@@ -68,7 +68,10 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
   // Bottom-left of the viewport — clear of the status pill (top-left), the
   // clip/tool bar (top-right) and the Z slider (right). pointer-events-auto so
   // widgets work; the panel itself is small so it doesn't block orbit much.
-  root.className = 'hidden fixed z-10 w-60 max-w-[calc(100%-1rem)] flex flex-col rounded-lg bg-zinc-900/85 backdrop-blur border border-zinc-700 shadow-lg text-zinc-200 pointer-events-auto';
+  // Width fits the content: it grows past the 15rem floor to show long labels /
+  // descriptions on one line, up to a 24rem cap, beyond which they wrap (never
+  // truncate — authors write labels like "Tier 1: count (custom mode)").
+  root.className = 'hidden fixed z-10 w-max min-w-60 max-w-[min(24rem,calc(100%-1rem))] flex flex-col rounded-lg bg-zinc-900/85 backdrop-blur border border-zinc-700 shadow-lg text-zinc-200 pointer-events-auto';
 
   // Header: a "Customize" title, a Reset button, and a close (×) button. Closing
   // hides the whole panel; the viewport "Customize" toggle pill reopens it (see
@@ -107,7 +110,7 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
 
   // Scrollable body holding the widgets.
   const body = document.createElement('div');
-  body.className = 'flex flex-col gap-2.5 px-2.5 py-2 overflow-y-auto max-h-[min(60vh,22rem)]';
+  body.className = 'flex flex-col gap-2.5 px-2.5 py-2 overflow-y-auto max-h-[min(70vh,34rem)]';
   root.appendChild(body);
 
   let currentSig = '';
@@ -253,12 +256,25 @@ export function buildWidget(spec: ParamSpec, onChange: (key: string, value: Para
   row.className = 'flex flex-col gap-1';
 
   const labelRow = document.createElement('div');
-  labelRow.className = 'flex items-baseline justify-between gap-2';
+  labelRow.className = 'flex items-start justify-between gap-2';
+  // The label column wraps rather than truncating, so the full label and its
+  // description are always readable; the control stays pinned on the right.
+  const labelCol = document.createElement('div');
+  labelCol.className = 'flex flex-col min-w-0 flex-1';
   const label = document.createElement('label');
-  label.className = 'text-[11px] text-zinc-400 truncate';
-  label.textContent = spec.unit ? `${spec.label} (${spec.unit})` : spec.label;
-  if (spec.help) label.title = spec.help;
-  labelRow.appendChild(label);
+  label.className = 'text-[11px] leading-snug text-zinc-400 break-words';
+  const labelText = spec.unit ? `${spec.label} (${spec.unit})` : spec.label;
+  label.textContent = labelText;
+  label.title = spec.help ? `${labelText}\n\n${spec.help}` : labelText;
+  labelCol.appendChild(label);
+  if (spec.help) {
+    const help = document.createElement('div');
+    help.className = 'text-[10px] leading-snug text-zinc-500 break-words';
+    help.dataset.paramHelp = spec.key;
+    help.textContent = spec.help;
+    labelCol.appendChild(help);
+  }
+  labelRow.appendChild(labelCol);
 
   let setValue: (v: ParamValue) => void;
 
@@ -290,6 +306,7 @@ export function buildWidget(spec: ParamSpec, onChange: (key: string, value: Para
       // Narrow, mono, right-aligned — reads like the old readout but is editable.
       inputClass: 'w-16 text-[11px] font-mono tabular-nums text-right text-zinc-200 bg-zinc-800 border border-zinc-600 rounded px-1 py-0.5 focus:border-blue-400 focus:outline-none',
     });
+    entry.input.classList.add('shrink-0');
     labelRow.appendChild(entry.input);
     row.appendChild(labelRow);
     row.appendChild(entry.range);
@@ -297,7 +314,7 @@ export function buildWidget(spec: ParamSpec, onChange: (key: string, value: Para
     setValue = (v) => entry.set(typeof v === 'number' ? v : Number(v));
   } else if (spec.type === 'boolean') {
     const wrap = document.createElement('div');
-    wrap.className = 'flex items-center';
+    wrap.className = 'flex items-center shrink-0';
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.className = 'accent-blue-400 cursor-pointer w-4 h-4';
