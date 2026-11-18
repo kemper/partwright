@@ -1224,9 +1224,13 @@ function buildDrawer(): void {
   inputEl = ta;
   inputRow.appendChild(ta);
 
-  // Button row — attachment buttons on the left, stop/send on the right.
+  // Button row — attachment buttons on the left, rewind/stop/send on the
+  // right. The row wraps: when the panel is too narrow for everything on one
+  // line (e.g. Stop showing mid-turn alongside the rewind transport), the
+  // right-hand cluster drops to its own right-aligned line instead of pushing
+  // Send past the panel's edge.
   const inputBtnRow = document.createElement('div');
-  inputBtnRow.className = 'flex items-center gap-2 shrink-0';
+  inputBtnRow.className = 'flex flex-wrap items-center gap-2 shrink-0';
 
   const showAiBtn = document.createElement('button');
   showAiBtn.className = 'shrink-0 px-2 py-1 rounded text-[11px] text-zinc-300 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700';
@@ -1287,14 +1291,16 @@ function buildDrawer(): void {
     inputBtnRow.appendChild(micBtn);
   }
 
-  const inputBtnSpacer = document.createElement('div');
-  inputBtnSpacer.className = 'flex-1';
-  inputBtnRow.appendChild(inputBtnSpacer);
+  // Right-hand cluster: kept together (never split across lines) and pushed
+  // right with ml-auto, so Send always stays visible inside the panel.
+  const inputBtnRight = document.createElement('div');
+  inputBtnRight.className = 'ml-auto flex items-center gap-2 shrink-0';
+  inputBtnRow.appendChild(inputBtnRight);
 
   // Rewind transport — a media-player style group tucked before Stop/Send:
   // ⏮ skip back a chapter (to before your last message), ◀ step back one model
   // step, ▶ step forward one step, ⏭ skip forward a chapter.
-  inputBtnRow.appendChild(buildRewindTransport());
+  inputBtnRight.appendChild(buildRewindTransport());
 
   // Stop button — separate from Send so the human can queue follow-ups
   // mid-run (clicking Send) without losing the ability to actually halt
@@ -1308,7 +1314,7 @@ function buildDrawer(): void {
     stopActiveTurn();
   });
   stopBtnRef = stopBtn;
-  inputBtnRow.appendChild(stopBtn);
+  inputBtnRight.appendChild(stopBtn);
 
   const sendBtn = document.createElement('button');
   sendBtn.className = 'shrink-0 px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50 disabled:cursor-not-allowed';
@@ -1327,7 +1333,7 @@ function buildDrawer(): void {
     void sendMessage();
   });
   sendBtnRef = sendBtn;
-  inputBtnRow.appendChild(sendBtn);
+  inputBtnRight.appendChild(sendBtn);
 
   inputRow.appendChild(inputBtnRow);
   bottomSection.appendChild(inputRow);
