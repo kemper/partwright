@@ -392,6 +392,27 @@ export interface AppConfig {
      *  memory for export speed; clamped at runtime to both (hardwareConcurrency −
      *  1) and the number of parts being exported. 1 ⇒ parts bake one at a time. */
     exportPoolSize: number;
+    /** Layer height (mm) the print preview and layer-colour export assume
+     *  when the model's `api.print.layerColors` call doesn't set its own.
+     *  Should match the slicer profile the job prints with. */
+    printLayerHeightMm: number;
+    /** First-layer height (mm) the print preview and layer-colour export
+     *  assume when the model doesn't set its own. */
+    printFirstLayerHeightMm: number;
+    /** Print preview, estimated blending: how many layers below a top surface
+     *  are composited before the rest is treated as opaque. */
+    printBlendMaxLayers: number;
+    /** Print preview, estimated blending: mm of a DARK filament light gets
+     *  through. The estimate interpolates between this and the light value by
+     *  the colour's brightness. Smaller = more opaque. */
+    printBlendTransmissionDarkMm: number;
+    /** Print preview, estimated blending: mm of a LIGHT (white) filament
+     *  light gets through. */
+    printBlendTransmissionLightMm: number;
+    /** Print preview, estimated blending: a face counts as a top surface
+     *  (and gets the blended colour) when its normal's upward component is at
+     *  least this. 1 = only flat tops; lower includes slopes. */
+    printBlendMinUpNormal: number;
     /** Most items one object may split into in the export picker (Split →
      *  Pieces / Parts). An object with more loose shells than this offers
      *  only "Whole" — thousands of items aren't worth spreading over plates. */
@@ -427,6 +448,13 @@ export interface AppConfig {
     /** Max distinct colours a 3MF import is painted with. Files with more
      *  (per-triangle-coloured scans) import as mesh only, with a notice. */
     threeMfMaxColors: number;
+    /** Max heightmap cells (grid width × depth) a layered photo print may
+     *  solve — bounds solver memory (cells × layers floats) and mesh size. */
+    layeredPrintMaxCells: number;
+    /** Max print layers a layered photo print may use (maxHeight ÷ layer height). */
+    layeredPrintMaxLayers: number;
+    /** Longest side (px) a layered-print photo is stored and solved at. */
+    layeredPrintMaxImagePx: number;
     /** Max objects one import may be split into (a multi-object 3MF imported
      *  one object per 3MF object / plate, or an STL split into one object per
      *  piece). Each becomes its own object with a version, so this bounds the
@@ -906,6 +934,12 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     sdfCompileChunkNodes: 120,
     assemblyPoolSize: 3,
     exportPoolSize: 8,
+    printLayerHeightMm: 0.2,
+    printFirstLayerHeightMm: 0.2,
+    printBlendMaxLayers: 12,
+    printBlendTransmissionDarkMm: 0.4,
+    printBlendTransmissionLightMm: 4,
+    printBlendMinUpNormal: 0.5,
     exportMaxSplitItems: 200,
     engineSandboxBootTimeoutMs: 20_000,
     engineSandboxMaxFrameRestarts: 2,
@@ -917,6 +951,9 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     threeMfMaxTriangles: 20_000_000,
     threeMfMaxEntryMB: 1024,
     threeMfMaxColors: 256,
+    layeredPrintMaxCells: 1_000_000,
+    layeredPrintMaxLayers: 160,
+    layeredPrintMaxImagePx: 1600,
     maxSplitObjects: 100,
     maxImportFiles: 50,
     multiImportGridGap: 0.2,

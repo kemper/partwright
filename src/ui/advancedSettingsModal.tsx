@@ -1017,6 +1017,65 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={1} max={16} integer
           onChange={v => set('renderer', 'exportPoolSize', v)}
         />
+        <Field cfgKey="renderer.printLayerHeightMm"
+          label="Print preview layer height"
+          unit="mm"
+          hint="Layer height the print preview and layer-colour export assume."
+          tooltip="The print preview draws colour bands at real layer boundaries, and a layer-colour 3MF export writes its filament changes at those same layers. Set this to the layer height of the slicer profile you print with. A model can override it in code: api.print.layerColors(changes, { layerHeight })."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.printLayerHeightMm}
+          value={c.renderer.printLayerHeightMm}
+          min={0.04} max={2} step={0.01}
+          onChange={v => set('renderer', 'printLayerHeightMm', v)}
+        />
+        <Field cfgKey="renderer.printFirstLayerHeightMm"
+          label="Print preview first layer height"
+          unit="mm"
+          hint="Height of the first layer, which slicers often make thicker."
+          tooltip="The first layer is often a different height from the rest, which shifts every layer boundary above it. Set this to your slicer profile's first (initial) layer height. A model can override it in code: api.print.layerColors(changes, { firstLayerHeight })."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.printFirstLayerHeightMm}
+          value={c.renderer.printFirstLayerHeightMm}
+          min={0.04} max={2} step={0.01}
+          onChange={v => set('renderer', 'printFirstLayerHeightMm', v)}
+        />
+        <Field cfgKey="renderer.printBlendMaxLayers"
+          label="Blend estimate depth"
+          unit="layers"
+          hint="Layers under a top surface the print preview's blending estimate looks through."
+          tooltip="With Estimated blending on, the print preview mixes the colours of the layers under each top surface. This is how many layers down it looks before treating the rest as opaque. More layers cost a little more to compute."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.printBlendMaxLayers}
+          value={c.renderer.printBlendMaxLayers}
+          min={1} max={40} integer
+          onChange={v => set('renderer', 'printBlendMaxLayers', v)}
+        />
+        <Field cfgKey="renderer.printBlendTransmissionDarkMm"
+          label="Blend estimate: dark filament"
+          unit="mm"
+          hint="How many mm of a dark filament light gets through. Smaller is more opaque."
+          tooltip="The blending estimate needs to know how see-through each filament is. It interpolates between this value (for black) and the light-filament value (for white) by the colour's brightness. These are rough defaults; real filaments vary a lot."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.printBlendTransmissionDarkMm}
+          value={c.renderer.printBlendTransmissionDarkMm}
+          min={0.05} max={20} step={0.05}
+          onChange={v => set('renderer', 'printBlendTransmissionDarkMm', v)}
+        />
+        <Field cfgKey="renderer.printBlendTransmissionLightMm"
+          label="Blend estimate: light filament"
+          unit="mm"
+          hint="How many mm of a white filament light gets through."
+          tooltip="The see-through distance the blending estimate uses for white filament. Colours in between are interpolated by brightness. Raise it if your light filaments show more of the layer underneath than the preview does."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.printBlendTransmissionLightMm}
+          value={c.renderer.printBlendTransmissionLightMm}
+          min={0.05} max={20} step={0.05}
+          onChange={v => set('renderer', 'printBlendTransmissionLightMm', v)}
+        />
+        <Field cfgKey="renderer.printBlendMinUpNormal"
+          label="Blend estimate: top-surface threshold"
+          hint="How upward-facing a surface must be to get the blended colour. 1 is flat tops only."
+          tooltip="The blending estimate only applies to surfaces you look down on. A face counts when the upward part of its direction is at least this value: 1 means perfectly flat tops only, 0.5 includes slopes up to 60 degrees from flat. Side walls always show the pure filament colour."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.printBlendMinUpNormal}
+          value={c.renderer.printBlendMinUpNormal}
+          min={0} max={1} step={0.05}
+          onChange={v => set('renderer', 'printBlendMinUpNormal', v)}
+        />
         <Field cfgKey="renderer.exportMaxSplitItems"
           label="Export split limit"
           hint="Most pieces or parts one object can split into when exporting."
@@ -1278,6 +1337,36 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.import.threeMfMaxTriangles}
           min={10_000} max={200_000_000} integer
           onChange={v => set('import', 'threeMfMaxTriangles', v)}
+        />
+        <Field cfgKey="import.layeredPrintMaxCells"
+          label="Layered print max cells"
+          unit="cells"
+          hint="Largest heightmap (width × depth cells) a layered photo print may solve."
+          tooltip="A layered photo print scores every heightmap cell against every print layer, so memory grows with cells × layers and the mesh grows with cells. Larger prints or finer pixel sizes past this limit are refused with an error instead of freezing the tab. The default fits a 300 × 300 mm print at 0.3 mm pixels."
+          defaultValue={APP_CONFIG_DEFAULTS.import.layeredPrintMaxCells}
+          value={c.import.layeredPrintMaxCells}
+          min={10_000} max={10_000_000} integer
+          onChange={v => set('import', 'layeredPrintMaxCells', v)}
+        />
+        <Field cfgKey="import.layeredPrintMaxLayers"
+          label="Layered print max layers"
+          unit="layers"
+          hint="Most print layers a layered photo print may use."
+          tooltip="Max height divided by layer height. More layers means more shades but a slower solve and longer print."
+          defaultValue={APP_CONFIG_DEFAULTS.import.layeredPrintMaxLayers}
+          value={c.import.layeredPrintMaxLayers}
+          min={10} max={1000} integer
+          onChange={v => set('import', 'layeredPrintMaxLayers', v)}
+        />
+        <Field cfgKey="import.layeredPrintMaxImagePx"
+          label="Layered print photo size"
+          unit="px"
+          hint="Longest side a layered-print photo is stored and solved at."
+          tooltip="The photo is downscaled to this before it's attached to the session and solved. The heightmap grid is much coarser (one cell per pixel size in mm), so larger values mostly cost storage and transfer time."
+          defaultValue={APP_CONFIG_DEFAULTS.import.layeredPrintMaxImagePx}
+          value={c.import.layeredPrintMaxImagePx}
+          min={256} max={8192} integer
+          onChange={v => set('import', 'layeredPrintMaxImagePx', v)}
         />
         <Field cfgKey="import.threeMfMaxEntryMB"
           label="3MF max part size"

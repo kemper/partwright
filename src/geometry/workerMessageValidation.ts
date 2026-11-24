@@ -17,6 +17,7 @@ import { COLOR_PATTERN_KINDS } from '../color/colorPattern';
 import { isSurfaceOpId, parseSurfaceOpts } from '../surface/surfaceOpSpec';
 import { normalizeParamSchema, type ParamSpec } from './params';
 import { isMaterialPresetName } from '../renderer/materialSpec';
+import { parseLayerColorsSpec } from '../print/layerColors';
 
 /** Every message type the engine Worker legitimately sends. */
 export const ENGINE_WORKER_MESSAGE_TYPES: ReadonlySet<string> = new Set([
@@ -315,6 +316,20 @@ function checkParamsSchema(schema: unknown[]): ParamSpec[] {
 
 const MATERIAL_UNIT_FIELDS = ['metalness', 'roughness', 'clearcoat', 'transmission', 'opacity'] as const;
 
+/** `api.print.layerColors(...)` spec: re-run the shared validator on what crossed. */
+function checkLayerColors(l: unknown): void {
+  if (!isPlainObject(l)) fail('layerColors must be a plain object');
+  onlyKeys(l, ['changes', 'layerHeight', 'firstLayerHeight'], 'layerColors');
+  const options: Record<string, unknown> = {};
+  if (l.layerHeight !== undefined) options.layerHeight = l.layerHeight;
+  if (l.firstLayerHeight !== undefined) options.firstLayerHeight = l.firstLayerHeight;
+  try {
+    parseLayerColorsSpec(l.changes, options);
+  } catch (e) {
+    fail(e instanceof Error ? e.message : String(e));
+  }
+}
+
 /** `api.material(...)` spec: known preset, 0..1 colour and PBR numbers. */
 function checkMaterialSpec(m: unknown): void {
   if (!isPlainObject(m)) fail('materialSpec must be a plain object');
@@ -323,6 +338,35 @@ function checkMaterialSpec(m: unknown): void {
   const inUnit = (n: unknown) => isFiniteNum(n) && n >= 0 && n <= 1;
   if (m.color !== undefined && !(isRgb(m.color) && (m.color as number[]).every(inUnit))) fail('materialSpec.color must be [r, g, b] in 0..1');
   for (const k of MATERIAL_UNIT_FIELDS) if (m[k] !== undefined && !inUnit(m[k])) fail(`materialSpec.${k} must be a number in 0..1`);
+}
+
+/** `api.layeredPrint(...)` plan record: 1..16 filament blocks + finite sizes. */
+function checkLayeredPrint(p: unknown): void {
+  if (!isPlainObject(p)) fail('layeredPrint must be a plain object');
+  onlyKeys(p, ['blocks', 'layerHeight', 'firstLayerHeight', 'totalLayers', 'totalHeightMm', 'widthMm', 'depthMm', 'meanDeltaE'], 'layeredPrint');
+  if (!Array.isArray(p.blocks) || p.blocks.length < 1 || p.blocks.length > 16) fail('layeredPrint.blocks must hold 1..16 filaments');
+  // Bounds mirror the solver's own option ranges, so a hostile record can't
+  // drive the main-thread colouring into a divide-by-zero or a huge ladder.
+  const inRange = (v: unknown, lo: number, hi: number) => isFiniteNum(v) && v >= lo && v <= hi;
+  if (!inRange(p.layerHeight, 0.04, 0.4)) fail('layeredPrint.layerHeight must be 0.04..0.4');
+  if (!inRange(p.firstLayerHeight, 0.04, 0.6)) fail('layeredPrint.firstLayerHeight must be 0.04..0.6');
+  if (!isNonNegInt(p.totalLayers) || (p.totalLayers as number) < 1 || (p.totalLayers as number) > 10_000) fail('layeredPrint.totalLayers must be 1..10000');
+  let prevStart = -1;
+  for (const b of p.blocks as unknown[]) {
+    if (!isPlainObject(b)) fail('layeredPrint.blocks entries must be objects');
+    onlyKeys(b, ['name', 'hex', 'td', 'startLayer'], 'layeredPrint block');
+    if (typeof b.name !== 'string' || b.name.length > 80) fail('layeredPrint block name must be a short string');
+    if (typeof b.hex !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(b.hex)) fail('layeredPrint block hex must be "#rrggbb"');
+    if (!isFiniteNum(b.td) || b.td <= 0) fail('layeredPrint block td must be a positive number');
+    if (!isNonNegInt(b.startLayer)) fail('layeredPrint block startLayer must be a non-negative integer');
+    const start = b.startLayer as number;
+    if (prevStart < 0 ? start !== 0 : start <= prevStart) fail('layeredPrint blocks must start at layer 0 and ascend');
+    if (start >= (p.totalLayers as number)) fail('layeredPrint block starts above the top layer');
+    prevStart = start;
+  }
+  for (const k of ['totalHeightMm', 'widthMm', 'depthMm', 'meanDeltaE'] as const) {
+    if (!isFiniteNum(p[k]) || (p[k] as number) < 0) fail(`layeredPrint.${k} must be a non-negative number`);
+  }
 }
 
 /**
@@ -421,6 +465,14 @@ function checkModelPayload(msg: Record<string, unknown>, numTri: number | null):
   if (msg.materialSpec !== undefined && msg.materialSpec !== null) {
     if (!isPlainData(msg.materialSpec)) fail('materialSpec must be plain data');
     checkMaterialSpec(msg.materialSpec);
+  }
+  if (msg.layerColors !== undefined && msg.layerColors !== null) {
+    if (!isPlainData(msg.layerColors)) fail('layerColors must be plain data');
+    checkLayerColors(msg.layerColors);
+  }
+  if (msg.layeredPrint !== undefined && msg.layeredPrint !== null) {
+    if (!isPlainData(msg.layeredPrint)) fail('layeredPrint must be plain data');
+    checkLayeredPrint(msg.layeredPrint);
   }
   const schema = optPlainArray(msg.paramsSchema, 'paramsSchema');
   const normalizedSchema = schema ? checkParamsSchema(schema) : undefined;

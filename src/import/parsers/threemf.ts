@@ -27,6 +27,7 @@
 import type { MeshData } from '../../geometry/types';
 import { dominantPaintColorState } from '../../export/paintColor3mf';
 import { openZip, type ZipArchive } from '../zipReader';
+import { parseLayerEntriesXml, type SlicerLayerEntry } from '../../print/layerColors';
 
 export interface ThreeMFPaletteEntry {
   /** `#rrggbb`, lower-case. */
@@ -95,6 +96,10 @@ export interface ThreeMFParseResult {
   /** Triangles whose slicer painting was split between filaments — coloured
    *  with the filament covering most of the triangle. */
   splitPaintedTriangles: number;
+  /** Colour changes by layer height from a slicer project
+   *  (`Metadata/custom_gcode_per_layer.xml`), per plate id: filament switches
+   *  and manual colour swaps. Absent when the file has none. */
+  layerChanges?: { plate: number; entries: SlicerLayerEntry[] }[];
 }
 
 export interface ThreeMFParseOptions {
@@ -640,6 +645,8 @@ async function readSlicerConfig(zip: ZipArchive): Promise<SlicerConfig | null> {
 
 /** Plate previews are ~512 px PNGs; anything far bigger isn't one. */
 const MAX_PLATE_THUMBNAIL_BYTES = 4 * 1048576;
+/** A per-layer change list is a few lines of XML; refuse anything implausibly large. */
+const MAX_LAYER_CHANGES_BYTES = 1_000_000;
 
 const FALLBACK_FILAMENT_COLORS = ['#f5f5f0', '#181818', '#c02525', '#e8c024', '#2452c0', '#808080', '#2e9d4a', '#e07a1f'];
 
@@ -944,6 +951,17 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
     plates.push(plate);
   }
 
+  // Colour changes by layer height (slicer projects only). Optional data: a
+  // file that fails to parse here still imports.
+  let layerChanges: ThreeMFParseResult['layerChanges'];
+  const layerFile = zip.find('Metadata/custom_gcode_per_layer.xml');
+  if (layerFile && layerFile.uncompressedSize <= MAX_LAYER_CHANGES_BYTES) {
+    try {
+      const perPlate = parseLayerEntriesXml(new TextDecoder().decode(await zip.read(layerFile)));
+      if (perPlate.size > 0) layerChanges = [...perPlate.entries()].sort((a, b) => a[0] - b[0]).map(([plate, entries]) => ({ plate, entries }));
+    } catch { /* optional */ }
+  }
+
   return {
     mesh: { vertProperties, triVerts: new Uint32Array(triVerts), numVert, numTri, numProp: 3 },
     triColor: new Int32Array(triColor),
@@ -956,6 +974,7 @@ export async function parse3MF(bytes: Uint8Array, options: ThreeMFParseOptions =
     plates,
     skippedParts,
     splitPaintedTriangles,
+    ...(layerChanges ? { layerChanges } : {}),
   };
 }
 

@@ -26,6 +26,47 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'November 24, 2026',
+    headline: 'Partwright 1.15 — print preview by layer height, layered photo prints',
+    groups: [
+      {
+        label: 'Releases',
+        items: [
+          {
+            title: 'Partwright 1.15.0',
+            body: 'A backward-compatible release — existing sessions and exported files all keep working.',
+          },
+        ],
+      },
+      {
+        label: 'Printing',
+        items: [
+          {
+            title: 'Print preview with colours by layer height',
+            body: 'Model code can now declare colour changes at chosen heights, and a new Print preview panel (Inspect menu) shows how the print will look, layer by layer. The 3MF export carries the colour changes through to your slicer.',
+          },
+          {
+            title: 'Layered photo prints as model code',
+            body: 'Layered, stacked-filament photo prints can now be built from code, with a swap plan you can view in the print preview.',
+          },
+        ],
+      },
+      {
+        label: 'Fixes',
+        items: [
+          {
+            title: 'Coloured 3MF imports no longer freeze the page',
+            body: 'Adding a coloured 3MF file to an object no longer locks up the page.',
+          },
+          {
+            title: 'Annotate panel buttons stay on screen',
+            body: 'The annotate panel now re-fits itself as its history grows, so its buttons never end up off-screen.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'November 10, 2026',
     headline: 'Partwright 1.14 — Realistic characters in the creator and chat',
     groups: [

@@ -1,5 +1,6 @@
 import type { ParamSpec } from './params';
 import type { SurfaceOp } from '../surface/surfaceOpSpec';
+import type { LayerColorsSpec } from '../print/layerColors';
 
 export interface MeshData {
   vertProperties: Float32Array;
@@ -74,6 +75,15 @@ export interface MeshResult {
    *  here so the geometry layer doesn't depend on the renderer's types).
    *  Geometry and exports are untouched. Absent when no `api.material` ran. */
   materialSpec?: unknown;
+  /** Print colours by layer height declared in code via
+   *  `api.print.layerColors(...)`. Plain serializable. Drives the print
+   *  preview and the 3MF project export; geometry is untouched. Absent when
+   *  the code declares none. */
+  layerColors?: LayerColorsSpec;
+  /** Layered-print swap plan recorded by `api.layeredPrint(...)` this run
+   *  (`LayeredPrintPlanRecord` from relief/types, kept `unknown` so the
+   *  geometry layer doesn't depend on relief types). Absent when unused. */
+  layeredPrint?: unknown;
   /** True when the user code returned an `api.renderMesh(...)` proxy — the
    *  mesh isn't manifold (or wasn't validated as one) and the main thread
    *  must skip its Manifold.ofMesh fallback to avoid a "Not manifold" throw. */
